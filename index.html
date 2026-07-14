@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>わるん会計 | 日報・レシート管理</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <img src="assets/receipt-stack.svg" alt="" width="40" height="40">
+        <div>
+          <strong>わるん会計</strong>
+          <span>日報・レシート管理</span>
+        </div>
+      </div>
+
+      <nav class="nav" aria-label="主要メニュー">
+        <button class="nav-item active" type="button" data-view="dashboard" title="ダッシュボード">
+          <span aria-hidden="true">⌂</span><span>ダッシュボード</span>
+        </button>
+        <button class="nav-item" type="button" data-view="daily" title="日報">
+          <span aria-hidden="true">▣</span><span>日報</span>
+        </button>
+        <button class="nav-item" type="button" data-view="receipts" title="支出・レシート">
+          <span aria-hidden="true">▤</span><span>支出・レシート</span>
+        </button>
+        <button class="nav-item" type="button" data-view="submit" title="提出資料">
+          <span aria-hidden="true">⇩</span><span>提出資料</span>
+        </button>
+        <button class="nav-item" type="button" data-view="settings" title="設定">
+          <span aria-hidden="true">⚙</span><span>設定</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-summary">
+        <span>今日のサマリー</span>
+        <dl>
+          <div>
+            <dt>売上合計</dt>
+            <dd id="sideSales">¥0</dd>
+          </div>
+          <div>
+            <dt>概算利益</dt>
+            <dd id="sideProfit">¥0</dd>
+          </div>
+          <div>
+            <dt>現金残高</dt>
+            <dd id="sideCash">¥0</dd>
+          </div>
+        </dl>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">1店舗運用</p>
+          <h1 id="viewTitle">ダッシュボード</h1>
+        </div>
+        <div class="period-control">
+          <label for="periodMonth">対象月</label>
+          <input id="periodMonth" type="month">
+        </div>
+      </header>
+
+      <section id="dashboard" class="view active-view" aria-labelledby="dashboardTitle">
+        <div class="dashboard-hero">
+          <div class="section-heading">
+            <h2 id="dashboardTitle">今日の日報</h2>
+            <p>売上、支出、現金、レシートを1画面で締めて、税理士へ渡せる資料にします。</p>
+          </div>
+          <button class="primary-button submit-hero-button" type="button" data-view-jump="submit">税理士へ提出</button>
+        </div>
+
+        <div class="daily-board">
+          <section class="summary-card sales-card">
+            <div class="card-title-row">
+              <h3>売上</h3>
+              <button class="pill-button" type="button" data-view-jump="daily">＋ 売上を追加</button>
+            </div>
+            <div class="mini-card-grid">
+              <article class="mini-card">
+                <span class="card-icon">¥</span>
+                <span>現金</span>
+                <strong id="metricCashSales">¥0</strong>
+              </article>
+              <article class="mini-card">
+                <span class="card-icon">▭</span>
+                <span>カード</span>
+                <strong id="metricCardSales">¥0</strong>
+              </article>
+              <article class="mini-card">
+                <span class="card-icon">▦</span>
+                <span>QR決済</span>
+                <strong id="metricQrSales">¥0</strong>
+              </article>
+              <article class="mini-card">
+                <span class="card-icon">□</span>
+                <span>売掛</span>
+                <strong id="metricArSales">¥0</strong>
+              </article>
+            </div>
+            <div class="total-row">
+              <span>合計売上</span>
+              <strong id="metricSales">¥0</strong>
+            </div>
+          </section>
+
+          <section class="summary-card expense-card">
+            <div class="card-title-row">
+              <h3>支出</h3>
+              <button class="pill-button" type="button" data-view-jump="receipts">＋ 支出を追加</button>
+            </div>
+            <div class="mini-card-grid">
+              <article class="mini-card">
+                <span class="card-icon">♨</span>
+                <span>食材仕入</span>
+                <strong id="metricFoodExpense">¥0</strong>
+              </article>
+              <article class="mini-card">
+                <span class="card-icon">▥</span>
+                <span>消耗品</span>
+                <strong id="metricSupplyExpense">¥0</strong>
+              </article>
+              <article class="mini-card">
+                <span class="card-icon">▤</span>
+                <span>固定費</span>
+                <strong id="metricFixedExpense">¥0</strong>
+              </article>
+              <article class="mini-card">
+                <span class="card-icon">…</span>
+                <span>その他</span>
+                <strong id="metricOtherExpense">¥0</strong>
+              </article>
+            </div>
+            <div class="total-row">
+              <span>支出合計</span>
+              <strong id="metricExpenses">¥0</strong>
+            </div>
+          </section>
+
+          <section class="summary-card cash-card">
+            <div class="card-title-row">
+              <h3>現金管理</h3>
+              <button class="pill-button" type="button" data-view-jump="daily">現金を記録</button>
+            </div>
+            <div class="cash-grid">
+              <div>
+                <span>開始残高</span>
+                <strong id="metricOpeningCash">¥0</strong>
+              </div>
+              <div>
+                <span>現金売上</span>
+                <strong id="metricCashIn">¥0</strong>
+              </div>
+              <div>
+                <span>現金支出</span>
+                <strong id="metricCashOut">¥0</strong>
+              </div>
+            </div>
+            <div class="total-row">
+              <span>終了残高</span>
+              <strong id="metricClosingCash">¥0</strong>
+            </div>
+          </section>
+
+          <section class="summary-card receipt-card">
+            <div class="card-title-row">
+              <h3>レシート確認</h3>
+              <button class="pill-button" type="button" data-view-jump="receipts">画像を確認</button>
+            </div>
+            <div class="receipt-status">
+              <strong id="metricMissing">0件</strong>
+              <span>未添付レシート</span>
+            </div>
+            <div id="recentExpenses" class="timeline compact-timeline"></div>
+          </section>
+        </div>
+
+        <div class="dashboard-grid">
+          <section class="panel">
+            <div class="panel-heading">
+              <h3>日報一覧</h3>
+              <button class="text-button" type="button" data-view-jump="daily">入力する</button>
+            </div>
+            <div id="recentReports" class="timeline"></div>
+          </section>
+          <section class="panel submit-panel">
+            <div>
+              <h3>税理士へ提出する資料</h3>
+              <p>対象月のCSV、バックアップ、印刷用チェックをまとめて確認できます。</p>
+            </div>
+            <button class="primary-button" type="button" data-view-jump="submit">提出資料を確認</button>
+          </section>
+        </div>
+      </section>
+
+      <section id="daily" class="view" aria-labelledby="dailyTitle">
+        <div class="section-heading">
+          <h2 id="dailyTitle">日報入力</h2>
+          <p>現金売上を主軸に、将来のカード・QR・売掛も同じ日報に残せます。</p>
+        </div>
+        <form id="dailyForm" class="form-grid">
+          <label>日付
+            <input name="date" type="date" required>
+          </label>
+          <label>来客数
+            <input name="guestCount" type="number" min="0" inputmode="numeric" placeholder="例: 38">
+          </label>
+          <label>組数
+            <input name="groupCount" type="number" min="0" inputmode="numeric" placeholder="例: 14">
+          </label>
+          <label>現金売上
+            <input name="cash" type="number" min="0" inputmode="numeric" placeholder="0">
+          </label>
+          <label>カード売上
+            <input name="card" type="number" min="0" inputmode="numeric" placeholder="0">
+          </label>
+          <label>QR決済
+            <input name="qr" type="number" min="0" inputmode="numeric" placeholder="0">
+          </label>
+          <label>売掛
+            <input name="accountsReceivable" type="number" min="0" inputmode="numeric" placeholder="0">
+          </label>
+          <label>釣銭準備金
+            <input name="openingCash" type="number" min="0" inputmode="numeric" placeholder="0">
+          </label>
+          <label>営業終了時の現金
+            <input name="closingCash" type="number" min="0" inputmode="numeric" placeholder="0">
+          </label>
+          <label class="span-2">営業メモ
+            <textarea name="memo" rows="3" placeholder="貸切、値引き、レジ差額、臨時休業など"></textarea>
+          </label>
+          <div class="form-actions span-2">
+            <button class="primary-button" type="submit">日報を保存</button>
+            <button class="secondary-button" id="clearDailyForm" type="button">入力をクリア</button>
+          </div>
+        </form>
+        <section class="panel">
+          <div class="panel-heading">
+            <h3>登録済み日報</h3>
+            <span id="dailyCount" class="count-label">0件</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>日付</th>
+                  <th>売上</th>
+                  <th>現金</th>
+                  <th>来客/組数</th>
+                  <th>メモ</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="dailyRows"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section id="receipts" class="view" aria-labelledby="receiptsTitle">
+        <div class="section-heading">
+          <h2 id="receiptsTitle">支出・レシート登録</h2>
+          <p>仕入、消耗品、家賃、水道光熱費などを画像付きで残します。</p>
+        </div>
+        <form id="expenseForm" class="form-grid">
+          <label>日付
+            <input name="date" type="date" required>
+          </label>
+          <label>支払先
+            <input name="vendor" type="text" placeholder="例: ○○酒店" required>
+          </label>
+          <label>科目
+            <select name="category">
+              <option>仕入</option>
+              <option>消耗品費</option>
+              <option>水道光熱費</option>
+              <option>通信費</option>
+              <option>家賃</option>
+              <option>交通費</option>
+              <option>広告宣伝費</option>
+              <option>雑費</option>
+            </select>
+          </label>
+          <label>金額
+            <input name="amount" type="number" min="0" inputmode="numeric" placeholder="0" required>
+          </label>
+          <label>支払方法
+            <select name="paymentMethod">
+              <option value="cash">現金</option>
+              <option value="card">クレジットカード</option>
+              <option value="qr">QR決済</option>
+              <option value="bank">銀行振込</option>
+              <option value="payable">買掛</option>
+            </select>
+          </label>
+          <label>税区分
+            <select name="taxRate">
+              <option value="10">10%</option>
+              <option value="8">軽減8%</option>
+              <option value="0">対象外</option>
+            </select>
+          </label>
+          <label class="span-2 file-drop">レシート画像
+            <input name="receiptImage" type="file" accept="image/*">
+            <span>画像を選択すると一覧で確認できます</span>
+          </label>
+          <label class="span-2">メモ
+            <textarea name="memo" rows="3" placeholder="用途、按分、税理士へ伝えたいこと"></textarea>
+          </label>
+          <div class="form-actions span-2">
+            <button class="primary-button" type="submit">支出を保存</button>
+            <button class="secondary-button" id="clearExpenseForm" type="button">入力をクリア</button>
+          </div>
+        </form>
+        <section class="panel">
+          <div class="panel-heading">
+            <h3>登録済み支出</h3>
+            <span id="expenseCount" class="count-label">0件</span>
+          </div>
+          <div id="receiptList" class="receipt-list"></div>
+        </section>
+      </section>
+
+      <section id="submit" class="view" aria-labelledby="submitTitle">
+        <div class="section-heading">
+          <h2 id="submitTitle">提出資料</h2>
+          <p>対象月の売上・支出・添付状況をまとめて確認し、CSVやバックアップを書き出します。</p>
+        </div>
+        <div class="action-row">
+          <button class="primary-button" id="exportCsv" type="button">月次CSVを出力</button>
+          <button class="secondary-button" id="exportJson" type="button">バックアップを書き出し</button>
+          <label class="import-button">バックアップを読み込み
+            <input id="importJson" type="file" accept="application/json">
+          </label>
+          <button class="secondary-button" id="printPacket" type="button">印刷用に開く</button>
+        </div>
+        <section class="panel">
+          <div class="panel-heading">
+            <h3>税理士提出チェック</h3>
+            <span id="submitPeriod" class="count-label"></span>
+          </div>
+          <div id="submitChecklist" class="checklist"></div>
+        </section>
+      </section>
+
+      <section id="settings" class="view" aria-labelledby="settingsTitle">
+        <div class="section-heading">
+          <h2 id="settingsTitle">店舗設定</h2>
+          <p>1店舗の基本情報を記録します。複数店舗化する場合もこの形を拡張できます。</p>
+        </div>
+        <form id="settingsForm" class="form-grid">
+          <label>店舗名
+            <input name="storeName" type="text" placeholder="例: 小料理 わるん">
+          </label>
+          <label>事業者名
+            <input name="ownerName" type="text" placeholder="例: 山田 太郎">
+          </label>
+          <label>所在地
+            <input name="address" type="text" placeholder="例: 東京都...">
+          </label>
+          <label>税理士メモ
+            <input name="accountantNote" type="text" placeholder="提出方法や締切など">
+          </label>
+          <div class="form-actions span-2">
+            <button class="primary-button" type="submit">設定を保存</button>
+          </div>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <template id="emptyTemplate">
+    <div class="empty-state">
+      <img src="assets/receipt-stack.svg" alt="" width="80" height="80">
+      <p></p>
+    </div>
+  </template>
+
+  <script src="app.js"></script>
+</body>
+</html>
