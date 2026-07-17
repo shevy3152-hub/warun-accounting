@@ -2,6 +2,7 @@ package com.warun.accounting.data
 
 import com.warun.accounting.data.local.AppSettings
 import com.warun.accounting.data.local.DailyReport
+import com.warun.accounting.data.local.ExpenseRecord
 import com.warun.accounting.data.local.MonthlySubmission
 import com.warun.accounting.data.local.ReceiptRecord
 import com.warun.accounting.data.local.WarunDao
@@ -15,11 +16,13 @@ class OfflineAccountingRepository @Inject constructor(
 
     override fun observeReceipts(): Flow<List<ReceiptRecord>> = dao.observeReceipts()
 
-    override fun observeReceiptsByDateAndCategory(purchaseDate: String, category: String): Flow<List<ReceiptRecord>> =
-        dao.observeReceiptsByDateAndCategory(purchaseDate, category)
+    override fun observeExpenseRecords(): Flow<List<ExpenseRecord>> = dao.observeExpenseRecords()
 
-    override fun observeReceiptTotalByDateAndCategory(purchaseDate: String, category: String): Flow<Long> =
-        dao.observeReceiptTotalByDateAndCategory(purchaseDate, category)
+    override fun observeExpenseRecordsByDateAndCategory(expenseDate: String, category: String): Flow<List<ExpenseRecord>> =
+        dao.observeExpenseRecordsByDateAndCategory(expenseDate, category)
+
+    override fun observeExpenseTotalByDateAndCategory(expenseDate: String, category: String): Flow<Long> =
+        dao.observeExpenseTotalByDateAndCategory(expenseDate, category)
 
     override fun observeMonthlySubmissions(): Flow<List<MonthlySubmission>> = dao.observeMonthlySubmissions()
 
@@ -28,6 +31,10 @@ class OfflineAccountingRepository @Inject constructor(
     override suspend fun saveDailyReport(report: DailyReport) = dao.insertDailyReport(report)
 
     override suspend fun saveReceipt(receipt: ReceiptRecord) = dao.insertReceipt(receipt)
+
+    override suspend fun saveExpenseRecord(expense: ExpenseRecord) = dao.insertExpenseRecord(expense)
+
+    override suspend fun deleteExpenseRecord(expense: ExpenseRecord) = dao.deleteExpenseRecord(expense)
 
     override suspend fun deleteReceipt(receipt: ReceiptRecord) = dao.deleteReceipt(receipt)
 

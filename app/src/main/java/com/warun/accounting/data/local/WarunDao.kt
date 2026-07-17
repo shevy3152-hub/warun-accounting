@@ -5,7 +5,6 @@ import androidx.room.Delete
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
-import androidx.room.Update
 import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
 
@@ -23,11 +22,14 @@ interface WarunDao {
     @Query("SELECT * FROM receipts ORDER BY COALESCE(purchaseDate, capturedDate, '') DESC, registeredAt DESC")
     fun observeReceipts(): Flow<List<ReceiptRecord>>
 
-    @Query("SELECT * FROM receipts WHERE purchaseDate = :purchaseDate AND expenseCategory = :category ORDER BY registeredAt DESC")
-    fun observeReceiptsByDateAndCategory(purchaseDate: String, category: String): Flow<List<ReceiptRecord>>
+    @Query("SELECT * FROM expense_records ORDER BY expenseDate DESC, createdAt DESC")
+    fun observeExpenseRecords(): Flow<List<ExpenseRecord>>
 
-    @Query("SELECT COALESCE(SUM(totalAmount), 0) FROM receipts WHERE purchaseDate = :purchaseDate AND expenseCategory = :category")
-    fun observeReceiptTotalByDateAndCategory(purchaseDate: String, category: String): Flow<Long>
+    @Query("SELECT * FROM expense_records WHERE expenseDate = :expenseDate AND category = :category ORDER BY createdAt DESC")
+    fun observeExpenseRecordsByDateAndCategory(expenseDate: String, category: String): Flow<List<ExpenseRecord>>
+
+    @Query("SELECT COALESCE(SUM(amount), 0) FROM expense_records WHERE expenseDate = :expenseDate AND category = :category")
+    fun observeExpenseTotalByDateAndCategory(expenseDate: String, category: String): Flow<Long>
 
     @Query("SELECT * FROM monthly_submissions ORDER BY targetMonth DESC")
     fun observeMonthlySubmissions(): Flow<List<MonthlySubmission>>
@@ -38,8 +40,8 @@ interface WarunDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertReceipt(receipt: ReceiptRecord)
 
-    @Update
-    suspend fun updateReceipt(receipt: ReceiptRecord)
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertExpenseRecord(expense: ExpenseRecord)
 
     @Upsert
     suspend fun upsertMonthlySubmission(submission: MonthlySubmission)
@@ -52,4 +54,7 @@ interface WarunDao {
 
     @Delete
     suspend fun deleteReceipt(receipt: ReceiptRecord)
+
+    @Delete
+    suspend fun deleteExpenseRecord(expense: ExpenseRecord)
 }

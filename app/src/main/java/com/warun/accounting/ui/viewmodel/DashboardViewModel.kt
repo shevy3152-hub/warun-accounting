@@ -6,20 +6,21 @@ import com.warun.accounting.data.AccountingRepository
 import com.warun.accounting.data.local.AppSettings
 import com.warun.accounting.data.local.DailyReport
 import com.warun.accounting.data.local.DailyReportStatus
+import com.warun.accounting.data.local.ExpenseRecord
+import com.warun.accounting.data.local.ExpenseSourceType
 import com.warun.accounting.data.local.MonthlySubmission
 import com.warun.accounting.data.local.MonthlySubmissionStatus
 import com.warun.accounting.data.local.ReceiptRecord
 import com.warun.accounting.ui.model.DashboardUiState
 import com.warun.accounting.ui.util.todayString
 import dagger.hilt.android.lifecycle.HiltViewModel
+import java.util.UUID
 import javax.inject.Inject
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-
-const val CurrentExpenseInputSchemaVersion = 2
 
 @HiltViewModel
 class DashboardViewModel @Inject constructor(
@@ -28,12 +29,14 @@ class DashboardViewModel @Inject constructor(
     val uiState: StateFlow<DashboardUiState> = combine(
         repository.observeDailyReports(),
         repository.observeReceipts(),
+        repository.observeExpenseRecords(),
         repository.observeMonthlySubmissions(),
         repository.observeAppSettings()
-    ) { reports, receipts, submissions, settings ->
+    ) { reports, receipts, expenses, submissions, settings ->
         DashboardUiState(
             reports = reports,
             receipts = receipts,
+            expenses = expenses,
             monthlySubmissions = submissions,
             appSettings = settings
         )
@@ -47,6 +50,8 @@ class DashboardViewModel @Inject constructor(
         viewModelScope.launch {
             val now = System.currentTimeMillis()
             val reportDate = input.reportDate.ifBlank { todayString() }
+            val utilityBreakdownTotal = input.utilityBreakdownTotal()
+            val utilitiesTotal = utilityBreakdownTotal.takeIf { it > 0L } ?: input.utilitiesExpense.toLongOrZero()
             repository.saveDailyReport(
                 DailyReport(
                     id = input.id.ifBlank { reportDate },
@@ -58,18 +63,22 @@ class DashboardViewModel @Inject constructor(
                     qrSales = input.qrSales.toLongOrZero(),
                     accountsReceivableSales = input.accountsReceivableSales.toLongOrZero(),
                     otherSales = input.otherSales.toLongOrZero(),
-                    foodPurchases = if (input.expenseInputSchemaVersion >= CurrentExpenseInputSchemaVersion) 0L else input.foodPurchases.toLongOrZero(),
-                    alcoholPurchases = if (input.expenseInputSchemaVersion >= CurrentExpenseInputSchemaVersion) 0L else input.alcoholPurchases.toLongOrZero(),
+                    foodPurchases = 0L,
+                    alcoholPurchases = 0L,
                     consumablesExpense = input.consumablesExpense.toLongOrZero(),
-                    utilitiesExpense = input.utilitiesExpense.toLongOrZero(),
+                    utilitiesExpense = utilitiesTotal,
+                    electricityExpense = input.electricityExpense.toLongOrZero(),
+                    gasExpense = input.gasExpense.toLongOrZero(),
+                    waterExpense = input.waterExpense.toLongOrZero(),
+                    communicationExpense = input.communicationExpense.toLongOrZero(),
+                    rentExpense = input.rentExpense.toLongOrZero(),
                     miscellaneousExpense = input.miscellaneousExpense.toLongOrZero(),
-                    otherExpense = input.otherExpense.toLongOrZero(),
+                    otherExpense = 0L,
                     openingCash = input.openingCash.toLongOrZero(),
                     actualClosingCash = input.actualClosingCash.toLongOrZero(),
                     customerCount = input.customerCount.toIntOrZero(),
                     groupCount = input.groupCount.toIntOrZero(),
                     memo = input.memo.ifBlank { null },
-                    expenseInputSchemaVersion = input.expenseInputSchemaVersion,
                     createdAt = now,
                     updatedAt = now
                 )
@@ -92,12 +101,39 @@ class DashboardViewModel @Inject constructor(
                     taxAmount = input.taxAmount.toLongOrZero(),
                     registrationNumber = input.registrationNumber.ifBlank { null },
                     expenseCategory = input.expenseCategory.ifBlank { null },
-                    paymentMethod = input.paymentMethod.ifBlank { null },
                     isConfirmed = input.isConfirmed && purchaseDate != null,
                     memo = input.memo.ifBlank { null },
                     updatedAt = now
                 )
             )
+        }
+    }
+
+    fun saveExpense(input: ExpenseInput) {
+        viewModelScope.launch {
+            val now = System.currentTimeMillis()
+            val expenseDate = input.expenseDate.ifBlank { todayString() }
+            repository.saveExpenseRecord(
+                ExpenseRecord(
+                    id = input.id.ifBlank { UUID.randomUUID().toString() },
+                    expenseDate = expenseDate,
+                    category = input.category,
+                    supplierName = input.supplierName.ifBlank { null },
+                    amount = input.amount.toLongOrZero(),
+                    paymentMethod = input.paymentMethod.ifBlank { null },
+                    memo = input.memo.ifBlank { null },
+                    receiptId = input.receiptId.ifBlank { null },
+                    sourceType = input.sourceType.ifBlank { ExpenseSourceType.Manual },
+                    createdAt = input.createdAt ?: now,
+                    updatedAt = now
+                )
+            )
+        }
+    }
+
+    fun deleteExpense(expense: ExpenseRecord) {
+        viewModelScope.launch {
+            repository.deleteExpenseRecord(expense)
         }
     }
 
@@ -139,6 +175,9 @@ class DashboardViewModel @Inject constructor(
         }
     }
 
+    private fun DailyReportInput.utilityBreakdownTotal(): Long =
+        electricityExpense.toLongOrZero() + gasExpense.toLongOrZero() + waterExpense.toLongOrZero()
+
     private fun String.toLongOrZero(): Long = filter { it.isDigit() }.toLongOrNull() ?: 0L
     private fun String.toIntOrZero(): Int = filter { it.isDigit() }.toIntOrNull() ?: 0
 }
@@ -147,24 +186,22 @@ data class DailyReportInput(
     val id: String = "",
     val reportDate: String = todayString(),
     val status: String = DailyReportStatus.Draft,
-    val expenseInputSchemaVersion: Int = CurrentExpenseInputSchemaVersion,
     val authorName: String = "本人",
     val cashSales: String = "",
     val cardSales: String = "",
     val qrSales: String = "",
     val accountsReceivableSales: String = "",
     val otherSales: String = "",
-    val foodPurchaseSupplier: String = "",
     val foodPurchases: String = "",
-    val alcoholPurchaseSupplier: String = "",
     val alcoholPurchases: String = "",
-    val consumablesSupplier: String = "",
     val consumablesExpense: String = "",
-    val utilitiesSupplier: String = "",
     val utilitiesExpense: String = "",
-    val miscellaneousSupplier: String = "",
+    val electricityExpense: String = "",
+    val gasExpense: String = "",
+    val waterExpense: String = "",
+    val communicationExpense: String = "",
+    val rentExpense: String = "",
     val miscellaneousExpense: String = "",
-    val otherExpenseSupplier: String = "",
     val otherExpense: String = "",
     val openingCash: String = "",
     val actualClosingCash: String = "",
@@ -183,9 +220,21 @@ data class ReceiptInput(
     val taxAmount: String = "",
     val registrationNumber: String = "",
     val expenseCategory: String = "",
-    val paymentMethod: String = "",
     val isConfirmed: Boolean = false,
     val memo: String = ""
+)
+
+data class ExpenseInput(
+    val id: String = "",
+    val expenseDate: String = "",
+    val category: String = "",
+    val supplierName: String = "",
+    val amount: String = "",
+    val paymentMethod: String = "",
+    val memo: String = "",
+    val receiptId: String = "",
+    val sourceType: String = ExpenseSourceType.Manual,
+    val createdAt: Long? = null
 )
 
 data class AppSettingsInput(

@@ -1,6 +1,8 @@
 package com.warun.accounting.data.local
 
 import androidx.room.Entity
+import androidx.room.ForeignKey
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 @Entity(tableName = "daily_reports")
@@ -18,6 +20,11 @@ data class DailyReport(
     val alcoholPurchases: Long,
     val consumablesExpense: Long,
     val utilitiesExpense: Long,
+    val electricityExpense: Long,
+    val gasExpense: Long,
+    val waterExpense: Long,
+    val communicationExpense: Long,
+    val rentExpense: Long,
     val miscellaneousExpense: Long,
     val otherExpense: Long,
     val openingCash: Long,
@@ -25,7 +32,6 @@ data class DailyReport(
     val customerCount: Int,
     val groupCount: Int,
     val memo: String?,
-    val expenseInputSchemaVersion: Int = 1,
     val createdAt: Long,
     val updatedAt: Long
 )
@@ -33,6 +39,18 @@ data class DailyReport(
 object DailyReportStatus {
     const val Draft = "draft"
     const val Completed = "completed"
+}
+
+object ExpenseCategory {
+    const val FoodPurchase = "food_purchase"
+    const val AlcoholPurchase = "alcohol_purchase"
+    const val OtherExpense = "other_expense"
+}
+
+object ExpenseSourceType {
+    const val Manual = "manual"
+    const val Receipt = "receipt"
+    const val LegacyMigration = "legacy_migration"
 }
 
 @Entity(tableName = "receipts")
@@ -46,9 +64,38 @@ data class ReceiptRecord(
     val taxAmount: Long,
     val registrationNumber: String?,
     val expenseCategory: String?,
-    val paymentMethod: String?,
     val isConfirmed: Boolean,
     val memo: String?,
+    val updatedAt: Long
+)
+
+@Entity(
+    tableName = "expense_records",
+    foreignKeys = [
+        ForeignKey(
+            entity = ReceiptRecord::class,
+            parentColumns = ["id"],
+            childColumns = ["receiptId"],
+            onDelete = ForeignKey.SET_NULL
+        )
+    ],
+    indices = [
+        Index("expenseDate"),
+        Index("category"),
+        Index("receiptId")
+    ]
+)
+data class ExpenseRecord(
+    @PrimaryKey val id: String,
+    val expenseDate: String,
+    val category: String,
+    val supplierName: String?,
+    val amount: Long,
+    val paymentMethod: String?,
+    val memo: String?,
+    val receiptId: String?,
+    val sourceType: String,
+    val createdAt: Long,
     val updatedAt: Long
 )
 

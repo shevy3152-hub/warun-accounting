@@ -7,6 +7,7 @@ import androidx.room.RoomDatabase
     entities = [
         DailyReport::class,
         ReceiptRecord::class,
+        ExpenseRecord::class,
         MonthlySubmission::class,
         AppSettings::class
     ],

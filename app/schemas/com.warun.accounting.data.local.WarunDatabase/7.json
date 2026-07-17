@@ -2,11 +2,11 @@
   "formatVersion": 1,
   "database": {
     "version": 7,
-    "identityHash": "29b01ef7d4283ab5409ce02cf438d8b5",
+    "identityHash": "a57691e4c8d0e32d75cf0bcba009a592",
     "entities": [
       {
         "tableName": "daily_reports",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `reportDate` TEXT NOT NULL, `status` TEXT NOT NULL, `authorName` TEXT, `cashSales` INTEGER NOT NULL, `cardSales` INTEGER NOT NULL, `qrSales` INTEGER NOT NULL, `accountsReceivableSales` INTEGER NOT NULL, `otherSales` INTEGER NOT NULL, `foodPurchases` INTEGER NOT NULL, `alcoholPurchases` INTEGER NOT NULL, `consumablesExpense` INTEGER NOT NULL, `utilitiesExpense` INTEGER NOT NULL, `miscellaneousExpense` INTEGER NOT NULL, `otherExpense` INTEGER NOT NULL, `openingCash` INTEGER NOT NULL, `actualClosingCash` INTEGER NOT NULL, `customerCount` INTEGER NOT NULL, `groupCount` INTEGER NOT NULL, `memo` TEXT, `expenseInputSchemaVersion` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `reportDate` TEXT NOT NULL, `status` TEXT NOT NULL, `authorName` TEXT, `cashSales` INTEGER NOT NULL, `cardSales` INTEGER NOT NULL, `qrSales` INTEGER NOT NULL, `accountsReceivableSales` INTEGER NOT NULL, `otherSales` INTEGER NOT NULL, `foodPurchases` INTEGER NOT NULL, `alcoholPurchases` INTEGER NOT NULL, `consumablesExpense` INTEGER NOT NULL, `utilitiesExpense` INTEGER NOT NULL, `electricityExpense` INTEGER NOT NULL, `gasExpense` INTEGER NOT NULL, `waterExpense` INTEGER NOT NULL, `communicationExpense` INTEGER NOT NULL, `rentExpense` INTEGER NOT NULL, `miscellaneousExpense` INTEGER NOT NULL, `otherExpense` INTEGER NOT NULL, `openingCash` INTEGER NOT NULL, `actualClosingCash` INTEGER NOT NULL, `customerCount` INTEGER NOT NULL, `groupCount` INTEGER NOT NULL, `memo` TEXT, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
         "fields": [
           {
             "fieldPath": "id",
@@ -87,6 +87,36 @@
             "notNull": true
           },
           {
+            "fieldPath": "electricityExpense",
+            "columnName": "electricityExpense",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "gasExpense",
+            "columnName": "gasExpense",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "waterExpense",
+            "columnName": "waterExpense",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "communicationExpense",
+            "columnName": "communicationExpense",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "rentExpense",
+            "columnName": "rentExpense",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
             "fieldPath": "miscellaneousExpense",
             "columnName": "miscellaneousExpense",
             "affinity": "INTEGER",
@@ -129,12 +159,6 @@
             "notNull": false
           },
           {
-            "fieldPath": "expenseInputSchemaVersion",
-            "columnName": "expenseInputSchemaVersion",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
             "fieldPath": "createdAt",
             "columnName": "createdAt",
             "affinity": "INTEGER",
@@ -158,7 +182,7 @@
       },
       {
         "tableName": "receipts",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `purchaseDate` TEXT, `capturedDate` TEXT, `registeredAt` INTEGER NOT NULL, `storeName` TEXT, `totalAmount` INTEGER NOT NULL, `taxAmount` INTEGER NOT NULL, `registrationNumber` TEXT, `expenseCategory` TEXT, `paymentMethod` TEXT, `isConfirmed` INTEGER NOT NULL, `memo` TEXT, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `purchaseDate` TEXT, `capturedDate` TEXT, `registeredAt` INTEGER NOT NULL, `storeName` TEXT, `totalAmount` INTEGER NOT NULL, `taxAmount` INTEGER NOT NULL, `registrationNumber` TEXT, `expenseCategory` TEXT, `isConfirmed` INTEGER NOT NULL, `memo` TEXT, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
         "fields": [
           {
             "fieldPath": "id",
@@ -215,12 +239,6 @@
             "notNull": false
           },
           {
-            "fieldPath": "paymentMethod",
-            "columnName": "paymentMethod",
-            "affinity": "TEXT",
-            "notNull": false
-          },
-          {
             "fieldPath": "isConfirmed",
             "columnName": "isConfirmed",
             "affinity": "INTEGER",
@@ -247,6 +265,126 @@
         },
         "indices": [],
         "foreignKeys": []
+      },
+      {
+        "tableName": "expense_records",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `expenseDate` TEXT NOT NULL, `category` TEXT NOT NULL, `supplierName` TEXT, `amount` INTEGER NOT NULL, `paymentMethod` TEXT, `memo` TEXT, `receiptId` TEXT, `sourceType` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`), FOREIGN KEY(`receiptId`) REFERENCES `receipts`(`id`) ON UPDATE NO ACTION ON DELETE SET NULL )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "expenseDate",
+            "columnName": "expenseDate",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "category",
+            "columnName": "category",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "supplierName",
+            "columnName": "supplierName",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "amount",
+            "columnName": "amount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "paymentMethod",
+            "columnName": "paymentMethod",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "memo",
+            "columnName": "memo",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "receiptId",
+            "columnName": "receiptId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "sourceType",
+            "columnName": "sourceType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_expense_records_expenseDate",
+            "unique": false,
+            "columnNames": [
+              "expenseDate"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_expense_records_expenseDate` ON `${TABLE_NAME}` (`expenseDate`)"
+          },
+          {
+            "name": "index_expense_records_category",
+            "unique": false,
+            "columnNames": [
+              "category"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_expense_records_category` ON `${TABLE_NAME}` (`category`)"
+          },
+          {
+            "name": "index_expense_records_receiptId",
+            "unique": false,
+            "columnNames": [
+              "receiptId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_expense_records_receiptId` ON `${TABLE_NAME}` (`receiptId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "receipts",
+            "onDelete": "SET NULL",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "receiptId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
       },
       {
         "tableName": "monthly_submissions",
@@ -364,7 +502,7 @@
     "views": [],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '29b01ef7d4283ab5409ce02cf438d8b5')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'a57691e4c8d0e32d75cf0bcba009a592')"
     ]
   }
 }
