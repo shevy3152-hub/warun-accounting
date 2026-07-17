@@ -19,6 +19,8 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
+const val CurrentExpenseInputSchemaVersion = 2
+
 @HiltViewModel
 class DashboardViewModel @Inject constructor(
     private val repository: AccountingRepository
@@ -56,8 +58,8 @@ class DashboardViewModel @Inject constructor(
                     qrSales = input.qrSales.toLongOrZero(),
                     accountsReceivableSales = input.accountsReceivableSales.toLongOrZero(),
                     otherSales = input.otherSales.toLongOrZero(),
-                    foodPurchases = input.foodPurchases.toLongOrZero(),
-                    alcoholPurchases = input.alcoholPurchases.toLongOrZero(),
+                    foodPurchases = if (input.expenseInputSchemaVersion >= CurrentExpenseInputSchemaVersion) 0L else input.foodPurchases.toLongOrZero(),
+                    alcoholPurchases = if (input.expenseInputSchemaVersion >= CurrentExpenseInputSchemaVersion) 0L else input.alcoholPurchases.toLongOrZero(),
                     consumablesExpense = input.consumablesExpense.toLongOrZero(),
                     utilitiesExpense = input.utilitiesExpense.toLongOrZero(),
                     miscellaneousExpense = input.miscellaneousExpense.toLongOrZero(),
@@ -67,6 +69,7 @@ class DashboardViewModel @Inject constructor(
                     customerCount = input.customerCount.toIntOrZero(),
                     groupCount = input.groupCount.toIntOrZero(),
                     memo = input.memo.ifBlank { null },
+                    expenseInputSchemaVersion = input.expenseInputSchemaVersion,
                     createdAt = now,
                     updatedAt = now
                 )
@@ -89,11 +92,18 @@ class DashboardViewModel @Inject constructor(
                     taxAmount = input.taxAmount.toLongOrZero(),
                     registrationNumber = input.registrationNumber.ifBlank { null },
                     expenseCategory = input.expenseCategory.ifBlank { null },
+                    paymentMethod = input.paymentMethod.ifBlank { null },
                     isConfirmed = input.isConfirmed && purchaseDate != null,
                     memo = input.memo.ifBlank { null },
                     updatedAt = now
                 )
             )
+        }
+    }
+
+    fun deleteReceipt(receipt: ReceiptRecord) {
+        viewModelScope.launch {
+            repository.deleteReceipt(receipt)
         }
     }
 
@@ -137,17 +147,24 @@ data class DailyReportInput(
     val id: String = "",
     val reportDate: String = todayString(),
     val status: String = DailyReportStatus.Draft,
-    val authorName: String = "",
+    val expenseInputSchemaVersion: Int = CurrentExpenseInputSchemaVersion,
+    val authorName: String = "本人",
     val cashSales: String = "",
     val cardSales: String = "",
     val qrSales: String = "",
     val accountsReceivableSales: String = "",
     val otherSales: String = "",
+    val foodPurchaseSupplier: String = "",
     val foodPurchases: String = "",
+    val alcoholPurchaseSupplier: String = "",
     val alcoholPurchases: String = "",
+    val consumablesSupplier: String = "",
     val consumablesExpense: String = "",
+    val utilitiesSupplier: String = "",
     val utilitiesExpense: String = "",
+    val miscellaneousSupplier: String = "",
     val miscellaneousExpense: String = "",
+    val otherExpenseSupplier: String = "",
     val otherExpense: String = "",
     val openingCash: String = "",
     val actualClosingCash: String = "",
@@ -166,6 +183,7 @@ data class ReceiptInput(
     val taxAmount: String = "",
     val registrationNumber: String = "",
     val expenseCategory: String = "",
+    val paymentMethod: String = "",
     val isConfirmed: Boolean = false,
     val memo: String = ""
 )

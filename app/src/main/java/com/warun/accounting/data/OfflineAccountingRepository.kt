@@ -15,6 +15,12 @@ class OfflineAccountingRepository @Inject constructor(
 
     override fun observeReceipts(): Flow<List<ReceiptRecord>> = dao.observeReceipts()
 
+    override fun observeReceiptsByDateAndCategory(purchaseDate: String, category: String): Flow<List<ReceiptRecord>> =
+        dao.observeReceiptsByDateAndCategory(purchaseDate, category)
+
+    override fun observeReceiptTotalByDateAndCategory(purchaseDate: String, category: String): Flow<Long> =
+        dao.observeReceiptTotalByDateAndCategory(purchaseDate, category)
+
     override fun observeMonthlySubmissions(): Flow<List<MonthlySubmission>> = dao.observeMonthlySubmissions()
 
     override fun observeAppSettings(): Flow<AppSettings?> = dao.observeAppSettings()
@@ -22,6 +28,8 @@ class OfflineAccountingRepository @Inject constructor(
     override suspend fun saveDailyReport(report: DailyReport) = dao.insertDailyReport(report)
 
     override suspend fun saveReceipt(receipt: ReceiptRecord) = dao.insertReceipt(receipt)
+
+    override suspend fun deleteReceipt(receipt: ReceiptRecord) = dao.deleteReceipt(receipt)
 
     override suspend fun saveMonthlySubmission(submission: MonthlySubmission) = dao.upsertMonthlySubmission(submission)
 

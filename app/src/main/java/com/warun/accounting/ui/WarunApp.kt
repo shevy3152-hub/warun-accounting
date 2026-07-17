@@ -125,6 +125,75 @@ private object ReportRoutes {
     fun entry(reportDate: String): String = "report_entry/$reportDate"
 }
 
+private const val FoodPurchaseCategory = "食材仕入"
+private const val AlcoholPurchaseCategory = "酒類仕入"
+private const val DetailedExpenseSchemaVersion = 2
+
+private data class SupplierCandidate(
+    val name: String,
+    val category: String,
+    val paymentMethod: String
+)
+
+private val initialSupplierCandidates = listOf(
+    SupplierCandidate("トキノ屋", FoodPurchaseCategory, "掛け"),
+    SupplierCandidate("バロー", FoodPurchaseCategory, "現金"),
+    SupplierCandidate("ピアゴ", FoodPurchaseCategory, "現金"),
+    SupplierCandidate("アミカ", FoodPurchaseCategory, "現金"),
+    SupplierCandidate("サカツ", AlcoholPurchaseCategory, "掛け"),
+    SupplierCandidate("まるみ屋酒店", AlcoholPurchaseCategory, "現金"),
+    SupplierCandidate("中島酒店", AlcoholPurchaseCategory, "現金")
+)
+
+private fun supplierCandidatesFor(category: String): List<SupplierCandidate> =
+    initialSupplierCandidates.filter { it.category == category }
+
+private fun isDetailedExpenseCategory(category: String?): Boolean =
+    category == FoodPurchaseCategory || category == AlcoholPurchaseCategory
+
+private fun receiptCategoryTotal(receipts: List<ReceiptRecord>, reportDate: String, category: String): Long =
+    receipts.filter { it.purchaseDate == reportDate && it.expenseCategory == category }.sumOf { it.totalAmount }
+
+private fun detailOrLegacyExpense(
+    input: DailyReportInput,
+    receipts: List<ReceiptRecord>,
+    category: String,
+    legacyAmount: String
+): Long {
+    val detailTotal = receiptCategoryTotal(receipts, input.reportDate, category)
+    return if (input.expenseInputSchemaVersion >= DetailedExpenseSchemaVersion) {
+        detailTotal
+    } else {
+        detailTotal.takeIf { it > 0L } ?: legacyAmount.toInputLong()
+    }
+}
+
+private fun DailyReport.detailOrLegacyExpense(
+    receipts: List<ReceiptRecord>,
+    category: String,
+    legacyAmount: Long
+): Long {
+    val detailTotal = receiptCategoryTotal(receipts, reportDate, category)
+    return if (expenseInputSchemaVersion >= DetailedExpenseSchemaVersion) {
+        detailTotal
+    } else {
+        detailTotal.takeIf { it > 0L } ?: legacyAmount
+    }
+}
+
+private fun ReceiptRecord.isRolledIntoDailyReport(reports: List<DailyReport>, receipts: List<ReceiptRecord>): Boolean {
+    val date = purchaseDate ?: return false
+    val category = expenseCategory ?: return false
+    if (!isDetailedExpenseCategory(category)) return false
+    return reports.any { report ->
+        report.reportDate == date &&
+            (report.expenseInputSchemaVersion >= DetailedExpenseSchemaVersion || receiptCategoryTotal(receipts, date, category) > 0L)
+    }
+}
+
+private fun extraReceiptExpenses(reports: List<DailyReport>, receipts: List<ReceiptRecord>): Long =
+    receipts.filterNot { it.isRolledIntoDailyReport(reports, receipts) }.sumOf { it.totalAmount }
+
 @Composable
 fun WarunApp(
     viewModel: DashboardViewModel = hiltViewModel()
@@ -196,7 +265,9 @@ private fun AppNavHost(
         composable(AppDestination.ReportEntry.route) {
             ReportEntryScreen(
                 uiState = uiState,
-                onSaveReport = viewModel::saveDailyReport
+                onSaveReport = viewModel::saveDailyReport,
+                onSaveReceipt = viewModel::saveReceipt,
+                onDeleteReceipt = viewModel::deleteReceipt
             )
         }
         composable(AppDestination.Receipt.route) {
@@ -245,7 +316,9 @@ private fun AppNavHost(
             ReportEntryScreen(
                 uiState = uiState,
                 initialDate = backStackEntry.arguments?.getString(ReportRoutes.ReportDateArg),
-                onSaveReport = viewModel::saveDailyReport
+                onSaveReport = viewModel::saveDailyReport,
+                onSaveReceipt = viewModel::saveReceipt,
+                onDeleteReceipt = viewModel::deleteReceipt
             )
         }
         composable(AppDestination.Submit.route) {
@@ -650,7 +723,9 @@ private fun AdaptiveMenuButtonLayout(content: @Composable (Modifier) -> Unit) {
 private fun ReportEntryScreen(
     uiState: DashboardUiState,
     initialDate: String? = null,
-    onSaveReport: (DailyReportInput) -> Unit
+    onSaveReport: (DailyReportInput) -> Unit,
+    onSaveReceipt: (ReceiptInput) -> Unit,
+    onDeleteReceipt: (ReceiptRecord) -> Unit
 ) {
     val initialReportDate = remember(initialDate) { initialDate ?: DailyReportInput().reportDate }
     val existingReport = remember(uiState.reports, initialReportDate) {
@@ -660,7 +735,8 @@ private fun ReportEntryScreen(
         mutableStateOf(existingReport?.toInput() ?: DailyReportInput(reportDate = initialReportDate))
     }
     val paymentVisibility = uiState.appSettings.toPaymentVisibility()
-    val totals = reportInput.calculateTotals(paymentVisibility)
+    val reportReceipts = uiState.receipts.filter { it.purchaseDate == reportInput.reportDate }
+    val totals = reportInput.calculateTotals(paymentVisibility, reportReceipts)
 
     ScreenColumn {
         ScreenTitle("日報入力", "空いた時間に任意の日付で入力できます。途中でも下書き保存できます。")
@@ -668,7 +744,10 @@ private fun ReportEntryScreen(
             input = reportInput,
             paymentVisibility = paymentVisibility,
             totals = totals,
+            receipts = reportReceipts,
             onInputChange = { reportInput = it },
+            onSaveReceipt = onSaveReceipt,
+            onDeleteReceipt = onDeleteReceipt,
             onSave = { status ->
                 onSaveReport(
                     reportInput
@@ -687,7 +766,10 @@ private fun DailyReportForm(
     input: DailyReportInput,
     paymentVisibility: PaymentVisibility,
     totals: DailyReportTotals,
+    receipts: List<ReceiptRecord>,
     onInputChange: (DailyReportInput) -> Unit,
+    onSaveReceipt: (ReceiptInput) -> Unit,
+    onDeleteReceipt: (ReceiptRecord) -> Unit,
     onSave: (String) -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -706,9 +788,12 @@ private fun DailyReportForm(
             )
             ExpenseCard(
                 input = input,
+                receipts = receipts,
                 expenseTotal = totals.expenseTotal,
                 todayBalance = totals.todayBalance,
                 onInputChange = onInputChange,
+                onSaveReceipt = onSaveReceipt,
+                onDeleteReceipt = onDeleteReceipt,
                 modifier = cardModifier
             )
             CashManagementCard(
@@ -804,31 +889,62 @@ private fun SalesCard(
 @Composable
 private fun ExpenseCard(
     input: DailyReportInput,
+    receipts: List<ReceiptRecord>,
     expenseTotal: Long,
     todayBalance: Long,
     onInputChange: (DailyReportInput) -> Unit,
+    onSaveReceipt: (ReceiptInput) -> Unit,
+    onDeleteReceipt: (ReceiptRecord) -> Unit,
     modifier: Modifier = Modifier.fillMaxWidth()
 ) {
+    var selectedCategory by remember(input.reportDate) { mutableStateOf<String?>(null) }
+    val foodTotal = detailOrLegacyExpense(input, receipts, FoodPurchaseCategory, input.foodPurchases)
+    val alcoholTotal = detailOrLegacyExpense(input, receipts, AlcoholPurchaseCategory, input.alcoholPurchases)
+
     FormCard(modifier = modifier) {
         Text("支出", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        AdaptiveFormFields { fieldModifier ->
-            AppTextField("食材仕入", input.foodPurchases, KeyboardType.Number, fieldModifier) {
-                onInputChange(input.copy(foodPurchases = it))
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            val listPane: @Composable () -> Unit = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    DetailedExpenseCategoryRow(FoodPurchaseCategory, foodTotal) { selectedCategory = FoodPurchaseCategory }
+                    DetailedExpenseCategoryRow(AlcoholPurchaseCategory, alcoholTotal) { selectedCategory = AlcoholPurchaseCategory }
+                    AppTextField("消耗品費", input.consumablesExpense, KeyboardType.Number) {
+                        onInputChange(input.copy(consumablesExpense = it))
+                    }
+                    AppTextField("水道光熱費", input.utilitiesExpense, KeyboardType.Number) {
+                        onInputChange(input.copy(utilitiesExpense = it))
+                    }
+                    AppTextField("雑費", input.miscellaneousExpense, KeyboardType.Number) {
+                        onInputChange(input.copy(miscellaneousExpense = it))
+                    }
+                    AppTextField("その他支出", input.otherExpense, KeyboardType.Number) {
+                        onInputChange(input.copy(otherExpense = it))
+                    }
+                }
             }
-            AppTextField("酒類仕入", input.alcoholPurchases, KeyboardType.Number, fieldModifier) {
-                onInputChange(input.copy(alcoholPurchases = it))
+            val detailPane: @Composable () -> Unit = {
+                selectedCategory?.let { category ->
+                    ExpenseDetailPanel(
+                        reportDate = input.reportDate,
+                        category = category,
+                        receipts = receipts.filter { it.expenseCategory == category },
+                        onClose = { selectedCategory = null },
+                        onSaveReceipt = onSaveReceipt,
+                        onDeleteReceipt = onDeleteReceipt
+                    )
+                }
             }
-            AppTextField("消耗品費", input.consumablesExpense, KeyboardType.Number, fieldModifier) {
-                onInputChange(input.copy(consumablesExpense = it))
-            }
-            AppTextField("水道光熱費", input.utilitiesExpense, KeyboardType.Number, fieldModifier) {
-                onInputChange(input.copy(utilitiesExpense = it))
-            }
-            AppTextField("雑費", input.miscellaneousExpense, KeyboardType.Number, fieldModifier) {
-                onInputChange(input.copy(miscellaneousExpense = it))
-            }
-            AppTextField("その他支出", input.otherExpense, KeyboardType.Number, fieldModifier) {
-                onInputChange(input.copy(otherExpense = it))
+
+            if (maxWidth >= 620.dp && selectedCategory != null) {
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.weight(0.9f)) { listPane() }
+                    Column(modifier = Modifier.weight(1.1f)) { detailPane() }
+                }
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+                    listPane()
+                    detailPane()
+                }
             }
         }
         TotalRow("支出合計", expenseTotal.toYen())
@@ -836,6 +952,165 @@ private fun ExpenseCard(
     }
 }
 
+@Composable
+private fun DetailedExpenseCategoryRow(
+    category: String,
+    total: Long,
+    onClick: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(category, fontWeight = FontWeight.Bold)
+            Text("合計 ${total.toYen()}  >", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@Composable
+private fun ExpenseDetailPanel(
+    reportDate: String,
+    category: String,
+    receipts: List<ReceiptRecord>,
+    onClose: () -> Unit,
+    onSaveReceipt: (ReceiptInput) -> Unit,
+    onDeleteReceipt: (ReceiptRecord) -> Unit
+) {
+    var editingReceipt by remember(reportDate, category) { mutableStateOf<ReceiptRecord?>(null) }
+    var showForm by remember(reportDate, category) { mutableStateOf(false) }
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("$category 明細", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            OutlinedButton(onClick = onClose) { Text("閉じる") }
+        }
+        if (receipts.isEmpty()) {
+            Text("明細はまだありません", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        } else {
+            receipts.sortedByDescending { it.registeredAt }.forEach { receipt ->
+                ExpenseReceiptRow(
+                    receipt = receipt,
+                    onEdit = {
+                        editingReceipt = receipt
+                        showForm = true
+                    },
+                    onDelete = { onDeleteReceipt(receipt) }
+                )
+            }
+        }
+        Button(onClick = {
+            editingReceipt = null
+            showForm = true
+        }) {
+            Text("支出を追加")
+        }
+        if (showForm) {
+            ExpenseReceiptForm(
+                reportDate = reportDate,
+                initialCategory = category,
+                editingReceipt = editingReceipt,
+                onCancel = {
+                    editingReceipt = null
+                    showForm = false
+                },
+                onSave = { receiptInput ->
+                    onSaveReceipt(receiptInput)
+                    editingReceipt = null
+                    showForm = false
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun ExpenseReceiptRow(
+    receipt: ReceiptRecord,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth()) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(10.dp)) {
+            Text(receipt.storeName.orEmpty().ifBlank { "支払先未入力" }, fontWeight = FontWeight.Bold)
+            Text("${receipt.totalAmount.toYen()} / ${receipt.paymentMethod.orEmpty().ifBlank { "支払方法未入力" }}")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onEdit) { Text("編集") }
+                OutlinedButton(onClick = onDelete) { Text("削除") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ExpenseReceiptForm(
+    reportDate: String,
+    initialCategory: String,
+    editingReceipt: ReceiptRecord?,
+    onCancel: () -> Unit,
+    onSave: (ReceiptInput) -> Unit
+) {
+    var supplier by remember(editingReceipt, initialCategory) { mutableStateOf(editingReceipt?.storeName.orEmpty()) }
+    var category by remember(editingReceipt, initialCategory) { mutableStateOf(editingReceipt?.expenseCategory ?: initialCategory) }
+    var paymentMethod by remember(editingReceipt, initialCategory) { mutableStateOf(editingReceipt?.paymentMethod.orEmpty()) }
+    var amount by remember(editingReceipt, initialCategory) { mutableStateOf(editingReceipt?.totalAmount?.takeIf { it > 0L }?.toString().orEmpty()) }
+    val candidates = remember(category) { supplierCandidatesFor(category) }
+
+    Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth()) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(12.dp)) {
+            Text(if (editingReceipt == null) "支出を追加" else "支出を編集", fontWeight = FontWeight.Bold)
+            Text("候補", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                candidates.forEach { candidate ->
+                    OutlinedButton(onClick = {
+                        supplier = candidate.name
+                        category = candidate.category
+                        paymentMethod = candidate.paymentMethod
+                    }) {
+                        Text(candidate.name)
+                    }
+                }
+            }
+            AppTextField("支払先", supplier) { supplier = it }
+            AppTextField("カテゴリ", category) { category = it }
+            AppTextField("支払方法", paymentMethod) { paymentMethod = it }
+            AppTextField("金額", amount, KeyboardType.Number) { amount = it }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = {
+                    onSave(
+                        ReceiptInput(
+                            id = editingReceipt?.id.orEmpty(),
+                            purchaseDate = reportDate,
+                            capturedDate = reportDate,
+                            registeredAt = editingReceipt?.registeredAt,
+                            storeName = supplier,
+                            totalAmount = amount,
+                            taxAmount = editingReceipt?.taxAmount?.toString().orEmpty(),
+                            registrationNumber = editingReceipt?.registrationNumber.orEmpty(),
+                            expenseCategory = category,
+                            paymentMethod = paymentMethod,
+                            isConfirmed = true,
+                            memo = editingReceipt?.memo.orEmpty()
+                        )
+                    )
+                }) { Text("保存") }
+                OutlinedButton(onClick = onCancel) { Text("キャンセル") }
+            }
+        }
+    }
+}
 @Composable
 private fun CashManagementCard(
     input: DailyReportInput,
@@ -1328,13 +1603,13 @@ private fun ReportDetailScreen(
             }
         }
         dayReports.forEachIndexed { index, report ->
-            DailyReportDetailCard(index = index, report = report)
+            DailyReportDetailCard(index = index, report = report, receipts = dayReceipts)
         }
     }
 }
 
 @Composable
-private fun DailyReportDetailCard(index: Int, report: DailyReport) {
+private fun DailyReportDetailCard(index: Int, report: DailyReport, receipts: List<ReceiptRecord>) {
     DashboardCard {
         Text("日報 ${index + 1}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         TotalRow("ステータス", report.status.toReportStatusLabel())
@@ -1344,7 +1619,7 @@ private fun DailyReportDetailCard(index: Int, report: DailyReport) {
         TotalRow("QR決済売上", report.qrSales.toYen())
         TotalRow("売掛売上", report.accountsReceivableSales.toYen())
         TotalRow("その他売上", report.otherSales.toYen())
-        TotalRow("支出合計", report.totalExpense().toYen())
+        TotalRow("支出合計", report.totalExpense(receipts).toYen())
         TotalRow("食材仕入", report.foodPurchases.toYen())
         TotalRow("酒類仕入", report.alcoholPurchases.toYen())
         TotalRow("消耗品費", report.consumablesExpense.toYen())
@@ -1858,8 +2133,8 @@ private fun buildMonthlyOrganizationSummary(
     val monthReports = uiState.reports.filter { it.reportDate.startsWith(targetMonth) }
     val monthReceipts = uiState.receipts.filter { it.purchaseDate?.startsWith(targetMonth) == true }
     val salesTotal = monthReports.sumOf { it.totalSales() }
-    val reportExpenses = monthReports.sumOf { it.totalExpense() }
-    val receiptExpenses = monthReceipts.sumOf { it.totalAmount }
+    val reportExpenses = monthReports.sumOf { it.totalExpense(monthReceipts) }
+    val receiptExpenses = monthReceipts.filterNot { it.isRolledIntoDailyReport(monthReports, monthReceipts) }.sumOf { it.totalAmount }
     val submitted = uiState.monthlySubmissions.any {
         it.targetMonth == targetMonth && it.status == MonthlySubmissionStatus.Submitted
     }
@@ -1888,7 +2163,7 @@ private fun AppSettings?.toPaymentVisibility(): PaymentVisibility =
         useOtherPayment = this?.useOtherPayment ?: false
     )
 
-private fun DailyReportInput.calculateTotals(paymentVisibility: PaymentVisibility): DailyReportTotals {
+private fun DailyReportInput.calculateTotals(paymentVisibility: PaymentVisibility, receipts: List<ReceiptRecord>): DailyReportTotals {
     val cashSales = if (paymentVisibility.useCashPayment) this.cashSales.toInputLong() else 0L
     val totalSales = listOf(
         cashSales,
@@ -1897,14 +2172,12 @@ private fun DailyReportInput.calculateTotals(paymentVisibility: PaymentVisibilit
         if (paymentVisibility.useAccountsReceivablePayment) this.accountsReceivableSales.toInputLong() else 0L,
         if (paymentVisibility.useOtherPayment) this.otherSales.toInputLong() else 0L
     ).sum()
-    val expenseTotal = listOf(
-        this.foodPurchases,
-        this.alcoholPurchases,
-        this.consumablesExpense,
-        this.utilitiesExpense,
-        this.miscellaneousExpense,
-        this.otherExpense
-    ).sumOf { it.toInputLong() }
+    val expenseTotal = detailOrLegacyExpense(this, receipts, FoodPurchaseCategory, this.foodPurchases) +
+        detailOrLegacyExpense(this, receipts, AlcoholPurchaseCategory, this.alcoholPurchases) +
+        this.consumablesExpense.toInputLong() +
+        this.utilitiesExpense.toInputLong() +
+        this.miscellaneousExpense.toInputLong() +
+        this.otherExpense.toInputLong()
     val cashExpense = expenseTotal
     val theoreticalClosingCash = this.openingCash.toInputLong() + cashSales - cashExpense
     val actualClosingCash = this.actualClosingCash
@@ -1947,7 +2220,7 @@ private fun buildBalanceSummary(
         receipt.purchaseDate?.let { period.contains(it) } == true
     }
     val salesTotal = periodReports.sumOf { it.totalSales() }
-    val expenseTotal = periodReports.sumOf { it.totalExpense() } + periodReceipts.sumOf { it.totalAmount }
+    val expenseTotal = periodReports.sumOf { it.totalExpense(periodReceipts) } + extraReceiptExpenses(periodReports, periodReceipts)
     val cashSales = periodReports.sumOf { it.cashSales }
     val cashExpense = expenseTotal
     val firstReport = periodReports.minWithOrNull(
@@ -1992,7 +2265,7 @@ private fun buildDailyBalanceRow(
     receipts: List<ReceiptRecord> = emptyList()
 ): DailyBalanceRow {
     val salesTotal = reports.sumOf { it.totalSales() }
-    val expenseTotal = reports.sumOf { it.totalExpense() } + receipts.sumOf { it.totalAmount }
+    val expenseTotal = reports.sumOf { it.totalExpense(receipts) } + extraReceiptExpenses(reports, receipts)
     val cashSales = reports.sumOf { it.cashSales }
     val cashExpense = expenseTotal
     val firstReport = reports.minByOrNull { it.createdAt }
@@ -2064,6 +2337,7 @@ private fun DailyReport.toInput(): DailyReportInput =
         id = id,
         reportDate = reportDate,
         status = status,
+        expenseInputSchemaVersion = expenseInputSchemaVersion,
         authorName = authorName.orEmpty(),
         cashSales = cashSales.toString(),
         cardSales = cardSales.toString(),
@@ -2088,21 +2362,22 @@ private fun buildExpenseBreakdownTotals(
     receipts: List<ReceiptRecord>
 ): List<Pair<String, Long>> =
     listOf(
-        "食材仕入" to reports.sumOf { it.foodPurchases },
-        "酒類仕入" to reports.sumOf { it.alcoholPurchases },
+        FoodPurchaseCategory to reports.sumOf { it.detailOrLegacyExpense(receipts, FoodPurchaseCategory, it.foodPurchases) },
+        AlcoholPurchaseCategory to reports.sumOf { it.detailOrLegacyExpense(receipts, AlcoholPurchaseCategory, it.alcoholPurchases) },
         "消耗品費" to reports.sumOf { it.consumablesExpense },
         "水道光熱費" to reports.sumOf { it.utilitiesExpense },
         "雑費" to reports.sumOf { it.miscellaneousExpense },
         "その他支出" to reports.sumOf { it.otherExpense },
-        "レシート支出" to receipts.sumOf { it.totalAmount }
+        "レシート支出" to extraReceiptExpenses(reports, receipts)
     )
 
 private fun DailyReport.totalSales(): Long =
     cashSales + cardSales + qrSales + accountsReceivableSales + otherSales
 
-private fun DailyReport.totalExpense(): Long =
-    foodPurchases + alcoholPurchases + consumablesExpense + utilitiesExpense + miscellaneousExpense + otherExpense
-
+private fun DailyReport.totalExpense(receipts: List<ReceiptRecord>): Long =
+    detailOrLegacyExpense(receipts, FoodPurchaseCategory, foodPurchases) +
+        detailOrLegacyExpense(receipts, AlcoholPurchaseCategory, alcoholPurchases) +
+        consumablesExpense + utilitiesExpense + miscellaneousExpense + otherExpense
 private fun parseDateOrNull(value: String): LocalDate? =
     runCatching { LocalDate.parse(value.trim()) }.getOrNull()
 

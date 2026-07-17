@@ -24,11 +24,39 @@ data class DashboardUiState(
     private fun DailyReport.salesTotal(): Long =
         cashSales + cardSales + qrSales + accountsReceivableSales + otherSales
 
+    private val detailedExpenseCategories = setOf("食材仕入", "酒類仕入")
+
+    private fun receiptCategoryTotal(reportDate: String, category: String): Long =
+        receipts.filter { it.purchaseDate == reportDate && it.expenseCategory == category }.sumOf { it.totalAmount }
+
+    private fun DailyReport.detailOrLegacyExpense(category: String, legacyAmount: Long): Long {
+        val detailTotal = receiptCategoryTotal(reportDate, category)
+        return when {
+            expenseInputSchemaVersion >= 2 -> detailTotal
+            detailTotal > 0L -> detailTotal
+            else -> legacyAmount
+        }
+    }
+
     private fun DailyReport.expenseTotal(): Long =
-        foodPurchases + alcoholPurchases + consumablesExpense + utilitiesExpense + miscellaneousExpense + otherExpense
+        detailOrLegacyExpense("食材仕入", foodPurchases) +
+            detailOrLegacyExpense("酒類仕入", alcoholPurchases) +
+            consumablesExpense + utilitiesExpense + miscellaneousExpense + otherExpense
+
+    private fun ReceiptRecord.isRolledIntoDailyReport(): Boolean {
+        val date = purchaseDate ?: return false
+        val category = expenseCategory ?: return false
+        if (category !in detailedExpenseCategories) return false
+        return reports.any { report ->
+            report.reportDate == date &&
+                (report.expenseInputSchemaVersion >= 2 || receiptCategoryTotal(date, category) > 0L)
+        }
+    }
+
+    private val extraReceiptExpenses: Long = receipts.filterNot { it.isRolledIntoDailyReport() }.sumOf { it.totalAmount }
 
     val salesTotal: Long = reports.sumOf { it.salesTotal() }
-    val expenseTotal: Long = reports.sumOf { it.expenseTotal() }
+    val expenseTotal: Long = reports.sumOf { it.expenseTotal() } + extraReceiptExpenses
     val cashSales: Long = reports.sumOf { it.cashSales }
     val cardSales: Long = reports.sumOf { it.cardSales }
     val qrSales: Long = reports.sumOf { it.qrSales }
@@ -40,7 +68,11 @@ data class DashboardUiState(
         ?: ((latestReport?.openingCash ?: 0L) + cashSales - cashExpenses)
 
     val todaySales: Long = todayReports.sumOf { it.salesTotal() }
-    val todayExpensesTotal: Long = todayReports.sumOf { it.expenseTotal() }
+    private val todayExtraReceiptExpenses: Long = receipts
+        .filter { it.purchaseDate == today }
+        .filterNot { it.isRolledIntoDailyReport() }
+        .sumOf { it.totalAmount }
+    val todayExpensesTotal: Long = todayReports.sumOf { it.expenseTotal() } + todayExtraReceiptExpenses
     val todayBalance: Long = todaySales - todayExpensesTotal
     val todayCashSales: Long = todayReports.sumOf { it.cashSales }
     val todayCashExpenses: Long = todayExpensesTotal
@@ -51,7 +83,7 @@ data class DashboardUiState(
         (todayLatestReport?.actualClosingCash?.takeIf { it > 0 } ?: todayTheoreticalClosingCash) - todayTheoreticalClosingCash
 
     val monthSales: Long = monthReports.sumOf { it.salesTotal() }
-    val monthReceiptExpensesTotal: Long = monthReceipts.sumOf { it.totalAmount }
+    val monthReceiptExpensesTotal: Long = monthReceipts.filterNot { it.isRolledIntoDailyReport() }.sumOf { it.totalAmount }
     val monthExpensesTotal: Long = monthReports.sumOf { it.expenseTotal() } + monthReceiptExpensesTotal
     val monthEstimatedBalance: Long = monthSales - monthExpensesTotal
     val unconfirmedReceiptCount: Int = receipts.count { !it.isConfirmed }

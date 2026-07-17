@@ -2,6 +2,8 @@ package com.warun.accounting.di
 
 import android.content.Context
 import androidx.room.Room
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.warun.accounting.data.AccountingRepository
 import com.warun.accounting.data.OfflineAccountingRepository
 import com.warun.accounting.data.local.WarunDao
@@ -17,11 +19,18 @@ import javax.inject.Singleton
 @Module
 @InstallIn(SingletonComponent::class)
 object DatabaseModule {
+    private val MIGRATION_6_7 = object : Migration(6, 7) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE receipts ADD COLUMN paymentMethod TEXT")
+            db.execSQL("ALTER TABLE daily_reports ADD COLUMN expenseInputSchemaVersion INTEGER NOT NULL DEFAULT 1")
+        }
+    }
+
     @Provides
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): WarunDatabase =
         Room.databaseBuilder(context, WarunDatabase::class.java, "warun-accounting.db")
-            .fallbackToDestructiveMigration()
+            .addMigrations(MIGRATION_6_7)
             .build()
 
     @Provides

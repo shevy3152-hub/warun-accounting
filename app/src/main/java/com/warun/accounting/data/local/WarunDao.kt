@@ -5,6 +5,7 @@ import androidx.room.Delete
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Update
 import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
 
@@ -22,6 +23,12 @@ interface WarunDao {
     @Query("SELECT * FROM receipts ORDER BY COALESCE(purchaseDate, capturedDate, '') DESC, registeredAt DESC")
     fun observeReceipts(): Flow<List<ReceiptRecord>>
 
+    @Query("SELECT * FROM receipts WHERE purchaseDate = :purchaseDate AND expenseCategory = :category ORDER BY registeredAt DESC")
+    fun observeReceiptsByDateAndCategory(purchaseDate: String, category: String): Flow<List<ReceiptRecord>>
+
+    @Query("SELECT COALESCE(SUM(totalAmount), 0) FROM receipts WHERE purchaseDate = :purchaseDate AND expenseCategory = :category")
+    fun observeReceiptTotalByDateAndCategory(purchaseDate: String, category: String): Flow<Long>
+
     @Query("SELECT * FROM monthly_submissions ORDER BY targetMonth DESC")
     fun observeMonthlySubmissions(): Flow<List<MonthlySubmission>>
 
@@ -31,6 +38,9 @@ interface WarunDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertReceipt(receipt: ReceiptRecord)
 
+    @Update
+    suspend fun updateReceipt(receipt: ReceiptRecord)
+
     @Upsert
     suspend fun upsertMonthlySubmission(submission: MonthlySubmission)
 
@@ -39,4 +49,7 @@ interface WarunDao {
 
     @Delete
     suspend fun deleteDailyReport(report: DailyReport)
+
+    @Delete
+    suspend fun deleteReceipt(receipt: ReceiptRecord)
 }

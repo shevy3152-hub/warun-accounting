@@ -9,10 +9,13 @@ import kotlinx.coroutines.flow.Flow
 interface AccountingRepository {
     fun observeDailyReports(): Flow<List<DailyReport>>
     fun observeReceipts(): Flow<List<ReceiptRecord>>
+    fun observeReceiptsByDateAndCategory(purchaseDate: String, category: String): Flow<List<ReceiptRecord>>
+    fun observeReceiptTotalByDateAndCategory(purchaseDate: String, category: String): Flow<Long>
     fun observeMonthlySubmissions(): Flow<List<MonthlySubmission>>
     fun observeAppSettings(): Flow<AppSettings?>
     suspend fun saveDailyReport(report: DailyReport)
     suspend fun saveReceipt(receipt: ReceiptRecord)
+    suspend fun deleteReceipt(receipt: ReceiptRecord)
     suspend fun saveMonthlySubmission(submission: MonthlySubmission)
     suspend fun saveAppSettings(settings: AppSettings)
     suspend fun deleteDailyReport(report: DailyReport)

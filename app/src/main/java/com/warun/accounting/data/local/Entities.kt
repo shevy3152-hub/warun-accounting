@@ -25,6 +25,7 @@ data class DailyReport(
     val customerCount: Int,
     val groupCount: Int,
     val memo: String?,
+    val expenseInputSchemaVersion: Int = 1,
     val createdAt: Long,
     val updatedAt: Long
 )
@@ -45,6 +46,7 @@ data class ReceiptRecord(
     val taxAmount: Long,
     val registrationNumber: String?,
     val expenseCategory: String?,
+    val paymentMethod: String?,
     val isConfirmed: Boolean,
     val memo: String?,
     val updatedAt: Long
