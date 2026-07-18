@@ -31,6 +31,15 @@ interface WarunDao {
     @Query("SELECT COALESCE(SUM(amount), 0) FROM expense_records WHERE expenseDate = :expenseDate AND category = :category")
     fun observeExpenseTotalByDateAndCategory(expenseDate: String, category: String): Flow<Long>
 
+    @Query("SELECT * FROM supplier_candidates WHERE isHidden = 0 ORDER BY category ASC, createdAt ASC")
+    fun observeSupplierCandidates(): Flow<List<SupplierCandidateRecord>>
+
+    @Query("SELECT * FROM supplier_candidates WHERE category = :category AND isHidden = 0 ORDER BY createdAt ASC")
+    fun observeVisibleSupplierCandidatesByCategory(category: String): Flow<List<SupplierCandidateRecord>>
+
+    @Upsert
+    suspend fun upsertSupplierCandidate(candidate: SupplierCandidateRecord)
+
     @Query("SELECT * FROM monthly_submissions ORDER BY targetMonth DESC")
     fun observeMonthlySubmissions(): Flow<List<MonthlySubmission>>
 

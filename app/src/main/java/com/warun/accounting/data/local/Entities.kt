@@ -25,6 +25,7 @@ data class DailyReport(
     val waterExpense: Long,
     val communicationExpense: Long,
     val rentExpense: Long,
+    val accountantFeeExpense: Long,
     val miscellaneousExpense: Long,
     val otherExpense: Long,
     val openingCash: Long,
@@ -97,6 +98,21 @@ data class ExpenseRecord(
     val memo: String?,
     val receiptId: String?,
     val sourceType: String,
+    val createdAt: Long,
+    val updatedAt: Long
+)
+
+@Entity(
+    tableName = "supplier_candidates",
+    indices = [Index(value = ["category", "name"], unique = true)]
+)
+data class SupplierCandidateRecord(
+    @PrimaryKey val id: String,
+    val category: String,
+    val name: String,
+    val paymentMethod: String?,
+    val isDefault: Boolean,
+    val isHidden: Boolean,
     val createdAt: Long,
     val updatedAt: Long
 )

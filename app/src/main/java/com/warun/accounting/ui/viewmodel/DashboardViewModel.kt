@@ -11,8 +11,10 @@ import com.warun.accounting.data.local.ExpenseSourceType
 import com.warun.accounting.data.local.MonthlySubmission
 import com.warun.accounting.data.local.MonthlySubmissionStatus
 import com.warun.accounting.data.local.ReceiptRecord
+import com.warun.accounting.data.local.SupplierCandidateRecord
 import com.warun.accounting.ui.model.DashboardUiState
 import com.warun.accounting.ui.util.todayString
+import com.warun.accounting.util.normalizePaymentMethod
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.util.UUID
 import javax.inject.Inject
@@ -26,26 +28,47 @@ import kotlinx.coroutines.launch
 class DashboardViewModel @Inject constructor(
     private val repository: AccountingRepository
 ) : ViewModel() {
-    val uiState: StateFlow<DashboardUiState> = combine(
+    private data class BaseUiStateParts(
+        val reports: List<DailyReport>,
+        val receipts: List<ReceiptRecord>,
+        val expenses: List<ExpenseRecord>,
+        val submissions: List<MonthlySubmission>,
+        val settings: AppSettings?
+    )
+
+    private val baseUiStateParts = combine(
         repository.observeDailyReports(),
         repository.observeReceipts(),
         repository.observeExpenseRecords(),
         repository.observeMonthlySubmissions(),
         repository.observeAppSettings()
     ) { reports, receipts, expenses, submissions, settings ->
-        DashboardUiState(
+        BaseUiStateParts(
             reports = reports,
             receipts = receipts,
             expenses = expenses,
-            monthlySubmissions = submissions,
-            appSettings = settings
+            submissions = submissions,
+            settings = settings
+        )
+    }
+
+    val uiState: StateFlow<DashboardUiState> = combine(
+        baseUiStateParts,
+        repository.observeSupplierCandidates()
+    ) { parts, supplierCandidates ->
+        DashboardUiState(
+            reports = parts.reports,
+            receipts = parts.receipts,
+            expenses = parts.expenses,
+            monthlySubmissions = parts.submissions,
+            supplierCandidates = supplierCandidates,
+            appSettings = parts.settings
         )
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
         initialValue = DashboardUiState()
     )
-
     fun saveDailyReport(input: DailyReportInput) {
         viewModelScope.launch {
             val now = System.currentTimeMillis()
@@ -72,6 +95,7 @@ class DashboardViewModel @Inject constructor(
                     waterExpense = input.waterExpense.toLongOrZero(),
                     communicationExpense = input.communicationExpense.toLongOrZero(),
                     rentExpense = input.rentExpense.toLongOrZero(),
+                    accountantFeeExpense = input.accountantFeeExpense.toLongOrZero(),
                     miscellaneousExpense = input.miscellaneousExpense.toLongOrZero(),
                     otherExpense = 0L,
                     openingCash = input.openingCash.toLongOrZero(),
@@ -113,14 +137,16 @@ class DashboardViewModel @Inject constructor(
         viewModelScope.launch {
             val now = System.currentTimeMillis()
             val expenseDate = input.expenseDate.ifBlank { todayString() }
+            val amount = input.amount.trim().toLongOrNull()?.takeIf { it > 0L } ?: return@launch
+            val paymentMethod = normalizePaymentMethod(input.paymentMethod)
             repository.saveExpenseRecord(
                 ExpenseRecord(
                     id = input.id.ifBlank { UUID.randomUUID().toString() },
                     expenseDate = expenseDate,
                     category = input.category,
                     supplierName = input.supplierName.ifBlank { null },
-                    amount = input.amount.toLongOrZero(),
-                    paymentMethod = input.paymentMethod.ifBlank { null },
+                    amount = amount,
+                    paymentMethod = paymentMethod,
                     memo = input.memo.ifBlank { null },
                     receiptId = input.receiptId.ifBlank { null },
                     sourceType = input.sourceType.ifBlank { ExpenseSourceType.Manual },
@@ -131,6 +157,36 @@ class DashboardViewModel @Inject constructor(
         }
     }
 
+    fun addSupplierCandidate(category: String, name: String, paymentMethod: String) {
+        val trimmedName = name.trim()
+        if (category.isBlank() || trimmedName.isBlank()) return
+        viewModelScope.launch {
+            val now = System.currentTimeMillis()
+            repository.saveSupplierCandidate(
+                SupplierCandidateRecord(
+                    id = "supplier-${category}-${trimmedName}",
+                    category = category,
+                    name = trimmedName,
+                    paymentMethod = normalizePaymentMethod(paymentMethod),
+                    isDefault = false,
+                    isHidden = false,
+                    createdAt = now,
+                    updatedAt = now
+                )
+            )
+        }
+    }
+
+    fun hideSupplierCandidate(candidate: SupplierCandidateRecord) {
+        viewModelScope.launch {
+            repository.saveSupplierCandidate(
+                candidate.copy(
+                    isHidden = true,
+                    updatedAt = System.currentTimeMillis()
+                )
+            )
+        }
+    }
     fun deleteExpense(expense: ExpenseRecord) {
         viewModelScope.launch {
             repository.deleteExpenseRecord(expense)
@@ -201,6 +257,7 @@ data class DailyReportInput(
     val waterExpense: String = "",
     val communicationExpense: String = "",
     val rentExpense: String = "",
+    val accountantFeeExpense: String = "",
     val miscellaneousExpense: String = "",
     val otherExpense: String = "",
     val openingCash: String = "",

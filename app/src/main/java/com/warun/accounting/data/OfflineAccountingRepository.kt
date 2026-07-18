@@ -5,6 +5,7 @@ import com.warun.accounting.data.local.DailyReport
 import com.warun.accounting.data.local.ExpenseRecord
 import com.warun.accounting.data.local.MonthlySubmission
 import com.warun.accounting.data.local.ReceiptRecord
+import com.warun.accounting.data.local.SupplierCandidateRecord
 import com.warun.accounting.data.local.WarunDao
 import javax.inject.Inject
 import kotlinx.coroutines.flow.Flow
@@ -24,6 +25,11 @@ class OfflineAccountingRepository @Inject constructor(
     override fun observeExpenseTotalByDateAndCategory(expenseDate: String, category: String): Flow<Long> =
         dao.observeExpenseTotalByDateAndCategory(expenseDate, category)
 
+    override fun observeSupplierCandidates(): Flow<List<SupplierCandidateRecord>> = dao.observeSupplierCandidates()
+
+    override fun observeVisibleSupplierCandidatesByCategory(category: String): Flow<List<SupplierCandidateRecord>> =
+        dao.observeVisibleSupplierCandidatesByCategory(category)
+
     override fun observeMonthlySubmissions(): Flow<List<MonthlySubmission>> = dao.observeMonthlySubmissions()
 
     override fun observeAppSettings(): Flow<AppSettings?> = dao.observeAppSettings()
@@ -37,6 +43,8 @@ class OfflineAccountingRepository @Inject constructor(
     override suspend fun deleteExpenseRecord(expense: ExpenseRecord) = dao.deleteExpenseRecord(expense)
 
     override suspend fun deleteReceipt(receipt: ReceiptRecord) = dao.deleteReceipt(receipt)
+
+    override suspend fun saveSupplierCandidate(candidate: SupplierCandidateRecord) = dao.upsertSupplierCandidate(candidate)
 
     override suspend fun saveMonthlySubmission(submission: MonthlySubmission) = dao.upsertMonthlySubmission(submission)
 

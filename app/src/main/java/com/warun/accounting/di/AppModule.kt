@@ -118,12 +118,39 @@ object DatabaseModule {
         }
     }
 
+
+    private val MIGRATION_7_8 = object : Migration(7, 8) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS supplier_candidates (
+                    id TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    paymentMethod TEXT,
+                    isDefault INTEGER NOT NULL,
+                    isHidden INTEGER NOT NULL,
+                    createdAt INTEGER NOT NULL,
+                    updatedAt INTEGER NOT NULL,
+                    PRIMARY KEY(id)
+                )
+                """.trimIndent()
+            )
+            db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_supplier_candidates_category_name ON supplier_candidates(category, name)")
+        }
+    }
+    private val MIGRATION_8_9 = object : Migration(8, 9) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE daily_reports ADD COLUMN accountantFeeExpense INTEGER NOT NULL DEFAULT 0")
+        }
+    }
+
     @Provides
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): WarunDatabase {
         resetIncompatibleDevV7Database(context)
         return Room.databaseBuilder(context, WarunDatabase::class.java, DatabaseName)
-            .addMigrations(MIGRATION_6_7)
+            .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
             .build()
     }
 
@@ -177,6 +204,8 @@ object DatabaseModule {
         }
         return columns.containsAll(requiredColumns)
     }
+
+
 
     @Provides
     fun provideDao(database: WarunDatabase): WarunDao = database.warunDao()

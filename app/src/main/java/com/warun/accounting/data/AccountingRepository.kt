@@ -5,6 +5,7 @@ import com.warun.accounting.data.local.DailyReport
 import com.warun.accounting.data.local.ExpenseRecord
 import com.warun.accounting.data.local.MonthlySubmission
 import com.warun.accounting.data.local.ReceiptRecord
+import com.warun.accounting.data.local.SupplierCandidateRecord
 import kotlinx.coroutines.flow.Flow
 
 interface AccountingRepository {
@@ -13,6 +14,8 @@ interface AccountingRepository {
     fun observeExpenseRecords(): Flow<List<ExpenseRecord>>
     fun observeExpenseRecordsByDateAndCategory(expenseDate: String, category: String): Flow<List<ExpenseRecord>>
     fun observeExpenseTotalByDateAndCategory(expenseDate: String, category: String): Flow<Long>
+    fun observeSupplierCandidates(): Flow<List<SupplierCandidateRecord>>
+    fun observeVisibleSupplierCandidatesByCategory(category: String): Flow<List<SupplierCandidateRecord>>
     fun observeMonthlySubmissions(): Flow<List<MonthlySubmission>>
     fun observeAppSettings(): Flow<AppSettings?>
     suspend fun saveDailyReport(report: DailyReport)
@@ -20,6 +23,7 @@ interface AccountingRepository {
     suspend fun saveExpenseRecord(expense: ExpenseRecord)
     suspend fun deleteExpenseRecord(expense: ExpenseRecord)
     suspend fun deleteReceipt(receipt: ReceiptRecord)
+    suspend fun saveSupplierCandidate(candidate: SupplierCandidateRecord)
     suspend fun saveMonthlySubmission(submission: MonthlySubmission)
     suspend fun saveAppSettings(settings: AppSettings)
     suspend fun deleteDailyReport(report: DailyReport)

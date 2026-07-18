@@ -1,9 +1,12 @@
-@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 
 package com.warun.accounting.ui
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -49,6 +52,8 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -84,8 +89,12 @@ import com.warun.accounting.data.local.ExpenseRecord
 import com.warun.accounting.data.local.ExpenseSourceType
 import com.warun.accounting.data.local.MonthlySubmissionStatus
 import com.warun.accounting.data.local.ReceiptRecord
+import com.warun.accounting.data.local.SupplierCandidateRecord
 import com.warun.accounting.ui.model.DashboardUiState
 import com.warun.accounting.ui.util.toYen
+import com.warun.accounting.util.isSupportedPaymentMethod
+import com.warun.accounting.util.normalizePaymentMethod
+import com.warun.accounting.util.paymentMethodOptions
 import com.warun.accounting.ui.viewmodel.AppSettingsInput
 import com.warun.accounting.ui.viewmodel.DailyReportInput
 import com.warun.accounting.ui.viewmodel.DashboardViewModel
@@ -146,7 +155,8 @@ private const val VehicleTransportCategory = ExpenseCategory.VehicleTransport
 private data class SupplierCandidate(
     val name: String,
     val category: String? = null,
-    val paymentMethod: String = ""
+    val paymentMethod: String = "",
+    val record: SupplierCandidateRecord? = null
 )
 
 private val foodSupplierCandidates = listOf(
@@ -176,7 +186,7 @@ private val vehicleTransportCandidates = listOf(
     SupplierCandidate("他", VehicleTransportCategory)
 )
 
-private fun supplierCandidatesFor(category: String): List<SupplierCandidate> =
+private fun fixedSupplierCandidatesFor(category: String): List<SupplierCandidate> =
     when (category) {
         FoodPurchaseCategory -> foodSupplierCandidates
         AlcoholPurchaseCategory -> alcoholSupplierCandidates
@@ -185,6 +195,24 @@ private fun supplierCandidatesFor(category: String): List<SupplierCandidate> =
         else -> listOf(SupplierCandidate("他", category))
     }
 
+private fun supplierCandidatesFor(
+    category: String,
+    savedCandidates: List<SupplierCandidateRecord>
+): List<SupplierCandidate> {
+    val fixedCandidates = fixedSupplierCandidatesFor(category)
+    val fixedNames = fixedCandidates.map { it.name }.toSet()
+    val userCandidates = savedCandidates
+        .filter { it.category == category && !it.isHidden && it.name !in fixedNames }
+        .map { record ->
+            SupplierCandidate(
+                name = record.name,
+                category = record.category,
+                paymentMethod = record.paymentMethod.orEmpty(),
+                record = record
+            )
+        }
+    return fixedCandidates + userCandidates
+}
 private fun expenseCategoryLabel(category: String): String =
     when (category) {
         FoodPurchaseCategory -> "食材仕入"
@@ -259,7 +287,6 @@ fun WarunApp(
         }
     }
 }
-
 @Composable
 private fun AppNavHost(
     uiState: DashboardUiState,
@@ -283,7 +310,9 @@ private fun AppNavHost(
                 uiState = uiState,
                 onSaveReport = viewModel::saveDailyReport,
                 onSaveExpense = viewModel::saveExpense,
-                onDeleteExpense = viewModel::deleteExpense
+                onDeleteExpense = viewModel::deleteExpense,
+                onAddSupplierCandidate = viewModel::addSupplierCandidate,
+                onHideSupplierCandidate = viewModel::hideSupplierCandidate
             )
         }
         composable(AppDestination.Receipt.route) {
@@ -334,7 +363,9 @@ private fun AppNavHost(
                 initialDate = backStackEntry.arguments?.getString(ReportRoutes.ReportDateArg),
                 onSaveReport = viewModel::saveDailyReport,
                 onSaveExpense = viewModel::saveExpense,
-                onDeleteExpense = viewModel::deleteExpense
+                onDeleteExpense = viewModel::deleteExpense,
+                onAddSupplierCandidate = viewModel::addSupplierCandidate,
+                onHideSupplierCandidate = viewModel::hideSupplierCandidate
             )
         }
         composable(AppDestination.Submit.route) {
@@ -359,7 +390,6 @@ private fun NavHostController.navigateSingleTop(route: String) {
         restoreState = true
     }
 }
-
 @Composable
 private fun SideNavigation(
     uiState: DashboardUiState,
@@ -406,7 +436,6 @@ private fun SideNavigation(
         }
     }
 }
-
 @Composable
 private fun SideMenuItem(
     destination: AppDestination,
@@ -432,7 +461,6 @@ private fun SideMenuItem(
         }
     }
 }
-
 @Composable
 private fun BottomNavigation(
     currentRoute: String,
@@ -449,7 +477,6 @@ private fun BottomNavigation(
         }
     }
 }
-
 @Composable
 private fun SidebarSummary(uiState: DashboardUiState) {
     DashboardCard(containerColor = Color(0xFF182538)) {
@@ -459,7 +486,6 @@ private fun SidebarSummary(uiState: DashboardUiState) {
         SummaryLine("現金残高", uiState.closingCash.toYen(), Color.White)
     }
 }
-
 @Composable
 private fun SummaryLine(label: String, value: String, color: Color) {
     Column {
@@ -467,7 +493,6 @@ private fun SummaryLine(label: String, value: String, color: Color) {
         Text(value, color = color, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
     }
 }
-
 @Composable
 private fun HomeScreen(
     uiState: DashboardUiState,
@@ -482,7 +507,6 @@ private fun HomeScreen(
         DailyReportList(uiState.reports.take(5))
     }
 }
-
 @Composable
 private fun PhoneMenuCards(onNavigate: (String) -> Unit) {
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
@@ -491,7 +515,6 @@ private fun PhoneMenuCards(onNavigate: (String) -> Unit) {
         }
     }
 }
-
 @Composable
 private fun HomePrimaryActions(onNavigate: (String) -> Unit) {
     DashboardCard {
@@ -519,7 +542,6 @@ private fun HomePrimaryActions(onNavigate: (String) -> Unit) {
         )
     }
 }
-
 @Composable
 private fun HomeStatusGrid(uiState: DashboardUiState) {
     DashboardCard {
@@ -541,7 +563,6 @@ private fun HomeStatusGrid(uiState: DashboardUiState) {
         }
     }
 }
-
 @Composable
 private fun HomeMonthlyTasks(
     uiState: DashboardUiState,
@@ -561,7 +582,6 @@ private fun HomeMonthlyTasks(
         )
     }
 }
-
 @Composable
 private fun SummaryCard(
     label: String,
@@ -592,7 +612,6 @@ private fun SummaryCard(
         }
     }
 }
-
 @Composable
 private fun PrimaryActionButton(
     label: String,
@@ -603,7 +622,6 @@ private fun PrimaryActionButton(
         Text(label)
     }
 }
-
 @Composable
 private fun ResponsivePrimaryAction(
     label: String,
@@ -623,7 +641,6 @@ private fun ResponsivePrimaryAction(
         }
     }
 }
-
 @Composable
 private fun AdaptivePrimaryActionLayout(content: @Composable (Modifier) -> Unit) {
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
@@ -648,7 +665,6 @@ private fun AdaptivePrimaryActionLayout(content: @Composable (Modifier) -> Unit)
         }
     }
 }
-
 @Composable
 private fun SaveActionCard(
     draftLabel: String,
@@ -690,7 +706,6 @@ private fun SaveActionCard(
         }
     }
 }
-
 @Composable
 private fun MenuCardGrid(onNavigate: (String) -> Unit) {
     DashboardCard {
@@ -709,7 +724,6 @@ private fun MenuCardGrid(onNavigate: (String) -> Unit) {
         }
     }
 }
-
 @Composable
 private fun AdaptiveMenuButtonLayout(content: @Composable (Modifier) -> Unit) {
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
@@ -734,14 +748,15 @@ private fun AdaptiveMenuButtonLayout(content: @Composable (Modifier) -> Unit) {
         }
     }
 }
-
 @Composable
 private fun ReportEntryScreen(
     uiState: DashboardUiState,
     initialDate: String? = null,
     onSaveReport: (DailyReportInput) -> Unit,
     onSaveExpense: (ExpenseInput) -> Unit,
-    onDeleteExpense: (ExpenseRecord) -> Unit
+    onDeleteExpense: (ExpenseRecord) -> Unit,
+    onAddSupplierCandidate: (String, String, String) -> Unit,
+    onHideSupplierCandidate: (SupplierCandidateRecord) -> Unit
 ) {
     val initialReportDate = remember(initialDate) { initialDate ?: DailyReportInput().reportDate }
 
@@ -756,6 +771,7 @@ private fun ReportEntryScreen(
         mutableStateOf(inputForDate(initialReportDate))
     }
     var pendingReportDate by remember { mutableStateOf<String?>(null) }
+    var expenseFormDirty by remember { mutableStateOf(false) }
 
     val paymentVisibility = uiState.appSettings.toPaymentVisibility()
     val reportExpenses = uiState.expenses.filter { it.expenseDate == reportInput.reportDate }
@@ -766,11 +782,12 @@ private fun ReportEntryScreen(
         val nextInput = inputForDate(reportDate)
         reportInput = nextInput
         cleanReportInput = nextInput
+        expenseFormDirty = false
     }
 
     fun requestOpenReportDate(reportDate: String) {
         if (reportDate == reportInput.reportDate) return
-        if (reportInput != cleanReportInput) {
+        if (reportInput != cleanReportInput || expenseFormDirty) {
             pendingReportDate = reportDate
         } else {
             openReportDate(reportDate)
@@ -807,11 +824,15 @@ private fun ReportEntryScreen(
             paymentVisibility = paymentVisibility,
             totals = totals,
             expenses = reportExpenses,
+            supplierCandidates = uiState.supplierCandidates,
             enteredReportDates = enteredReportDates,
             onInputChange = { reportInput = it },
             onCalendarDateSelected = { requestOpenReportDate(it) },
             onSaveExpense = onSaveExpense,
             onDeleteExpense = onDeleteExpense,
+            onAddSupplierCandidate = onAddSupplierCandidate,
+            onHideSupplierCandidate = onHideSupplierCandidate,
+            onExpenseFormDirtyChanged = { expenseFormDirty = it },
             onSave = { status ->
                 val savedInput = reportInput
                     .copy(status = status)
@@ -830,11 +851,15 @@ private fun DailyReportForm(
     paymentVisibility: PaymentVisibility,
     totals: DailyReportTotals,
     expenses: List<ExpenseRecord>,
+    supplierCandidates: List<SupplierCandidateRecord>,
     enteredReportDates: Set<String>,
     onInputChange: (DailyReportInput) -> Unit,
     onCalendarDateSelected: (String) -> Unit,
     onSaveExpense: (ExpenseInput) -> Unit,
     onDeleteExpense: (ExpenseRecord) -> Unit,
+    onAddSupplierCandidate: (String, String, String) -> Unit,
+    onHideSupplierCandidate: (SupplierCandidateRecord) -> Unit,
+    onExpenseFormDirtyChanged: (Boolean) -> Unit,
     onSave: (String) -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -856,11 +881,15 @@ private fun DailyReportForm(
             ExpenseCard(
                 input = input,
                 expenses = expenses,
+                supplierCandidates = supplierCandidates,
                 expenseTotal = totals.expenseTotal,
                 todayBalance = totals.todayBalance,
                 onInputChange = onInputChange,
                 onSaveExpense = onSaveExpense,
                 onDeleteExpense = onDeleteExpense,
+                onAddSupplierCandidate = onAddSupplierCandidate,
+                onHideSupplierCandidate = onHideSupplierCandidate,
+                onExpenseFormDirtyChanged = onExpenseFormDirtyChanged,
                 modifier = cardModifier
             )
             CashManagementCard(
@@ -884,7 +913,6 @@ private fun DailyReportForm(
         )
     }
 }
-
 @Composable
 private fun BasicInfoCard(
     input: DailyReportInput,
@@ -914,7 +942,6 @@ private fun BasicInfoCard(
         }
     }
 }
-
 @Composable
 private fun ReportDateField(
     value: String,
@@ -951,7 +978,6 @@ private fun ReportDateField(
         singleLine = true
     )
 }
-
 @Composable
 private fun ReportCalendarDialog(
     selectedDate: LocalDate,
@@ -1050,7 +1076,6 @@ private fun ReportCalendarDialog(
         }
     }
 }
-
 @Composable
 private fun ReportCalendarDay(
     date: LocalDate,
@@ -1128,7 +1153,6 @@ private fun SalesCard(
         TotalRow("売上合計", totalSales.toYen())
     }
 }
-
 @Composable
 private fun ExpenseCard(
     input: DailyReportInput,
@@ -1138,6 +1162,10 @@ private fun ExpenseCard(
     onInputChange: (DailyReportInput) -> Unit,
     onSaveExpense: (ExpenseInput) -> Unit,
     onDeleteExpense: (ExpenseRecord) -> Unit,
+    supplierCandidates: List<SupplierCandidateRecord>,
+    onAddSupplierCandidate: (String, String, String) -> Unit,
+    onHideSupplierCandidate: (SupplierCandidateRecord) -> Unit,
+    onExpenseFormDirtyChanged: (Boolean) -> Unit,
     modifier: Modifier = Modifier.fillMaxWidth()
 ) {
     var selectedCategory by remember(input.reportDate) { mutableStateOf<String?>(null) }
@@ -1169,7 +1197,11 @@ private fun ExpenseCard(
                         expenses = expenses.filter { it.category == category },
                         onClose = { selectedCategory = null },
                         onSaveExpense = onSaveExpense,
-                        onDeleteExpense = onDeleteExpense
+                        onDeleteExpense = onDeleteExpense,
+                        supplierCandidates = supplierCandidates,
+                        onAddSupplierCandidate = onAddSupplierCandidate,
+                        onHideSupplierCandidate = onHideSupplierCandidate,
+                        onDirtyChanged = onExpenseFormDirtyChanged
                     )
                 }
             }
@@ -1192,9 +1224,13 @@ private fun ExpenseCard(
                         reportDate = input.reportDate,
                         category = ConsumablesCategory,
                         expenses = expenses.filter { it.category == ConsumablesCategory },
+                        supplierCandidates = supplierCandidates,
                         onClose = { selectedCategory = null },
                         onSaveExpense = onSaveExpense,
-                        onDeleteExpense = onDeleteExpense
+                        onDeleteExpense = onDeleteExpense,
+                        onAddSupplierCandidate = onAddSupplierCandidate,
+                        onHideSupplierCandidate = onHideSupplierCandidate,
+                        onDirtyChanged = onExpenseFormDirtyChanged
                     )
                 }
                 AdaptiveFormFields { fieldModifier ->
@@ -1215,6 +1251,9 @@ private fun ExpenseCard(
                 AppTextField("家賃（ヒロセフサコ）", input.rentExpense, KeyboardType.Number) {
                     onInputChange(input.copy(rentExpense = it))
                 }
+                AppTextField("税理士顧問料", input.accountantFeeExpense, KeyboardType.Number) {
+                    onInputChange(input.copy(accountantFeeExpense = it))
+                }
                 DetailedExpenseCategoryRow(VehicleTransportCategory, vehicleTransportTotal) {
                     selectedCategory = VehicleTransportCategory
                 }
@@ -1223,9 +1262,13 @@ private fun ExpenseCard(
                         reportDate = input.reportDate,
                         category = VehicleTransportCategory,
                         expenses = expenses.filter { it.category == VehicleTransportCategory },
+                        supplierCandidates = supplierCandidates,
                         onClose = { selectedCategory = null },
                         onSaveExpense = onSaveExpense,
-                        onDeleteExpense = onDeleteExpense
+                        onDeleteExpense = onDeleteExpense,
+                        onAddSupplierCandidate = onAddSupplierCandidate,
+                        onHideSupplierCandidate = onHideSupplierCandidate,
+                        onDirtyChanged = onExpenseFormDirtyChanged
                     )
                 }
                 AppTextField("雑費", input.miscellaneousExpense, KeyboardType.Number) {
@@ -1241,7 +1284,11 @@ private fun ExpenseCard(
                         expenses = expenses.filter { it.category == OtherExpenseCategory },
                         onClose = { selectedCategory = null },
                         onSaveExpense = onSaveExpense,
-                        onDeleteExpense = onDeleteExpense
+                        onDeleteExpense = onDeleteExpense,
+                        supplierCandidates = supplierCandidates,
+                        onAddSupplierCandidate = onAddSupplierCandidate,
+                        onHideSupplierCandidate = onHideSupplierCandidate,
+                        onDirtyChanged = onExpenseFormDirtyChanged
                     )
                 }
             }
@@ -1273,7 +1320,6 @@ private fun DetailedExpenseCategoryRow(
         }
     }
 }
-
 @Composable
 private fun ExpenseDetailPanel(
     reportDate: String,
@@ -1281,7 +1327,11 @@ private fun ExpenseDetailPanel(
     expenses: List<ExpenseRecord>,
     onClose: () -> Unit,
     onSaveExpense: (ExpenseInput) -> Unit,
-    onDeleteExpense: (ExpenseRecord) -> Unit
+    onDeleteExpense: (ExpenseRecord) -> Unit,
+    supplierCandidates: List<SupplierCandidateRecord>,
+    onAddSupplierCandidate: (String, String, String) -> Unit,
+    onHideSupplierCandidate: (SupplierCandidateRecord) -> Unit,
+    onDirtyChanged: (Boolean) -> Unit
 ) {
     var editingExpense by remember(reportDate, category) { mutableStateOf<ExpenseRecord?>(null) }
     var showForm by remember(reportDate, category) { mutableStateOf(true) }
@@ -1294,7 +1344,10 @@ private fun ExpenseDetailPanel(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text("${expenseCategoryLabel(category)} 明細", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-            OutlinedButton(onClick = onClose) { Text("閉じる") }
+            OutlinedButton(onClick = {
+                onDirtyChanged(false)
+                onClose()
+            }) { Text("閉じる") }
         }
         if (expenses.isEmpty()) {
             Text("明細はまだありません", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1312,6 +1365,7 @@ private fun ExpenseDetailPanel(
         }
         Button(onClick = {
             editingExpense = null
+            onDirtyChanged(false)
             formResetKey++
             showForm = true
         }) {
@@ -1323,13 +1377,22 @@ private fun ExpenseDetailPanel(
                 initialCategory = category,
                 editingExpense = editingExpense,
                 resetKey = formResetKey,
-                onClose = onClose,
+                supplierCandidates = supplierCandidates,
+                onAddSupplierCandidate = onAddSupplierCandidate,
+                onHideSupplierCandidate = onHideSupplierCandidate,
+                onDirtyChanged = onDirtyChanged,
+                onClose = {
+                    onDirtyChanged(false)
+                    onClose()
+                },
                 onCancel = {
+                    onDirtyChanged(false)
                     editingExpense = null
                     showForm = false
                 },
                 onSave = { expenseInput ->
                     val wasEditing = editingExpense != null
+                    onDirtyChanged(false)
                     onSaveExpense(expenseInput)
                     editingExpense = null
                     if (wasEditing) {
@@ -1343,7 +1406,6 @@ private fun ExpenseDetailPanel(
         }
     }
 }
-
 @Composable
 private fun ExpenseRecordRow(
     expense: ExpenseRecord,
@@ -1361,72 +1423,166 @@ private fun ExpenseRecordRow(
         }
     }
 }
-
 @Composable
 private fun ExpenseRecordForm(
     reportDate: String,
     initialCategory: String,
     editingExpense: ExpenseRecord?,
     resetKey: Int,
+    supplierCandidates: List<SupplierCandidateRecord>,
     onClose: () -> Unit,
+    onAddSupplierCandidate: (String, String, String) -> Unit,
+    onHideSupplierCandidate: (SupplierCandidateRecord) -> Unit,
+    onDirtyChanged: (Boolean) -> Unit,
     onCancel: () -> Unit,
     onSave: (ExpenseInput) -> Unit
 ) {
     var supplier by remember(editingExpense, initialCategory, resetKey) { mutableStateOf(editingExpense?.supplierName.orEmpty()) }
     var category by remember(editingExpense, initialCategory, resetKey) { mutableStateOf(editingExpense?.category ?: initialCategory) }
-    var paymentMethod by remember(editingExpense, initialCategory, resetKey) { mutableStateOf(editingExpense?.paymentMethod.orEmpty()) }
+    var paymentMethod by remember(editingExpense, initialCategory, resetKey) { mutableStateOf(normalizePaymentMethod(editingExpense?.paymentMethod)) }
     var amount by remember(editingExpense, initialCategory, resetKey) { mutableStateOf(editingExpense?.amount?.takeIf { it > 0L }?.toString().orEmpty()) }
     var memo by remember(editingExpense, initialCategory, resetKey) { mutableStateOf(editingExpense?.memo.orEmpty()) }
+    var isCustomSupplier by remember(editingExpense, initialCategory, resetKey) { mutableStateOf(false) }
     val supplierFocusRequester = remember { FocusRequester() }
     val amountFocusRequester = remember { FocusRequester() }
-    val candidates = remember(category) { supplierCandidatesFor(category) }
+    var candidateToHide by remember { mutableStateOf<SupplierCandidateRecord?>(null) }
+    val candidates = remember(category, supplierCandidates) { supplierCandidatesFor(category, supplierCandidates) }
+    val canAddCandidate = isCustomSupplier && supplier.trim().isNotBlank() && candidates.none { it.name == supplier.trim() }
+    val initialSupplier = editingExpense?.supplierName.orEmpty()
+    val initialCategoryValue = editingExpense?.category ?: initialCategory
+    val initialPaymentMethod = normalizePaymentMethod(editingExpense?.paymentMethod)
+    val initialAmount = editingExpense?.amount?.takeIf { it > 0L }?.toString().orEmpty()
+    val initialMemo = editingExpense?.memo.orEmpty()
+    val formDirty = supplier != initialSupplier ||
+        category != initialCategoryValue ||
+        paymentMethod != initialPaymentMethod ||
+        amount != initialAmount ||
+        memo != initialMemo
+    val parsedAmount = amount.toLongOrNull()
+    val isAmountValid = parsedAmount != null && parsedAmount > 0L
 
+    LaunchedEffect(formDirty) {
+        onDirtyChanged(formDirty)
+    }
+    DisposableEffect(reportDate, initialCategory, editingExpense?.id, resetKey) {
+        onDispose { onDirtyChanged(false) }
+    }
+
+    candidateToHide?.let { candidate ->
+        AlertDialog(
+            onDismissRequest = { candidateToHide = null },
+            title = { Text("候補を削除") },
+            text = { Text("この候補をリストから非表示にしますか？") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        candidateToHide = null
+                        onHideSupplierCandidate(candidate)
+                    }
+                ) {
+                    Text("削除")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { candidateToHide = null }) {
+                    Text("キャンセル")
+                }
+            }
+        )
+    }
     Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth()) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(12.dp)) {
             Text(if (editingExpense == null) "支出を追加" else "支出を編集", fontWeight = FontWeight.Bold)
             Text("候補", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 candidates.forEach { candidate ->
-                    OutlinedButton(onClick = {
+                    val selectCandidate = {
                         val isOther = candidate.name == "他"
+                        isCustomSupplier = isOther
                         supplier = if (isOther) "" else candidate.name
                         candidate.category?.let { category = it }
-                        if (candidate.paymentMethod.isNotBlank()) {
-                            paymentMethod = candidate.paymentMethod
-                        }
+                        paymentMethod = normalizePaymentMethod(candidate.paymentMethod)
                         if (isOther) {
                             supplierFocusRequester.requestFocus()
                         } else {
                             amountFocusRequester.requestFocus()
                         }
-                    }) {
-                        Text(candidate.name)
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                        modifier = Modifier.combinedClickable(
+                            onClick = selectCandidate,
+                            onLongClick = {
+                                candidate.record?.let { candidateToHide = it }
+                            }
+                        )
+                    ) {
+                        Text(
+                            text = candidate.name,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                            color = MaterialTheme.colorScheme.primary
+                        )
                     }
                 }
             }
             AppTextField("支払先", supplier, modifier = Modifier.focusRequester(supplierFocusRequester)) { supplier = it }
-            AppTextField("支払方法", paymentMethod) { paymentMethod = it }
-            AppTextField("金額", amount, KeyboardType.Number, Modifier.focusRequester(amountFocusRequester)) { amount = it }
+            Text("支払方法", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                paymentMethodOptions.forEach { option ->
+                    val selected = paymentMethod == option
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+                        border = BorderStroke(1.dp, if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline),
+                        modifier = Modifier.clickable { paymentMethod = option }
+                    ) {
+                        Text(
+                            text = option,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                            color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
+            AppTextField("金額", amount, KeyboardType.Number, Modifier.focusRequester(amountFocusRequester)) { value ->
+                amount = value.filter { it.isDigit() }
+            }
+            if (amount.isBlank()) {
+                Text("1円以上の金額を入力してください", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelMedium)
+            } else if (!isAmountValid) {
+                Text("1円以上の金額を入力してください", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium)
+            }
             AppTextField("メモ", memo) { memo = it }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = {
-                    onSave(
-                        ExpenseInput(
-                            id = editingExpense?.id.orEmpty(),
-                            expenseDate = reportDate,
-                            category = category,
-                            supplierName = supplier,
-                            amount = amount,
-                            paymentMethod = paymentMethod,
-                            memo = memo,
-                            receiptId = editingExpense?.receiptId.orEmpty(),
-                            sourceType = editingExpense?.sourceType ?: ExpenseSourceType.Manual,
-                            createdAt = editingExpense?.createdAt
+                Button(
+                    enabled = isAmountValid && isSupportedPaymentMethod(paymentMethod),
+                    onClick = {
+                        onSave(
+                            ExpenseInput(
+                                id = editingExpense?.id.orEmpty(),
+                                expenseDate = reportDate,
+                                category = category,
+                                supplierName = supplier,
+                                amount = amount,
+                                paymentMethod = normalizePaymentMethod(paymentMethod),
+                                memo = memo,
+                                receiptId = editingExpense?.receiptId.orEmpty(),
+                                sourceType = editingExpense?.sourceType ?: ExpenseSourceType.Manual,
+                                createdAt = editingExpense?.createdAt
+                            )
                         )
-                    )
-                }) { Text("保存") }
+                    }
+                ) { Text("保存") }
                 OutlinedButton(onClick = onCancel) { Text("キャンセル") }
                 OutlinedButton(onClick = onClose) { Text("閉じる") }
+                if (canAddCandidate) {
+                    OutlinedButton(
+                        onClick = { onAddSupplierCandidate(category, supplier.trim(), normalizePaymentMethod(paymentMethod)) },
+                        enabled = canAddCandidate
+                    ) { Text("候補に追加") }
+                }
             }
         }
     }
@@ -1454,7 +1610,6 @@ private fun CashManagementCard(
         TotalRow("現金差額", totals.cashDifference.toYen())
     }
 }
-
 @Composable
 private fun BusinessInfoCard(
     input: DailyReportInput,
@@ -1478,7 +1633,6 @@ private fun BusinessInfoCard(
         }
     }
 }
-
 @Composable
 private fun ReceiptScreen(
     uiState: DashboardUiState,
@@ -1543,7 +1697,6 @@ private fun ReceiptScreen(
         ReceiptList(uiState.receipts.take(8))
     }
 }
-
 @Composable
 private fun ReceiptList(receipts: List<ReceiptRecord>) {
     DashboardCard {
@@ -1567,7 +1720,6 @@ private fun ReceiptList(receipts: List<ReceiptRecord>) {
         }
     }
 }
-
 @Composable
 private fun BalanceScreen(uiState: DashboardUiState) {
     val today = remember { LocalDate.now() }
@@ -1599,7 +1751,6 @@ private fun BalanceScreen(uiState: DashboardUiState) {
         }
     }
 }
-
 @Composable
 private fun BalancePeriodSelector(
     selectedMode: BalancePeriodMode,
@@ -1644,7 +1795,6 @@ private fun BalancePeriodSelector(
         }
     }
 }
-
 @Composable
 private fun PeriodModeButton(
     mode: BalancePeriodMode,
@@ -1661,7 +1811,6 @@ private fun PeriodModeButton(
         }
     }
 }
-
 @Composable
 private fun BalanceSummaryCards(summary: BalanceSummary) {
     DashboardCard {
@@ -1679,7 +1828,6 @@ private fun BalanceSummaryCards(summary: BalanceSummary) {
         }
     }
 }
-
 @Composable
 private fun ExpenseBreakdown(categoryTotals: List<Pair<String, Long>>) {
     DashboardCard {
@@ -1689,7 +1837,6 @@ private fun ExpenseBreakdown(categoryTotals: List<Pair<String, Long>>) {
         }
     }
 }
-
 @Composable
 private fun DailyBalanceList(rows: List<DailyBalanceRow>) {
     DashboardCard {
@@ -1709,7 +1856,6 @@ private fun DailyBalanceList(rows: List<DailyBalanceRow>) {
         }
     }
 }
-
 @Composable
 private fun MonthlyOrganizationScreen(
     uiState: DashboardUiState,
@@ -1755,7 +1901,6 @@ private fun MonthlyOrganizationScreen(
         ReceiptList(summary.monthReceipts.take(8))
     }
 }
-
 @Composable
 private fun ReportListScreen(
     uiState: DashboardUiState,
@@ -1777,7 +1922,6 @@ private fun ReportListScreen(
         MonthlyReportList(rows = rows, onOpenDate = onOpenDate)
     }
 }
-
 @Composable
 private fun ReportMonthSelector(
     selectedMonth: YearMonth,
@@ -1808,7 +1952,6 @@ private fun ReportMonthSelector(
         }
     }
 }
-
 @Composable
 private fun MonthlyReportList(
     rows: List<MonthlyReportRow>,
@@ -1825,7 +1968,6 @@ private fun MonthlyReportList(
         }
     }
 }
-
 @Composable
 private fun MonthlyReportRowCard(
     row: MonthlyReportRow,
@@ -1864,7 +2006,6 @@ private fun MonthlyReportRowCard(
         }
     }
 }
-
 @Composable
 private fun SaveStatePill(saveState: String) {
     val saved = saveState != "未入力"
@@ -1881,7 +2022,6 @@ private fun SaveStatePill(saveState: String) {
         )
     }
 }
-
 @Composable
 private fun ReportDetailScreen(
     uiState: DashboardUiState,
@@ -1930,7 +2070,6 @@ private fun ReportDetailScreen(
         }
     }
 }
-
 @Composable
 private fun DailyReportDetailCard(index: Int, report: DailyReport, expenses: List<ExpenseRecord>) {
     DashboardCard {
@@ -1952,6 +2091,7 @@ private fun DailyReportDetailCard(index: Int, report: DailyReport, expenses: Lis
         TotalRow("水道代", report.waterExpense.toYen())
         TotalRow("通信費", report.communicationExpense.toYen())
         TotalRow("家賃", report.rentExpense.toYen())
+        TotalRow("税理士顧問料", report.accountantFeeExpense.toYen())
         TotalRow("車両・交通費", report.detailExpense(expenses, VehicleTransportCategory).toYen())
         TotalRow("雑費", report.miscellaneousExpense.toYen())
         TotalRow("その他支出", report.detailExpense(expenses, OtherExpenseCategory).toYen())
@@ -1967,7 +2107,6 @@ private fun DailyReportDetailCard(index: Int, report: DailyReport, expenses: Lis
         }
     }
 }
-
 @Composable
 private fun SubmitScreen(
     uiState: DashboardUiState,
@@ -2004,7 +2143,6 @@ private fun SubmitScreen(
         DailyReportList(summary.monthReports.take(5))
     }
 }
-
 @Composable
 private fun SettingsScreen(
     uiState: DashboardUiState,
@@ -2061,7 +2199,6 @@ private fun SettingsScreen(
         }
     }
 }
-
 @Composable
 private fun SettingSwitch(
     label: String,
@@ -2077,7 +2214,6 @@ private fun SettingSwitch(
         Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }
-
 @Composable
 private fun MoneySection(
     title: String,
@@ -2095,7 +2231,6 @@ private fun MoneySection(
         TotalRow(totalLabel, total.toYen())
     }
 }
-
 @Composable
 private fun CashSection(uiState: DashboardUiState) {
     DashboardCard {
@@ -2108,7 +2243,6 @@ private fun CashSection(uiState: DashboardUiState) {
         TotalRow("終了残高", uiState.closingCash.toYen())
     }
 }
-
 @Composable
 private fun DailyReportList(reports: List<DailyReport>) {
     DashboardCard {
@@ -2128,7 +2262,6 @@ private fun DailyReportList(reports: List<DailyReport>) {
         }
     }
 }
-
 @Composable
 private fun ScreenColumn(content: @Composable ColumnScope.() -> Unit) {
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
@@ -2146,7 +2279,6 @@ private fun ScreenColumn(content: @Composable ColumnScope.() -> Unit) {
         }
     }
 }
-
 @Composable
 private fun ScreenTitle(title: String, subtitle: String) {
     Column {
@@ -2154,7 +2286,6 @@ private fun ScreenTitle(title: String, subtitle: String) {
         Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
-
 @Composable
 private fun AdaptiveGrid(content: @Composable () -> Unit) {
     BoxWithConstraints {
@@ -2170,7 +2301,6 @@ private fun AdaptiveGrid(content: @Composable () -> Unit) {
         }
     }
 }
-
 @Composable
 private fun AdaptiveMiniGrid(content: @Composable () -> Unit) {
     FlowRow(
@@ -2181,7 +2311,6 @@ private fun AdaptiveMiniGrid(content: @Composable () -> Unit) {
         content()
     }
 }
-
 @Composable
 private fun AdaptiveSummaryGrid(content: @Composable (Modifier) -> Unit) {
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
@@ -2199,7 +2328,6 @@ private fun AdaptiveSummaryGrid(content: @Composable (Modifier) -> Unit) {
         }
     }
 }
-
 @Composable
 private fun AdaptiveFormCardLayout(content: @Composable (Modifier) -> Unit) {
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
@@ -2217,7 +2345,6 @@ private fun AdaptiveFormCardLayout(content: @Composable (Modifier) -> Unit) {
         }
     }
 }
-
 @Composable
 private fun AdaptiveFormFields(content: @Composable (Modifier) -> Unit) {
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
@@ -2235,7 +2362,6 @@ private fun AdaptiveFormFields(content: @Composable (Modifier) -> Unit) {
         }
     }
 }
-
 @Composable
 private fun DashboardCard(
     modifier: Modifier = Modifier.fillMaxWidth(),
@@ -2255,7 +2381,6 @@ private fun DashboardCard(
         )
     }
 }
-
 @Composable
 private fun FormCard(
     modifier: Modifier = Modifier.fillMaxWidth(),
@@ -2263,7 +2388,6 @@ private fun FormCard(
 ) {
     DashboardCard(modifier = modifier, content = content)
 }
-
 @Composable
 private fun CardHeader(title: String, actionLabel: String, onAction: () -> Unit) {
     Row(
@@ -2277,7 +2401,6 @@ private fun CardHeader(title: String, actionLabel: String, onAction: () -> Unit)
         }
     }
 }
-
 @Composable
 private fun MiniAmountCard(label: String, value: Long) {
     Card(
@@ -2295,7 +2418,6 @@ private fun MiniAmountCard(label: String, value: Long) {
         }
     }
 }
-
 @Composable
 private fun TotalRow(label: String, value: String) {
     Row(
@@ -2307,7 +2429,6 @@ private fun TotalRow(label: String, value: String) {
         Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
     }
 }
-
 @Composable
 private fun AppTextField(
     label: String,
@@ -2510,6 +2631,7 @@ private fun DailyReportInput.calculateTotals(paymentVisibility: PaymentVisibilit
         this.utilityExpenseTotal() +
         this.communicationExpense.toInputLong() +
         this.rentExpense.toInputLong() +
+        this.accountantFeeExpense.toInputLong() +
         this.miscellaneousExpense.toInputLong()
     val cashExpense = expenseTotal
     val theoreticalClosingCash = this.openingCash.toInputLong() + cashSales - cashExpense
@@ -2681,6 +2803,7 @@ private fun DailyReport.toInput(): DailyReportInput =
         waterExpense = waterExpense.toString(),
         communicationExpense = communicationExpense.toString(),
         rentExpense = rentExpense.toString(),
+        accountantFeeExpense = accountantFeeExpense.toString(),
         miscellaneousExpense = miscellaneousExpense.toString(),
         otherExpense = otherExpense.toString(),
         openingCash = openingCash.toString(),
@@ -2701,6 +2824,7 @@ private fun buildExpenseBreakdownTotals(
         "水道光熱費" to reports.sumOf { it.utilitiesExpense },
         "通信費" to reports.sumOf { it.communicationExpense },
         "家賃" to reports.sumOf { it.rentExpense },
+        "税理士顧問料" to reports.sumOf { it.accountantFeeExpense },
         "雑費" to reports.sumOf { it.miscellaneousExpense },
         "その他支出" to expenses.filter { it.category == OtherExpenseCategory }.sumOf { it.amount },
         "車両・交通費" to expenses.filter { it.category == VehicleTransportCategory }.sumOf { it.amount }
@@ -2718,7 +2842,7 @@ private fun DailyReport.totalExpense(expenses: List<ExpenseRecord>): Long =
         detailExpense(expenses, ConsumablesCategory) +
         detailExpense(expenses, OtherExpenseCategory) +
         detailExpense(expenses, VehicleTransportCategory) +
-        consumablesExpense + utilitiesExpense + communicationExpense + rentExpense + miscellaneousExpense
+        consumablesExpense + utilitiesExpense + communicationExpense + rentExpense + accountantFeeExpense + miscellaneousExpense
 private fun parseDateOrNull(value: String): LocalDate? =
     runCatching { LocalDate.parse(value.trim()) }.getOrNull()
 

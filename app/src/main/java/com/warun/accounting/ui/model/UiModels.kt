@@ -8,6 +8,7 @@ import com.warun.accounting.data.local.ExpenseRecord
 import com.warun.accounting.data.local.MonthlySubmission
 import com.warun.accounting.data.local.MonthlySubmissionStatus
 import com.warun.accounting.data.local.ReceiptRecord
+import com.warun.accounting.data.local.SupplierCandidateRecord
 import com.warun.accounting.ui.util.currentMonthString
 import com.warun.accounting.ui.util.todayString
 
@@ -16,6 +17,7 @@ data class DashboardUiState(
     val receipts: List<ReceiptRecord> = emptyList(),
     val expenses: List<ExpenseRecord> = emptyList(),
     val monthlySubmissions: List<MonthlySubmission> = emptyList(),
+    val supplierCandidates: List<SupplierCandidateRecord> = emptyList(),
     val appSettings: AppSettings? = null
 ) {
     private val today = todayString()
@@ -37,7 +39,7 @@ data class DashboardUiState(
             expenseCategoryTotal(reportDate, ExpenseCategory.Consumables) +
             expenseCategoryTotal(reportDate, ExpenseCategory.OtherExpense) +
             expenseCategoryTotal(reportDate, ExpenseCategory.VehicleTransport) +
-            consumablesExpense + utilitiesExpense + communicationExpense + rentExpense + miscellaneousExpense
+            consumablesExpense + utilitiesExpense + communicationExpense + rentExpense + accountantFeeExpense + miscellaneousExpense
 
     val salesTotal: Long = reports.sumOf { it.salesTotal() }
     val expenseTotal: Long = reports.sumOf { it.expenseTotal() } + expensesWithoutReportsTotal(reports, expenses)
