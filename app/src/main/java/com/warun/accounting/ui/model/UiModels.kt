@@ -34,7 +34,9 @@ data class DashboardUiState(
     private fun DailyReport.expenseTotal(): Long =
         expenseCategoryTotal(reportDate, ExpenseCategory.FoodPurchase) +
             expenseCategoryTotal(reportDate, ExpenseCategory.AlcoholPurchase) +
+            expenseCategoryTotal(reportDate, ExpenseCategory.Consumables) +
             expenseCategoryTotal(reportDate, ExpenseCategory.OtherExpense) +
+            expenseCategoryTotal(reportDate, ExpenseCategory.VehicleTransport) +
             consumablesExpense + utilitiesExpense + communicationExpense + rentExpense + miscellaneousExpense
 
     val salesTotal: Long = reports.sumOf { it.salesTotal() }

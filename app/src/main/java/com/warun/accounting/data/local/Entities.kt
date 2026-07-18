@@ -44,7 +44,9 @@ object DailyReportStatus {
 object ExpenseCategory {
     const val FoodPurchase = "food_purchase"
     const val AlcoholPurchase = "alcohol_purchase"
+    const val Consumables = "consumables"
     const val OtherExpense = "other_expense"
+    const val VehicleTransport = "vehicle_transport"
 }
 
 object ExpenseSourceType {

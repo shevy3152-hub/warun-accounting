@@ -5,6 +5,7 @@ package com.warun.accounting.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -24,16 +25,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Assessment
+import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.EditNote
 import androidx.compose.material.icons.outlined.ListAlt
 import androidx.compose.material.icons.outlined.ReceiptLong
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -43,6 +47,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -60,6 +65,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavGraph.Companion.findStartDestination
@@ -133,7 +139,9 @@ private object ReportRoutes {
 
 private const val FoodPurchaseCategory = ExpenseCategory.FoodPurchase
 private const val AlcoholPurchaseCategory = ExpenseCategory.AlcoholPurchase
+private const val ConsumablesCategory = ExpenseCategory.Consumables
 private const val OtherExpenseCategory = ExpenseCategory.OtherExpense
+private const val VehicleTransportCategory = ExpenseCategory.VehicleTransport
 
 private data class SupplierCandidate(
     val name: String,
@@ -156,10 +164,24 @@ private val alcoholSupplierCandidates = listOf(
     SupplierCandidate("他", AlcoholPurchaseCategory)
 )
 
+private val consumablesCandidates = listOf(
+    SupplierCandidate("ドラックアオキ", ConsumablesCategory, "現金"),
+    SupplierCandidate("DCMカーマ", ConsumablesCategory, "現金"),
+    SupplierCandidate("PROsite", ConsumablesCategory, "現金"),
+    SupplierCandidate("他", ConsumablesCategory)
+)
+
+private val vehicleTransportCandidates = listOf(
+    SupplierCandidate("ENEOS", VehicleTransportCategory, "現金"),
+    SupplierCandidate("他", VehicleTransportCategory)
+)
+
 private fun supplierCandidatesFor(category: String): List<SupplierCandidate> =
     when (category) {
         FoodPurchaseCategory -> foodSupplierCandidates
         AlcoholPurchaseCategory -> alcoholSupplierCandidates
+        ConsumablesCategory -> consumablesCandidates
+        VehicleTransportCategory -> vehicleTransportCandidates
         else -> listOf(SupplierCandidate("他", category))
     }
 
@@ -167,7 +189,9 @@ private fun expenseCategoryLabel(category: String): String =
     when (category) {
         FoodPurchaseCategory -> "食材仕入"
         AlcoholPurchaseCategory -> "酒類仕入"
+        ConsumablesCategory -> "消耗品費"
         OtherExpenseCategory -> "その他支出"
+        VehicleTransportCategory -> "車両・交通費"
         else -> category
     }
 
@@ -720,15 +744,61 @@ private fun ReportEntryScreen(
     onDeleteExpense: (ExpenseRecord) -> Unit
 ) {
     val initialReportDate = remember(initialDate) { initialDate ?: DailyReportInput().reportDate }
-    val existingReport = remember(uiState.reports, initialReportDate) {
-        uiState.reports.firstOrNull { it.reportDate == initialReportDate }
+
+    fun inputForDate(reportDate: String): DailyReportInput =
+        uiState.reports.firstOrNull { it.reportDate == reportDate }?.toInput()
+            ?: DailyReportInput(reportDate = reportDate)
+
+    var reportInput by remember(initialReportDate) {
+        mutableStateOf(inputForDate(initialReportDate))
     }
-    var reportInput by remember(initialReportDate, existingReport) {
-        mutableStateOf(existingReport?.toInput() ?: DailyReportInput(reportDate = initialReportDate))
+    var cleanReportInput by remember(initialReportDate) {
+        mutableStateOf(inputForDate(initialReportDate))
     }
+    var pendingReportDate by remember { mutableStateOf<String?>(null) }
+
     val paymentVisibility = uiState.appSettings.toPaymentVisibility()
     val reportExpenses = uiState.expenses.filter { it.expenseDate == reportInput.reportDate }
+    val enteredReportDates = remember(uiState.reports) { uiState.reports.map { it.reportDate }.toSet() }
     val totals = reportInput.calculateTotals(paymentVisibility, reportExpenses)
+
+    fun openReportDate(reportDate: String) {
+        val nextInput = inputForDate(reportDate)
+        reportInput = nextInput
+        cleanReportInput = nextInput
+    }
+
+    fun requestOpenReportDate(reportDate: String) {
+        if (reportDate == reportInput.reportDate) return
+        if (reportInput != cleanReportInput) {
+            pendingReportDate = reportDate
+        } else {
+            openReportDate(reportDate)
+        }
+    }
+
+    pendingReportDate?.let { targetDate ->
+        AlertDialog(
+            onDismissRequest = { pendingReportDate = null },
+            title = { Text("未保存の内容があります") },
+            text = { Text("保存せずに別の日報を開きますか？") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pendingReportDate = null
+                        openReportDate(targetDate)
+                    }
+                ) {
+                    Text("続行")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingReportDate = null }) {
+                    Text("キャンセル")
+                }
+            }
+        )
+    }
 
     ScreenColumn {
         ScreenTitle("日報入力", "空いた時間に任意の日付で入力できます。途中でも下書き保存できます。")
@@ -737,29 +807,32 @@ private fun ReportEntryScreen(
             paymentVisibility = paymentVisibility,
             totals = totals,
             expenses = reportExpenses,
+            enteredReportDates = enteredReportDates,
             onInputChange = { reportInput = it },
+            onCalendarDateSelected = { requestOpenReportDate(it) },
             onSaveExpense = onSaveExpense,
             onDeleteExpense = onDeleteExpense,
             onSave = { status ->
-                onSaveReport(
-                    reportInput
-                        .copy(status = status)
-                        .withHiddenPaymentsCleared(paymentVisibility)
-                )
-                reportInput = DailyReportInput(reportDate = initialReportDate)
+                val savedInput = reportInput
+                    .copy(status = status)
+                    .withHiddenPaymentsCleared(paymentVisibility)
+                onSaveReport(savedInput)
+                reportInput = savedInput
+                cleanReportInput = savedInput
             }
         )
         DailyReportList(uiState.reports.take(3))
     }
 }
-
 @Composable
 private fun DailyReportForm(
     input: DailyReportInput,
     paymentVisibility: PaymentVisibility,
     totals: DailyReportTotals,
     expenses: List<ExpenseRecord>,
+    enteredReportDates: Set<String>,
     onInputChange: (DailyReportInput) -> Unit,
+    onCalendarDateSelected: (String) -> Unit,
     onSaveExpense: (ExpenseInput) -> Unit,
     onDeleteExpense: (ExpenseRecord) -> Unit,
     onSave: (String) -> Unit
@@ -768,7 +841,9 @@ private fun DailyReportForm(
         AdaptiveFormCardLayout { cardModifier ->
             BasicInfoCard(
                 input = input,
+                enteredReportDates = enteredReportDates,
                 onInputChange = onInputChange,
+                onCalendarDateSelected = onCalendarDateSelected,
                 modifier = cardModifier
             )
             SalesCard(
@@ -813,16 +888,19 @@ private fun DailyReportForm(
 @Composable
 private fun BasicInfoCard(
     input: DailyReportInput,
+    enteredReportDates: Set<String>,
     onInputChange: (DailyReportInput) -> Unit,
+    onCalendarDateSelected: (String) -> Unit,
     modifier: Modifier = Modifier.fillMaxWidth()
 ) {
     FormCard(modifier = modifier) {
         Text("基本情報", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         AdaptiveFormFields { fieldModifier ->
-            AppTextField(
-                label = "日付",
+            ReportDateField(
                 value = input.reportDate,
-                modifier = fieldModifier
+                markedDates = enteredReportDates,
+                modifier = fieldModifier,
+                onCalendarDateSelected = onCalendarDateSelected
             ) {
                 onInputChange(input.copy(reportDate = it))
             }
@@ -837,6 +915,179 @@ private fun BasicInfoCard(
     }
 }
 
+@Composable
+private fun ReportDateField(
+    value: String,
+    markedDates: Set<String>,
+    modifier: Modifier = Modifier.fillMaxWidth(),
+    onCalendarDateSelected: (String) -> Unit,
+    onDateChange: (String) -> Unit
+) {
+    var showCalendar by remember { mutableStateOf(false) }
+
+    if (showCalendar) {
+        ReportCalendarDialog(
+            selectedDate = parseDateOrNull(value) ?: LocalDate.now(),
+            markedDates = markedDates,
+            onDateSelected = { selectedDate ->
+                onCalendarDateSelected(selectedDate.toString())
+                showCalendar = false
+            },
+            onDismiss = { showCalendar = false }
+        )
+    }
+
+    OutlinedTextField(
+        value = value,
+        onValueChange = onDateChange,
+        label = { Text("日付") },
+        trailingIcon = {
+            IconButton(onClick = { showCalendar = true }) {
+                Icon(Icons.Outlined.CalendarMonth, contentDescription = "カレンダーを開く")
+            }
+        },
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Next),
+        modifier = modifier,
+        singleLine = true
+    )
+}
+
+@Composable
+private fun ReportCalendarDialog(
+    selectedDate: LocalDate,
+    markedDates: Set<String>,
+    onDateSelected: (LocalDate) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var visibleMonth by remember(selectedDate) { mutableStateOf(YearMonth.from(selectedDate)) }
+    val today = remember { LocalDate.now() }
+    val monthStart = visibleMonth.atDay(1)
+    val leadingEmptyDays = monthStart.dayOfWeek.value % 7
+    val daysInMonth = visibleMonth.lengthOfMonth()
+    val weekLabels = listOf("日", "月", "火", "水", "木", "金", "土")
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(8.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 6.dp
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(onClick = { visibleMonth = visibleMonth.minusMonths(1) }) {
+                        Text("前月")
+                    }
+                    Text(
+                        text = visibleMonth.toJapaneseMonthLabel(),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    TextButton(onClick = { visibleMonth = visibleMonth.plusMonths(1) }) {
+                        Text("次月")
+                    }
+                }
+
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    weekLabels.forEach { label ->
+                        Text(
+                            text = label,
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    repeat(6) { weekIndex ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            repeat(7) { dayIndex ->
+                                val cellIndex = weekIndex * 7 + dayIndex
+                                val dayNumber = cellIndex - leadingEmptyDays + 1
+                                if (dayNumber in 1..daysInMonth) {
+                                    val date = visibleMonth.atDay(dayNumber)
+                                    ReportCalendarDay(
+                                        date = date,
+                                        isSelected = date == selectedDate,
+                                        isToday = date == today,
+                                        isMarked = date.toString() in markedDates,
+                                        onClick = { onDateSelected(date) },
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                } else {
+                                    Spacer(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .aspectRatio(1f)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(onClick = onDismiss) {
+                        Text("閉じる")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReportCalendarDay(
+    date: LocalDate,
+    isSelected: Boolean,
+    isToday: Boolean,
+    isMarked: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val backgroundColor = if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent
+    val contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+
+    Surface(
+        onClick = onClick,
+        modifier = modifier.aspectRatio(1f),
+        shape = RoundedCornerShape(8.dp),
+        color = backgroundColor
+    ) {
+        Column(
+            modifier = Modifier.padding(vertical = 4.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(
+                text = date.dayOfMonth.toString(),
+                color = contentColor,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (isToday || isSelected) FontWeight.Bold else FontWeight.Normal
+            )
+            Text(
+                text = if (isMarked) "●" else " ",
+                color = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary,
+                style = MaterialTheme.typography.labelSmall
+            )
+        }
+    }
+}
 @Composable
 private fun SalesCard(
     input: DailyReportInput,
@@ -892,7 +1143,9 @@ private fun ExpenseCard(
     var selectedCategory by remember(input.reportDate) { mutableStateOf<String?>(null) }
     val foodTotal = detailExpense(input, expenses, FoodPurchaseCategory)
     val alcoholTotal = detailExpense(input, expenses, AlcoholPurchaseCategory)
+    val consumablesTotal = detailExpense(input, expenses, ConsumablesCategory)
     val otherExpenseTotal = detailExpense(input, expenses, OtherExpenseCategory)
+    val vehicleTransportTotal = detailExpense(input, expenses, VehicleTransportCategory)
 
     FormCard(modifier = modifier) {
         Text("支出", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
@@ -909,7 +1162,7 @@ private fun ExpenseCard(
                 }
             }
             val detailPane: @Composable () -> Unit = {
-                selectedCategory?.takeIf { it != OtherExpenseCategory }?.let { category ->
+                selectedCategory?.takeIf { it != OtherExpenseCategory && it != VehicleTransportCategory && it != ConsumablesCategory }?.let { category ->
                     ExpenseDetailPanel(
                         reportDate = input.reportDate,
                         category = category,
@@ -931,8 +1184,18 @@ private fun ExpenseCard(
                     categoryRows()
                     detailPane()
                 }
-                AppTextField("消耗品費", input.consumablesExpense, KeyboardType.Number) {
-                    onInputChange(input.copy(consumablesExpense = it))
+                DetailedExpenseCategoryRow(ConsumablesCategory, consumablesTotal + input.consumablesExpense.toInputLong()) {
+                    selectedCategory = ConsumablesCategory
+                }
+                if (selectedCategory == ConsumablesCategory) {
+                    ExpenseDetailPanel(
+                        reportDate = input.reportDate,
+                        category = ConsumablesCategory,
+                        expenses = expenses.filter { it.category == ConsumablesCategory },
+                        onClose = { selectedCategory = null },
+                        onSaveExpense = onSaveExpense,
+                        onDeleteExpense = onDeleteExpense
+                    )
                 }
                 AdaptiveFormFields { fieldModifier ->
                     AppTextField("電気代（中部電力）", input.electricityExpense, KeyboardType.Number, fieldModifier) {
@@ -951,6 +1214,19 @@ private fun ExpenseCard(
                 }
                 AppTextField("家賃（ヒロセフサコ）", input.rentExpense, KeyboardType.Number) {
                     onInputChange(input.copy(rentExpense = it))
+                }
+                DetailedExpenseCategoryRow(VehicleTransportCategory, vehicleTransportTotal) {
+                    selectedCategory = VehicleTransportCategory
+                }
+                if (selectedCategory == VehicleTransportCategory) {
+                    ExpenseDetailPanel(
+                        reportDate = input.reportDate,
+                        category = VehicleTransportCategory,
+                        expenses = expenses.filter { it.category == VehicleTransportCategory },
+                        onClose = { selectedCategory = null },
+                        onSaveExpense = onSaveExpense,
+                        onDeleteExpense = onDeleteExpense
+                    )
                 }
                 AppTextField("雑費", input.miscellaneousExpense, KeyboardType.Number) {
                     onInputChange(input.copy(miscellaneousExpense = it))
@@ -1669,13 +1945,14 @@ private fun DailyReportDetailCard(index: Int, report: DailyReport, expenses: Lis
         TotalRow("支出合計", report.totalExpense(expenses).toYen())
         TotalRow("食材仕入", report.detailExpense(expenses, FoodPurchaseCategory).toYen())
         TotalRow("酒類仕入", report.detailExpense(expenses, AlcoholPurchaseCategory).toYen())
-        TotalRow("消耗品費", report.consumablesExpense.toYen())
+        TotalRow("消耗品費", (report.consumablesExpense + report.detailExpense(expenses, ConsumablesCategory)).toYen())
         TotalRow("水道光熱費", report.utilitiesExpense.toYen())
         TotalRow("電気代", report.electricityExpense.toYen())
         TotalRow("ガス代", report.gasExpense.toYen())
         TotalRow("水道代", report.waterExpense.toYen())
         TotalRow("通信費", report.communicationExpense.toYen())
         TotalRow("家賃", report.rentExpense.toYen())
+        TotalRow("車両・交通費", report.detailExpense(expenses, VehicleTransportCategory).toYen())
         TotalRow("雑費", report.miscellaneousExpense.toYen())
         TotalRow("その他支出", report.detailExpense(expenses, OtherExpenseCategory).toYen())
         TotalRow("営業開始時現金", report.openingCash.toYen())
@@ -2226,7 +2503,9 @@ private fun DailyReportInput.calculateTotals(paymentVisibility: PaymentVisibilit
     ).sum()
     val expenseTotal = detailExpense(this, expenses, FoodPurchaseCategory) +
         detailExpense(this, expenses, AlcoholPurchaseCategory) +
+        detailExpense(this, expenses, ConsumablesCategory) +
         detailExpense(this, expenses, OtherExpenseCategory) +
+        detailExpense(this, expenses, VehicleTransportCategory) +
         this.consumablesExpense.toInputLong() +
         this.utilityExpenseTotal() +
         this.communicationExpense.toInputLong() +
@@ -2418,12 +2697,13 @@ private fun buildExpenseBreakdownTotals(
     listOf(
         "食材仕入" to expenses.filter { it.category == FoodPurchaseCategory }.sumOf { it.amount },
         "酒類仕入" to expenses.filter { it.category == AlcoholPurchaseCategory }.sumOf { it.amount },
-        "消耗品費" to reports.sumOf { it.consumablesExpense },
+        "消耗品費" to (reports.sumOf { it.consumablesExpense } + expenses.filter { it.category == ConsumablesCategory }.sumOf { it.amount }),
         "水道光熱費" to reports.sumOf { it.utilitiesExpense },
         "通信費" to reports.sumOf { it.communicationExpense },
         "家賃" to reports.sumOf { it.rentExpense },
         "雑費" to reports.sumOf { it.miscellaneousExpense },
-        "その他支出" to expenses.filter { it.category == OtherExpenseCategory }.sumOf { it.amount }
+        "その他支出" to expenses.filter { it.category == OtherExpenseCategory }.sumOf { it.amount },
+        "車両・交通費" to expenses.filter { it.category == VehicleTransportCategory }.sumOf { it.amount }
     )
 
 private fun DailyReport.totalSales(): Long =
@@ -2435,7 +2715,9 @@ private fun DailyReport.detailExpense(expenses: List<ExpenseRecord>, category: S
 private fun DailyReport.totalExpense(expenses: List<ExpenseRecord>): Long =
     detailExpense(expenses, FoodPurchaseCategory) +
         detailExpense(expenses, AlcoholPurchaseCategory) +
+        detailExpense(expenses, ConsumablesCategory) +
         detailExpense(expenses, OtherExpenseCategory) +
+        detailExpense(expenses, VehicleTransportCategory) +
         consumablesExpense + utilitiesExpense + communicationExpense + rentExpense + miscellaneousExpense
 private fun parseDateOrNull(value: String): LocalDate? =
     runCatching { LocalDate.parse(value.trim()) }.getOrNull()
