@@ -36,7 +36,13 @@ class OfflineAccountingRepository @Inject constructor(
 
     override suspend fun saveDailyReport(report: DailyReport) = dao.insertDailyReport(report)
 
+    override suspend fun saveDailyReportWithExpense(report: DailyReport, expense: ExpenseRecord?) =
+        dao.saveDailyReportWithExpense(report, expense)
+
     override suspend fun saveReceipt(receipt: ReceiptRecord) = dao.insertReceipt(receipt)
+
+    override suspend fun saveReceiptWithExpense(receipt: ReceiptRecord, expense: ExpenseRecord?) =
+        dao.saveReceiptWithExpense(receipt, expense)
 
     override suspend fun saveExpenseRecord(expense: ExpenseRecord) = dao.insertExpenseRecord(expense)
 

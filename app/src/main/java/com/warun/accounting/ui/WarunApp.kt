@@ -8,6 +8,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -22,9 +23,11 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -97,16 +100,23 @@ import com.warun.accounting.data.local.ReceiptRecord
 import com.warun.accounting.data.local.SupplierCandidateRecord
 import com.warun.accounting.ui.model.DashboardUiState
 import com.warun.accounting.ui.util.toYen
+import com.warun.accounting.util.calculateCashBalance
+import com.warun.accounting.util.cashExpenseAmount
+import com.warun.accounting.util.expenseAmount
 import com.warun.accounting.util.isSupportedPaymentMethod
 import com.warun.accounting.util.normalizePaymentMethod
 import com.warun.accounting.util.paymentMethodOptions
+import com.warun.accounting.util.preferredCashExpenseAmount
+import com.warun.accounting.util.preferredExpenseAmount
 import com.warun.accounting.ui.viewmodel.AppSettingsInput
 import com.warun.accounting.ui.viewmodel.DailyReportInput
 import com.warun.accounting.ui.viewmodel.DashboardViewModel
 import com.warun.accounting.ui.viewmodel.ExpenseInput
+import com.warun.accounting.ui.viewmodel.InputStateViewModel
 import com.warun.accounting.ui.viewmodel.ReceiptInput
 import java.time.LocalDate
 import java.time.YearMonth
+import java.util.UUID
 import kotlinx.coroutines.delay
 
 private sealed class AppDestination(
@@ -230,13 +240,13 @@ private fun expenseCategoryLabel(category: String): String =
     }
 
 private fun expenseCategoryTotal(expenses: List<ExpenseRecord>, reportDate: String, category: String): Long =
-    expenses.filter { it.expenseDate == reportDate && it.category == category }.sumOf { it.amount }
+    expenses.filter { it.expenseDate == reportDate && it.category == category }.expenseAmount()
 
 private fun detailExpense(input: DailyReportInput, expenses: List<ExpenseRecord>, category: String): Long =
     expenseCategoryTotal(expenses, input.reportDate, category)
 
 private fun cashExpenseCategoryTotal(expenses: List<ExpenseRecord>, reportDate: String, category: String): Long =
-    expenses.filter { it.expenseDate == reportDate && it.category == category && it.paymentMethod == "現金" }.sumOf { it.amount }
+    expenses.filter { it.expenseDate == reportDate && it.category == category }.cashExpenseAmount()
 
 private fun cashDetailExpense(input: DailyReportInput, expenses: List<ExpenseRecord>, category: String): Long =
     cashExpenseCategoryTotal(expenses, input.reportDate, category)
@@ -263,7 +273,12 @@ private fun DailyReportInput.withUtilityCompatibility(
 
 private fun expensesWithoutReportsTotal(reports: List<DailyReport>, expenses: List<ExpenseRecord>): Long {
     val reportDates = reports.map { it.reportDate }.toSet()
-    return expenses.filterNot { it.expenseDate in reportDates }.sumOf { it.amount }
+    return expenses.filterNot { it.expenseDate in reportDates }.expenseAmount()
+}
+
+private fun cashExpensesWithoutReportsTotal(reports: List<DailyReport>, expenses: List<ExpenseRecord>): Long {
+    val reportDates = reports.map { it.reportDate }.toSet()
+    return expenses.filterNot { it.expenseDate in reportDates }.cashExpenseAmount()
 }
 
 private fun List<ExpenseRecord>.withDraftExpensePreview(draft: ExpenseInput?): List<ExpenseRecord> {
@@ -460,7 +475,7 @@ private fun AppNavHost(
         composable(AppDestination.ReportEntry.route) {
             ReportEntryScreen(
                 uiState = uiState,
-                onSaveReport = viewModel::saveDailyReport,
+                onSaveReport = viewModel::saveDailyReportWithExpense,
                 onSaveExpense = viewModel::saveExpense,
                 onDeleteExpense = viewModel::deleteExpense,
                 onAddSupplierCandidate = viewModel::addSupplierCandidate,
@@ -516,7 +531,7 @@ private fun AppNavHost(
             ReportEntryScreen(
                 uiState = uiState,
                 initialDate = backStackEntry.arguments?.getString(ReportRoutes.ReportDateArg),
-                onSaveReport = viewModel::saveDailyReport,
+                onSaveReport = viewModel::saveDailyReportWithExpense,
                 onSaveExpense = viewModel::saveExpense,
                 onDeleteExpense = viewModel::deleteExpense,
                 onAddSupplierCandidate = viewModel::addSupplierCandidate,
@@ -565,12 +580,17 @@ private fun SideNavigation(
                     listOf(Color(0xFF111B2D), Color(0xFF07111F))
                 )
             )
+            .navigationBarsPadding()
     ) {
         Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.SpaceBetween
+            modifier = Modifier.padding(16.dp)
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 Text(
                     text = "わるん会計",
                     color = Color.White,
@@ -591,6 +611,7 @@ private fun SideNavigation(
                     )
                 }
             }
+            Spacer(Modifier.height(12.dp))
             SidebarSummary(uiState, liveSummary)
         }
     }
@@ -638,9 +659,10 @@ private fun BottomNavigation(
 }
 @Composable
 private fun SidebarSummary(uiState: DashboardUiState, liveSummary: SidebarSummaryOverride?) {
-    val salesTotal = liveSummary?.salesTotal ?: uiState.salesTotal
-    val estimatedBalance = liveSummary?.estimatedBalance ?: (uiState.salesTotal - uiState.expenseTotal)
-    val closingCash = liveSummary?.closingCash ?: uiState.closingCash
+    val summary = resolveSidebarSummary(uiState, liveSummary)
+    val salesTotal = summary.salesTotal
+    val estimatedBalance = summary.estimatedBalance
+    val closingCash = summary.closingCash
     DashboardCard(containerColor = Color(0xFF182538)) {
         Text("今日のサマリー", color = Color.White, fontWeight = FontWeight.Bold)
         SummaryLine("売上合計", salesTotal.toYen(), Color.White)
@@ -891,16 +913,35 @@ private fun SaveButtonContent(label: String, showProgress: Boolean) {
     }
 }
 
+internal fun receiptInputAfterSave(
+    result: Result<Unit>,
+    currentInput: ReceiptInput,
+    resetInput: ReceiptInput
+): ReceiptInput = if (result.isSuccess) resetInput else currentInput
+
+private fun newReceiptInput(): ReceiptInput = ReceiptInput(
+    id = UUID.randomUUID().toString(),
+    capturedDate = LocalDate.now().toString()
+)
 private data class SaveFeedback(
     val title: String,
     val body: String,
     val isError: Boolean
 )
 
-private data class SidebarSummaryOverride(
+internal data class SidebarSummaryOverride(
     val salesTotal: Long,
     val estimatedBalance: Long,
     val closingCash: Long
+)
+
+internal fun resolveSidebarSummary(
+    uiState: DashboardUiState,
+    liveSummary: SidebarSummaryOverride?
+): SidebarSummaryOverride = liveSummary ?: SidebarSummaryOverride(
+    salesTotal = uiState.todaySales,
+    estimatedBalance = uiState.todayBalance,
+    closingCash = uiState.todayClosingCash
 )
 
 private class ReportEntryNavigationGuard {
@@ -991,14 +1032,15 @@ private fun AdaptiveMenuButtonLayout(content: @Composable (Modifier) -> Unit) {
 private fun ReportEntryScreen(
     uiState: DashboardUiState,
     initialDate: String? = null,
-    onSaveReport: (DailyReportInput, (Result<Unit>) -> Unit) -> Unit,
+    onSaveReport: (DailyReportInput, ExpenseInput?, (Result<Unit>) -> Unit) -> Unit,
     onSaveExpense: (ExpenseInput, (Result<Unit>) -> Unit) -> Unit,
     onDeleteExpense: (ExpenseRecord) -> Unit,
     onAddSupplierCandidate: (String, String, String) -> Unit,
     onHideSupplierCandidate: (SupplierCandidateRecord) -> Unit,
     navigationGuard: ReportEntryNavigationGuard? = null,
     onRequestBack: () -> Unit = {},
-    onLiveSummaryChange: (SidebarSummaryOverride?) -> Unit = {}
+    onLiveSummaryChange: (SidebarSummaryOverride?) -> Unit = {},
+    inputStateViewModel: InputStateViewModel = hiltViewModel()
 ) {
     val initialReportDate = remember(initialDate) { initialDate ?: DailyReportInput().reportDate }
 
@@ -1006,17 +1048,14 @@ private fun ReportEntryScreen(
         uiState.reports.firstOrNull { it.reportDate == reportDate }?.toInput()
             ?: DailyReportInput(reportDate = reportDate)
 
-    var reportInput by remember(initialReportDate) {
-        mutableStateOf(inputForDate(initialReportDate))
-    }
-    var cleanReportInput by remember(initialReportDate) {
-        mutableStateOf(inputForDate(initialReportDate))
-    }
-    var pendingReportDate by remember { mutableStateOf<String?>(null) }
-    var expenseFormDirty by remember { mutableStateOf(false) }
-    var utilityFieldsEdited by remember(initialReportDate) { mutableStateOf(false) }
-    var draftExpenseInput by remember(initialReportDate) { mutableStateOf<ExpenseInput?>(null) }
-    var savingStatus by remember { mutableStateOf<String?>(null) }
+    inputStateViewModel.initializeReport(inputForDate(initialReportDate))
+    var reportInput by inputStateViewModel.reportInputState
+    var cleanReportInput by inputStateViewModel.cleanReportInputState
+    var pendingReportDate by inputStateViewModel.pendingReportDateState
+    var expenseFormDirty by inputStateViewModel.expenseFormDirtyState
+    var utilityFieldsEdited by inputStateViewModel.utilityFieldsEditedState
+    var draftExpenseInput by inputStateViewModel.draftExpenseInputState
+    var savingStatus by inputStateViewModel.reportSavingStatusState
     var saveFeedback by remember { mutableStateOf<SaveFeedback?>(null) }
 
     val paymentVisibility = uiState.appSettings.toPaymentVisibility()
@@ -1041,28 +1080,19 @@ private fun ReportEntryScreen(
 
     fun openReportDate(reportDate: String) {
         val nextInput = inputForDate(reportDate)
-        reportInput = nextInput
-        cleanReportInput = nextInput
-        expenseFormDirty = false
-        utilityFieldsEdited = false
-        draftExpenseInput = null
+        inputStateViewModel.openReport(nextInput)
     }
 
-    fun showSaveFailure(savedInput: DailyReportInput, throwable: Throwable) {
-        val errorMessage = throwable.localizedMessage ?: throwable::class.simpleName ?: "Unknown error"
+    fun showSaveFailure(savedInput: DailyReportInput) {
         saveFeedback = SaveFeedback(
             title = "保存できませんでした",
-            body = "${savedInput.reportDate} の日報を\n保存できませんでした\n$errorMessage",
+            body = "${savedInput.reportDate} の日報を\n保存できませんでした。入力内容を確認して、もう一度お試しください。",
             isError = true
         )
     }
 
     fun showSaveSuccess(status: String, savedInput: DailyReportInput) {
-        reportInput = savedInput
-        cleanReportInput = savedInput
-        expenseFormDirty = false
-        utilityFieldsEdited = false
-        draftExpenseInput = null
+        inputStateViewModel.markReportSaved(savedInput)
         saveFeedback = SaveFeedback(
             title = if (status == DailyReportStatus.Draft) "下書きを保存しました" else "保存しました",
             body = "${savedInput.reportDate} の日報を\n${if (status == DailyReportStatus.Draft) "下書き保存しました" else "保存しました"}",
@@ -1087,37 +1117,21 @@ private fun ReportEntryScreen(
             .withHiddenPaymentsCleared(paymentVisibility)
         val expenseToSave = draftExpenseInput?.takeIf { expenseFormDirty && it.expenseDate == reportInput.reportDate }
 
-        fun saveReportAfterExpense() {
-            onSaveReport(savedInput) { result ->
-                savingStatus = null
-                result.fold(
-                    onSuccess = {
-                        showSaveSuccess(status, savedInput)
-                        afterSuccess?.invoke()
-                    },
-                    onFailure = { throwable -> showSaveFailure(savedInput, throwable) }
-                )
-            }
-        }
-
         savingStatus = status
-        when {
-            expenseToSave != null && !expenseToSave.isReadyToSave() -> {
-                savingStatus = null
-                showSaveFailure(savedInput, IllegalStateException("入力中の支出明細を保存できませんでした。1円以上の金額を入力してください。"))
-            }
-            expenseToSave != null -> {
-                onSaveExpense(expenseToSave) { expenseResult ->
-                    expenseResult.fold(
-                        onSuccess = { saveReportAfterExpense() },
-                        onFailure = { throwable ->
-                            savingStatus = null
-                            showSaveFailure(savedInput, throwable)
-                        }
-                    )
-                }
-            }
-            else -> saveReportAfterExpense()
+        if (expenseToSave != null && !expenseToSave.isReadyToSave()) {
+            savingStatus = null
+            showSaveFailure(savedInput)
+            return
+        }
+        onSaveReport(savedInput, expenseToSave) { result ->
+            savingStatus = null
+            result.fold(
+                onSuccess = {
+                    showSaveSuccess(status, savedInput)
+                    afterSuccess?.invoke()
+                },
+                onFailure = { showSaveFailure(savedInput) }
+            )
         }
     }
 
@@ -1128,10 +1142,7 @@ private fun ReportEntryScreen(
         navigationGuard?.saveDraftAndContinue = { afterSuccess -> saveCurrentReport(DailyReportStatus.Draft, afterSuccess) }
         navigationGuard?.saveCompletedAndContinue = { afterSuccess -> saveCurrentReport(DailyReportStatus.Completed, afterSuccess) }
         navigationGuard?.discardChanges = {
-            reportInput = cleanReportInput
-            expenseFormDirty = false
-            utilityFieldsEdited = false
-            draftExpenseInput = null
+            inputStateViewModel.discardReportChanges()
         }
     }
     DisposableEffect(navigationGuard) {
@@ -1222,6 +1233,7 @@ private fun ReportEntryScreen(
             totals = totals,
             expenses = reportExpenses,
             previewExpenses = liveReportExpenses,
+            draftExpenseInput = draftExpenseInput,
             supplierCandidates = uiState.supplierCandidates,
             enteredReportDates = enteredReportDates,
             onInputChange = { reportInput = it },
@@ -1249,6 +1261,7 @@ private fun DailyReportForm(
     totals: DailyReportTotals,
     expenses: List<ExpenseRecord>,
     previewExpenses: List<ExpenseRecord>,
+    draftExpenseInput: ExpenseInput?,
     supplierCandidates: List<SupplierCandidateRecord>,
     enteredReportDates: Set<String>,
     onInputChange: (DailyReportInput) -> Unit,
@@ -1283,6 +1296,7 @@ private fun DailyReportForm(
                 input = input,
                 expenses = expenses,
                 previewExpenses = previewExpenses,
+                draftExpenseInput = draftExpenseInput,
                 supplierCandidates = supplierCandidates,
                 expenseTotal = totals.expenseTotal,
                 todayBalance = totals.todayBalance,
@@ -1563,6 +1577,7 @@ private fun ExpenseCard(
     input: DailyReportInput,
     expenses: List<ExpenseRecord>,
     previewExpenses: List<ExpenseRecord>,
+    draftExpenseInput: ExpenseInput?,
     expenseTotal: Long,
     todayBalance: Long,
     onInputChange: (DailyReportInput) -> Unit,
@@ -1576,7 +1591,9 @@ private fun ExpenseCard(
     onDraftExpenseChanged: (ExpenseInput?) -> Unit,
     modifier: Modifier = Modifier.fillMaxWidth()
 ) {
-    var selectedCategory by remember(input.reportDate) { mutableStateOf<String?>(null) }
+    var selectedCategory by remember(input.reportDate, draftExpenseInput?.id) {
+        mutableStateOf(draftExpenseInput?.takeIf { it.expenseDate == input.reportDate }?.category)
+    }
     val foodTotal = detailExpense(input, previewExpenses, FoodPurchaseCategory)
     val alcoholTotal = detailExpense(input, previewExpenses, AlcoholPurchaseCategory)
     val consumablesTotal = detailExpense(input, previewExpenses, ConsumablesCategory)
@@ -1610,7 +1627,8 @@ private fun ExpenseCard(
                         onAddSupplierCandidate = onAddSupplierCandidate,
                         onHideSupplierCandidate = onHideSupplierCandidate,
                         onDirtyChanged = onExpenseFormDirtyChanged,
-                        onDraftExpenseChanged = onDraftExpenseChanged
+                        onDraftExpenseChanged = onDraftExpenseChanged,
+                        restoredDraft = draftExpenseInput
                     )
                 }
             }
@@ -1625,7 +1643,10 @@ private fun ExpenseCard(
                     categoryRows()
                     detailPane()
                 }
-                DetailedExpenseCategoryRow(ConsumablesCategory, consumablesTotal + input.consumablesExpense.toInputLong()) {
+                DetailedExpenseCategoryRow(
+                    ConsumablesCategory,
+                    previewExpenses.preferredExpenseAmount(input.reportDate, ConsumablesCategory, input.consumablesExpense.toInputLong())
+                ) {
                     selectedCategory = ConsumablesCategory
                 }
                 if (selectedCategory == ConsumablesCategory) {
@@ -1640,7 +1661,8 @@ private fun ExpenseCard(
                         onAddSupplierCandidate = onAddSupplierCandidate,
                         onHideSupplierCandidate = onHideSupplierCandidate,
                         onDirtyChanged = onExpenseFormDirtyChanged,
-                        onDraftExpenseChanged = onDraftExpenseChanged
+                        onDraftExpenseChanged = onDraftExpenseChanged,
+                        restoredDraft = draftExpenseInput
                     )
                 }
                 AdaptiveFormFields { fieldModifier ->
@@ -1679,7 +1701,8 @@ private fun ExpenseCard(
                         onAddSupplierCandidate = onAddSupplierCandidate,
                         onHideSupplierCandidate = onHideSupplierCandidate,
                         onDirtyChanged = onExpenseFormDirtyChanged,
-                        onDraftExpenseChanged = onDraftExpenseChanged
+                        onDraftExpenseChanged = onDraftExpenseChanged,
+                        restoredDraft = draftExpenseInput
                     )
                 }
                 AppTextField("雑費", input.miscellaneousExpense, KeyboardType.Number, clearZeroOnFocus = true) {
@@ -1700,7 +1723,8 @@ private fun ExpenseCard(
                         onAddSupplierCandidate = onAddSupplierCandidate,
                         onHideSupplierCandidate = onHideSupplierCandidate,
                         onDirtyChanged = onExpenseFormDirtyChanged,
-                        onDraftExpenseChanged = onDraftExpenseChanged
+                        onDraftExpenseChanged = onDraftExpenseChanged,
+                        restoredDraft = draftExpenseInput
                     )
                 }
             }
@@ -1744,11 +1768,15 @@ private fun ExpenseDetailPanel(
     onAddSupplierCandidate: (String, String, String) -> Unit,
     onHideSupplierCandidate: (SupplierCandidateRecord) -> Unit,
     onDirtyChanged: (Boolean) -> Unit,
-    onDraftExpenseChanged: (ExpenseInput?) -> Unit
+    onDraftExpenseChanged: (ExpenseInput?) -> Unit,
+    restoredDraft: ExpenseInput?
 ) {
-    var editingExpense by remember(reportDate, category) { mutableStateOf<ExpenseRecord?>(null) }
+    var editingExpense by remember(reportDate, category, restoredDraft?.id) {
+        mutableStateOf(restoredDraft?.let { draft -> expenses.firstOrNull { it.id == draft.id } })
+    }
     var showForm by remember(reportDate, category) { mutableStateOf(true) }
     var formResetKey by remember(reportDate, category) { mutableStateOf(0) }
+    var saveFailureVisible by remember(reportDate, category) { mutableStateOf(false) }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -1797,6 +1825,7 @@ private fun ExpenseDetailPanel(
                 onHideSupplierCandidate = onHideSupplierCandidate,
                 onDirtyChanged = onDirtyChanged,
                 onDraftExpenseChanged = onDraftExpenseChanged,
+                restoredDraft = restoredDraft,
                 onClose = {
                     onDirtyChanged(false)
                     onDraftExpenseChanged(null)
@@ -1812,6 +1841,7 @@ private fun ExpenseDetailPanel(
                     val wasEditing = editingExpense != null
                     onSaveExpense(expenseInput) { result ->
                         if (result.isSuccess) {
+                            saveFailureVisible = false
                             onDirtyChanged(false)
                             onDraftExpenseChanged(null)
                             editingExpense = null
@@ -1821,14 +1851,25 @@ private fun ExpenseDetailPanel(
                                 formResetKey++
                                 showForm = true
                             }
+                        } else {
+                            saveFailureVisible = true
                         }
                     }
                 }
             )
         }
     }
-}
-@Composable
+    if (saveFailureVisible) {
+        SaveFeedbackOverlay(
+            feedback = SaveFeedback(
+                title = "保存できませんでした",
+                body = "支出明細を保存できませんでした。入力内容を確認して、もう一度お試しください。",
+                isError = true
+            ),
+            onDismiss = { saveFailureVisible = false }
+        )
+    }
+}@Composable
 private fun ExpenseRecordRow(
     expense: ExpenseRecord,
     onEdit: () -> Unit,
@@ -1857,18 +1898,22 @@ private fun ExpenseRecordForm(
     onHideSupplierCandidate: (SupplierCandidateRecord) -> Unit,
     onDirtyChanged: (Boolean) -> Unit,
     onDraftExpenseChanged: (ExpenseInput?) -> Unit,
+    restoredDraft: ExpenseInput?,
     onCancel: () -> Unit,
     onSave: (ExpenseInput) -> Unit
 ) {
-    var supplier by remember(editingExpense, initialCategory, resetKey) { mutableStateOf(editingExpense?.supplierName.orEmpty()) }
-    var category by remember(editingExpense, initialCategory, resetKey) { mutableStateOf(editingExpense?.category ?: initialCategory) }
-    var paymentMethod by remember(editingExpense, initialCategory, resetKey) { mutableStateOf(normalizePaymentMethod(editingExpense?.paymentMethod)) }
-    var amount by remember(editingExpense, initialCategory, resetKey) { mutableStateOf(editingExpense?.amount?.takeIf { it > 0L }?.toString().orEmpty()) }
-    var memo by remember(editingExpense, initialCategory, resetKey) { mutableStateOf(editingExpense?.memo.orEmpty()) }
+    val restoredInput = restoredDraft?.takeIf { it.expenseDate == reportDate && it.category == initialCategory }
+    var supplier by remember(editingExpense, initialCategory, resetKey, restoredInput?.id) { mutableStateOf(restoredInput?.supplierName ?: editingExpense?.supplierName.orEmpty()) }
+    var category by remember(editingExpense, initialCategory, resetKey, restoredInput?.id) { mutableStateOf(restoredInput?.category ?: editingExpense?.category ?: initialCategory) }
+    var paymentMethod by remember(editingExpense, initialCategory, resetKey, restoredInput?.id) { mutableStateOf(normalizePaymentMethod(restoredInput?.paymentMethod ?: editingExpense?.paymentMethod)) }
+    var amount by remember(editingExpense, initialCategory, resetKey, restoredInput?.id) { mutableStateOf(restoredInput?.amount ?: editingExpense?.amount?.takeIf { it > 0L }?.toString().orEmpty()) }
+    var memo by remember(editingExpense, initialCategory, resetKey, restoredInput?.id) { mutableStateOf(restoredInput?.memo ?: editingExpense?.memo.orEmpty()) }
     var isCustomSupplier by remember(editingExpense, initialCategory, resetKey) { mutableStateOf(false) }
     val supplierFocusRequester = remember { FocusRequester() }
     val amountFocusRequester = remember { FocusRequester() }
     var candidateToHide by remember { mutableStateOf<SupplierCandidateRecord?>(null) }
+    val newExpenseId = remember(reportDate, initialCategory, resetKey, restoredInput?.id) { restoredInput?.id ?: UUID.randomUUID().toString() }
+    val expenseId = editingExpense?.id ?: newExpenseId
     val candidates = remember(category, supplierCandidates) { supplierCandidatesFor(category, supplierCandidates) }
     val canAddCandidate = isCustomSupplier && supplier.trim().isNotBlank() && candidates.none { it.name == supplier.trim() }
     val initialSupplier = editingExpense?.supplierName.orEmpty()
@@ -1884,7 +1929,7 @@ private fun ExpenseRecordForm(
     val parsedAmount = amount.toLongOrNull()
     val isAmountValid = parsedAmount != null && parsedAmount > 0L
     val currentExpenseInput = ExpenseInput(
-        id = editingExpense?.id.orEmpty(),
+        id = expenseId,
         expenseDate = reportDate,
         category = category,
         supplierName = supplier,
@@ -1899,12 +1944,6 @@ private fun ExpenseRecordForm(
     LaunchedEffect(formDirty, currentExpenseInput) {
         onDirtyChanged(formDirty)
         onDraftExpenseChanged(currentExpenseInput.takeIf { formDirty })
-    }
-    DisposableEffect(reportDate, initialCategory, editingExpense?.id, resetKey) {
-        onDispose {
-            onDirtyChanged(false)
-            onDraftExpenseChanged(null)
-        }
     }
     candidateToHide?.let { candidate ->
         AlertDialog(
@@ -1999,7 +2038,7 @@ private fun ExpenseRecordForm(
                     onClick = {
                         onSave(
                             ExpenseInput(
-                                id = editingExpense?.id.orEmpty(),
+                                id = expenseId,
                                 expenseDate = reportDate,
                                 category = category,
                                 supplierName = supplier,
@@ -2075,10 +2114,38 @@ private fun BusinessInfoCard(
 private fun ReceiptScreen(
     uiState: DashboardUiState,
     onNavigate: (String) -> Unit,
-    onSaveReceipt: (ReceiptInput) -> Unit
+    onSaveReceipt: (ReceiptInput, (Result<Unit>) -> Unit) -> Unit,
+    inputStateViewModel: InputStateViewModel = hiltViewModel()
 ) {
-    var input by remember {
-        mutableStateOf(ReceiptInput(capturedDate = LocalDate.now().toString()))
+    var input by inputStateViewModel.receiptInputState
+    var isSaving by inputStateViewModel.receiptSavingState
+    var saveFeedback by remember { mutableStateOf<SaveFeedback?>(null) }
+
+    fun saveReceipt(isConfirmed: Boolean) {
+        if (isSaving) return
+        val savedInput = input.copy(isConfirmed = isConfirmed)
+        isSaving = true
+        onSaveReceipt(savedInput) { result ->
+            isSaving = false
+            input = if (result.isSuccess) inputStateViewModel.completeReceiptSave() else input
+            saveFeedback = if (result.isSuccess) {
+                SaveFeedback(
+                    title = "レシートを保存しました",
+                    body = "レシート情報を保存しました。",
+                    isError = false
+                )
+            } else {
+                SaveFeedback(
+                    title = "保存できませんでした",
+                    body = "レシートを保存できませんでした。入力内容を確認して、もう一度お試しください。",
+                    isError = true
+                )
+            }
+        }
+    }
+
+    saveFeedback?.let { feedback ->
+        SaveFeedbackOverlay(feedback = feedback, onDismiss = { saveFeedback = null })
     }
 
     ScreenColumn {
@@ -2117,25 +2184,19 @@ private fun ReceiptScreen(
             }
         }
         SaveActionCard(
-            draftLabel = "日付未確認で保存",
-            completeLabel = "確認済みで保存",
-            onSaveDraft = {
-                onSaveReceipt(input.copy(isConfirmed = false))
-                input = ReceiptInput(capturedDate = LocalDate.now().toString())
-            },
-            onSaveComplete = {
-                onSaveReceipt(input.copy(isConfirmed = true))
-                input = ReceiptInput(capturedDate = LocalDate.now().toString())
-            }
+            draftLabel = if (isSaving) "保存中…" else "日付未確認で保存",
+            completeLabel = if (isSaving) "保存中…" else "確認済みで保存",
+            onSaveDraft = { saveReceipt(false) },
+            onSaveComplete = { saveReceipt(true) },
+            isSaving = isSaving
         )
         DashboardCard {
-            Text("CameraX撮影とML Kit OCRは次フェーズで追加します。OCR結果は自動確定せず候補表示にします。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("CameraX撮影とML Kit OCRは次フェーズで追加します。OCR結果は自動確定せず、確認画面にします。", color = MaterialTheme.colorScheme.onSurfaceVariant)
             ResponsivePrimaryAction("日報入力へ移動", onClick = { onNavigate(AppDestination.ReportEntry.route) })
         }
         ReceiptList(uiState.receipts.take(8))
     }
-}
-@Composable
+}@Composable
 private fun ReceiptList(receipts: List<ReceiptRecord>) {
     DashboardCard {
         Text("最近のレシート", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
@@ -2522,7 +2583,7 @@ private fun DailyReportDetailCard(index: Int, report: DailyReport, expenses: Lis
         TotalRow("支出合計", report.totalExpense(expenses).toYen())
         TotalRow("食材仕入", report.detailExpense(expenses, FoodPurchaseCategory).toYen())
         TotalRow("酒類仕入", report.detailExpense(expenses, AlcoholPurchaseCategory).toYen())
-        TotalRow("消耗品費", (report.consumablesExpense + report.detailExpense(expenses, ConsumablesCategory)).toYen())
+        TotalRow("消耗品費", expenses.preferredExpenseAmount(report.reportDate, ConsumablesCategory, report.consumablesExpense).toYen())
         TotalRow(if (report.isLegacyUtilityExpense()) "水道光熱費（旧形式）" else "水道光熱費", report.utilityExpenseTotal().toYen())
         TotalRow("電気代", report.electricityExpense.toYen())
         TotalRow("ガス代", report.gasExpense.toYen())
@@ -2534,7 +2595,7 @@ private fun DailyReportDetailCard(index: Int, report: DailyReport, expenses: Lis
         TotalRow("雑費", report.miscellaneousExpense.toYen())
         TotalRow("その他支出", report.detailExpense(expenses, OtherExpenseCategory).toYen())
         TotalRow("営業開始時現金", report.openingCash.toYen())
-        TotalRow("実際の終了時現金", report.actualClosingCash.toYen())
+        TotalRow("実際の終了時現金", if (report.hasActualClosingCash) report.actualClosingCash.toYen() else "未入力")
         TotalRow("来客数", "${report.customerCount}名")
         TotalRow("組数", "${report.groupCount}組")
         if (!report.authorName.isNullOrBlank()) {
@@ -3096,7 +3157,7 @@ private fun DailyReportInput.calculateTotals(
         if (paymentVisibility.useAccountsReceivablePayment) this.accountsReceivableSales.toInputLong() else 0L,
         if (paymentVisibility.useOtherPayment) this.otherSales.toInputLong() else 0L
     ).sum()
-    val directExpenseTotal = this.consumablesExpense.toInputLong() +
+    val directExpenseTotal =
         this.utilityExpenseTotal() +
         this.communicationExpense.toInputLong() +
         this.rentExpense.toInputLong() +
@@ -3104,17 +3165,17 @@ private fun DailyReportInput.calculateTotals(
         this.miscellaneousExpense.toInputLong()
     val expenseTotal = detailExpense(this, expenses, FoodPurchaseCategory) +
         detailExpense(this, expenses, AlcoholPurchaseCategory) +
-        detailExpense(this, expenses, ConsumablesCategory) +
+        expenses.preferredExpenseAmount(reportDate, ConsumablesCategory, consumablesExpense.toInputLong()) +
         detailExpense(this, expenses, OtherExpenseCategory) +
         detailExpense(this, expenses, VehicleTransportCategory) +
         directExpenseTotal
     val cashExpense = cashDetailExpense(this, expenses, FoodPurchaseCategory) +
         cashDetailExpense(this, expenses, AlcoholPurchaseCategory) +
-        cashDetailExpense(this, expenses, ConsumablesCategory) +
+        expenses.preferredCashExpenseAmount(reportDate, ConsumablesCategory, consumablesExpense.toInputLong()) +
         cashDetailExpense(this, expenses, OtherExpenseCategory) +
         cashDetailExpense(this, expenses, VehicleTransportCategory) +
         directExpenseTotal
-    val theoreticalClosingCash = this.openingCash.toInputLong() + cashSales - cashExpense
+    val theoreticalClosingCash = calculateCashBalance(this.openingCash.toInputLong(), cashSales, cashExpense)
     val actualClosingCash = this.actualClosingCash
         .takeIf { it.isNotBlank() }
         ?.toInputLong()
@@ -3155,15 +3216,15 @@ private fun buildBalanceSummary(
     val salesTotal = periodReports.sumOf { it.totalSales() }
     val expenseTotal = periodReports.sumOf { it.totalExpense(periodExpenses) } + expensesWithoutReportsTotal(periodReports, periodExpenses)
     val cashSales = periodReports.sumOf { it.cashSales }
-    val cashExpense = expenseTotal
+    val cashExpense = periodReports.sumOf { it.cashExpense(periodExpenses) } + cashExpensesWithoutReportsTotal(periodReports, periodExpenses)
     val firstReport = periodReports.minWithOrNull(
         compareBy<DailyReport> { it.reportDate }.thenBy { it.createdAt }
     )
     val latestReport = periodReports.maxWithOrNull(
         compareBy<DailyReport> { it.reportDate }.thenBy { it.updatedAt }
     )
-    val theoreticalCashBalance = (firstReport?.openingCash ?: 0L) + cashSales - cashExpense
-    val actualCashBalance = latestReport?.actualClosingCash?.takeIf { it > 0 } ?: theoreticalCashBalance
+    val theoreticalCashBalance = calculateCashBalance(firstReport?.openingCash ?: 0L, cashSales, cashExpense)
+    val actualCashBalance = latestReport?.takeIf { it.hasActualClosingCash }?.actualClosingCash ?: theoreticalCashBalance
     val categoryTotals = buildExpenseBreakdownTotals(periodReports, periodExpenses)
     val dailyRows = (periodReports.map { it.reportDate } + periodExpenses.map { it.expenseDate })
         .distinct()
@@ -3202,8 +3263,9 @@ private fun buildDailyBalanceRow(
     val cashSales = reports.sumOf { it.cashSales }
     val firstReport = reports.minByOrNull { it.createdAt }
     val latestReport = reports.maxByOrNull { it.updatedAt }
-    val theoreticalCashBalance = (firstReport?.openingCash ?: 0L) + cashSales - expenseTotal
-    val actualCashBalance = latestReport?.actualClosingCash?.takeIf { it > 0 } ?: theoreticalCashBalance
+    val cashExpense = reports.sumOf { it.cashExpense(expenses) } + cashExpensesWithoutReportsTotal(reports, expenses)
+    val theoreticalCashBalance = calculateCashBalance(firstReport?.openingCash ?: 0L, cashSales, cashExpense)
+    val actualCashBalance = latestReport?.takeIf { it.hasActualClosingCash }?.actualClosingCash ?: theoreticalCashBalance
 
     return DailyBalanceRow(
         reportDate = reportDate,
@@ -3263,7 +3325,7 @@ private fun String.toReportStatusLabel(): String =
         else -> "下書き"
     }
 
-private fun DailyReport.toInput(): DailyReportInput =
+internal fun DailyReport.toInput(): DailyReportInput =
     DailyReportInput(
         id = id,
         reportDate = reportDate,
@@ -3287,7 +3349,7 @@ private fun DailyReport.toInput(): DailyReportInput =
         miscellaneousExpense = miscellaneousExpense.toString(),
         otherExpense = otherExpense.toString(),
         openingCash = openingCash.toString(),
-        actualClosingCash = actualClosingCash.toString(),
+        actualClosingCash = actualClosingCash.takeIf { hasActualClosingCash }?.toString().orEmpty(),
         customerCount = customerCount.toString(),
         groupCount = groupCount.toString(),
         memo = memo.orEmpty()
@@ -3300,7 +3362,9 @@ private fun buildExpenseBreakdownTotals(
     listOf(
         "食材仕入" to expenses.filter { it.category == FoodPurchaseCategory }.sumOf { it.amount },
         "酒類仕入" to expenses.filter { it.category == AlcoholPurchaseCategory }.sumOf { it.amount },
-        "消耗品費" to (reports.sumOf { it.consumablesExpense } + expenses.filter { it.category == ConsumablesCategory }.sumOf { it.amount }),
+        "消耗品費" to reports.sumOf { report ->
+            expenses.preferredExpenseAmount(report.reportDate, ConsumablesCategory, report.consumablesExpense)
+        } + expensesWithoutReportsTotal(reports, expenses.filter { it.category == ConsumablesCategory }),
         "水道光熱費" to reports.sumOf { it.utilityExpenseTotal() },
         "通信費" to reports.sumOf { it.communicationExpense },
         "家賃" to reports.sumOf { it.rentExpense },
@@ -3324,13 +3388,21 @@ private fun DailyReport.utilityExpenseTotal(): Long {
 private fun DailyReport.isLegacyUtilityExpense(): Boolean =
     utilitiesExpense > 0L && electricityExpense == 0L && gasExpense == 0L && waterExpense == 0L
 
+private fun DailyReport.cashExpense(expenses: List<ExpenseRecord>): Long =
+    cashExpenseCategoryTotal(expenses, reportDate, FoodPurchaseCategory) +
+        cashExpenseCategoryTotal(expenses, reportDate, AlcoholPurchaseCategory) +
+        expenses.preferredCashExpenseAmount(reportDate, ConsumablesCategory, consumablesExpense) +
+        cashExpenseCategoryTotal(expenses, reportDate, OtherExpenseCategory) +
+        cashExpenseCategoryTotal(expenses, reportDate, VehicleTransportCategory) +
+        utilityExpenseTotal() + communicationExpense + rentExpense + accountantFeeExpense + miscellaneousExpense
+
 private fun DailyReport.totalExpense(expenses: List<ExpenseRecord>): Long =
     detailExpense(expenses, FoodPurchaseCategory) +
         detailExpense(expenses, AlcoholPurchaseCategory) +
-        detailExpense(expenses, ConsumablesCategory) +
+        expenses.preferredExpenseAmount(reportDate, ConsumablesCategory, consumablesExpense) +
         detailExpense(expenses, OtherExpenseCategory) +
         detailExpense(expenses, VehicleTransportCategory) +
-        consumablesExpense + utilityExpenseTotal() + communicationExpense + rentExpense + accountantFeeExpense + miscellaneousExpense
+        utilityExpenseTotal() + communicationExpense + rentExpense + accountantFeeExpense + miscellaneousExpense
 private fun parseDateOrNull(value: String): LocalDate? =
     runCatching { LocalDate.parse(value.trim()) }.getOrNull()
 

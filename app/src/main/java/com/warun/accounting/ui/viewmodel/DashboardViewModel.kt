@@ -1,5 +1,6 @@
 package com.warun.accounting.ui.viewmodel
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.warun.accounting.data.AccountingRepository
@@ -29,6 +30,9 @@ import kotlinx.coroutines.launch
 class DashboardViewModel @Inject constructor(
     private val repository: AccountingRepository
 ) : ViewModel() {
+    companion object {
+        private const val LogTag = "DashboardViewModel"
+    }
     private data class BaseUiStateParts(
         val reports: List<DailyReport>,
         val receipts: List<ReceiptRecord>,
@@ -71,96 +75,57 @@ class DashboardViewModel @Inject constructor(
         initialValue = DashboardUiState()
     )
     fun saveDailyReport(input: DailyReportInput, onResult: (Result<Unit>) -> Unit = {}) {
+        saveDailyReportWithExpense(input, null, onResult)
+    }
+
+    fun saveDailyReportWithExpense(
+        input: DailyReportInput,
+        expenseInput: ExpenseInput?,
+        onResult: (Result<Unit>) -> Unit = {}
+    ) {
         viewModelScope.launch {
-            runCatching {
+            val result = runCatching {
                 val now = System.currentTimeMillis()
-                val reportDate = input.reportDate.ifBlank { todayString() }
-                val utilityBreakdownTotal = input.utilityBreakdownTotal()
-                val utilitiesTotal = utilityBreakdownTotal.takeIf { it > 0L } ?: input.utilitiesExpense.toLongOrZero()
-                repository.saveDailyReport(
-                    DailyReport(
-                        id = input.id.ifBlank { reportDate },
-                        reportDate = reportDate,
-                        status = input.status,
-                        authorName = input.authorName.ifBlank { null },
-                        cashSales = input.cashSales.toLongOrZero(),
-                        cardSales = input.cardSales.toLongOrZero(),
-                        qrSales = input.qrSales.toLongOrZero(),
-                        accountsReceivableSales = input.accountsReceivableSales.toLongOrZero(),
-                        otherSales = input.otherSales.toLongOrZero(),
-                        foodPurchases = 0L,
-                        alcoholPurchases = 0L,
-                        consumablesExpense = input.consumablesExpense.toLongOrZero(),
-                        utilitiesExpense = utilitiesTotal,
-                        electricityExpense = input.electricityExpense.toLongOrZero(),
-                        gasExpense = input.gasExpense.toLongOrZero(),
-                        waterExpense = input.waterExpense.toLongOrZero(),
-                        communicationExpense = input.communicationExpense.toLongOrZero(),
-                        rentExpense = input.rentExpense.toLongOrZero(),
-                        accountantFeeExpense = input.accountantFeeExpense.toLongOrZero(),
-                        miscellaneousExpense = input.miscellaneousExpense.toLongOrZero(),
-                        otherExpense = 0L,
-                        openingCash = input.openingCash.toLongOrZero(),
-                        actualClosingCash = input.actualClosingCash.toLongOrZero(),
-                        customerCount = input.customerCount.toIntOrZero(),
-                        groupCount = input.groupCount.toIntOrZero(),
-                        memo = input.memo.ifBlank { null },
-                        createdAt = now,
-                        updatedAt = now
-                    )
+                repository.saveDailyReportWithExpense(
+                    report = input.toDailyReport(now),
+                    expense = expenseInput?.toExpenseRecord(now)
                 )
-            }.also(onResult)
+            }
+            result.onFailure { Log.e(LogTag, "Failed to save daily report transaction", it) }
+            onResult(result)
         }
     }
 
-    fun saveReceipt(input: ReceiptInput) {
+    fun saveReceipt(input: ReceiptInput, onResult: (Result<Unit>) -> Unit = {}) {
+        saveReceiptWithExpense(input, null, onResult)
+    }
+
+    fun saveReceiptWithExpense(
+        input: ReceiptInput,
+        expenseInput: ExpenseInput?,
+        onResult: (Result<Unit>) -> Unit = {}
+    ) {
         viewModelScope.launch {
-            val now = System.currentTimeMillis()
-            val purchaseDate = input.purchaseDate.ifBlank { null }
-            repository.saveReceipt(
-                ReceiptRecord(
-                    id = input.id.ifBlank { "receipt-$now" },
-                    purchaseDate = purchaseDate,
-                    capturedDate = input.capturedDate.ifBlank { null },
-                    registeredAt = input.registeredAt ?: now,
-                    storeName = input.storeName.ifBlank { null },
-                    totalAmount = input.totalAmount.toLongOrZero(),
-                    taxAmount = input.taxAmount.toLongOrZero(),
-                    registrationNumber = input.registrationNumber.ifBlank { null },
-                    expenseCategory = input.expenseCategory.ifBlank { null },
-                    isConfirmed = input.isConfirmed && purchaseDate != null,
-                    memo = input.memo.ifBlank { null },
-                    updatedAt = now
-                )
-            )
+            val result = runCatching {
+                val now = System.currentTimeMillis()
+                val receipt = input.toReceiptRecord(now)
+                val expense = expenseInput
+                    ?.copy(receiptId = receipt.id, sourceType = ExpenseSourceType.Receipt)
+                    ?.toExpenseRecord(now)
+                repository.saveReceiptWithExpense(receipt = receipt, expense = expense)
+            }
+            result.onFailure { Log.e(LogTag, "Failed to save receipt transaction", it) }
+            onResult(result)
         }
     }
 
     fun saveExpense(input: ExpenseInput, onResult: (Result<Unit>) -> Unit = {}) {
         viewModelScope.launch {
-            runCatching {
-                val now = System.currentTimeMillis()
-                val expenseDate = input.expenseDate.ifBlank { todayString() }
-                val amount = input.amount.trim().toLongOrNull()?.takeIf { it > 0L }
-                    ?: error("1円以上の金額を入力してください")
-                val paymentMethod = normalizePaymentMethod(input.paymentMethod)
-                check(isSupportedPaymentMethod(paymentMethod)) { "支払方法を選択してください" }
-                repository.saveExpenseRecord(
-                    ExpenseRecord(
-                        id = input.id.ifBlank { UUID.randomUUID().toString() },
-                        expenseDate = expenseDate,
-                        category = input.category,
-                        supplierName = input.supplierName.ifBlank { null },
-                        amount = amount,
-                        paymentMethod = paymentMethod,
-                        memo = input.memo.ifBlank { null },
-                        receiptId = input.receiptId.ifBlank { null },
-                        sourceType = input.sourceType.ifBlank { ExpenseSourceType.Manual },
-                        createdAt = input.createdAt ?: now,
-                        updatedAt = now
-                    )
-                )
-            }.also(onResult)
+            val result = runCatching {
+                repository.saveExpenseRecord(input.toExpenseRecord(System.currentTimeMillis()))
+            }
+            result.onFailure { Log.e(LogTag, "Failed to save expense", it) }
+            onResult(result)
         }
     }
     fun addSupplierCandidate(category: String, name: String, paymentMethod: String) {
@@ -237,6 +202,80 @@ class DashboardViewModel @Inject constructor(
         }
     }
 
+    private fun DailyReportInput.toDailyReport(now: Long): DailyReport {
+        val reportDateValue = reportDate.ifBlank { todayString() }
+        val utilityBreakdownTotal = utilityBreakdownTotal()
+        val utilitiesTotal = utilityBreakdownTotal.takeIf { it > 0L } ?: utilitiesExpense.toLongOrZero()
+        return DailyReport(
+            id = id.ifBlank { reportDateValue },
+            reportDate = reportDateValue,
+            status = status,
+            authorName = authorName.ifBlank { null },
+            cashSales = cashSales.toLongOrZero(),
+            cardSales = cardSales.toLongOrZero(),
+            qrSales = qrSales.toLongOrZero(),
+            accountsReceivableSales = accountsReceivableSales.toLongOrZero(),
+            otherSales = otherSales.toLongOrZero(),
+            foodPurchases = 0L,
+            alcoholPurchases = 0L,
+            consumablesExpense = consumablesExpense.toLongOrZero(),
+            utilitiesExpense = utilitiesTotal,
+            electricityExpense = electricityExpense.toLongOrZero(),
+            gasExpense = gasExpense.toLongOrZero(),
+            waterExpense = waterExpense.toLongOrZero(),
+            communicationExpense = communicationExpense.toLongOrZero(),
+            rentExpense = rentExpense.toLongOrZero(),
+            accountantFeeExpense = accountantFeeExpense.toLongOrZero(),
+            miscellaneousExpense = miscellaneousExpense.toLongOrZero(),
+            otherExpense = 0L,
+            openingCash = openingCash.toLongOrZero(),
+            actualClosingCash = actualClosingCash.toLongOrZero(),
+            customerCount = customerCount.toIntOrZero(),
+            groupCount = groupCount.toIntOrZero(),
+            memo = memo.ifBlank { null },
+            createdAt = now,
+            updatedAt = now,
+            hasActualClosingCash = actualClosingCash.isNotBlank()
+        )
+    }
+
+    private fun ReceiptInput.toReceiptRecord(now: Long): ReceiptRecord {
+        val purchaseDateValue = purchaseDate.ifBlank { null }
+        return ReceiptRecord(
+            id = id.ifBlank { "receipt-$now" },
+            purchaseDate = purchaseDateValue,
+            capturedDate = capturedDate.ifBlank { null },
+            registeredAt = registeredAt ?: now,
+            storeName = storeName.ifBlank { null },
+            totalAmount = totalAmount.toLongOrZero(),
+            taxAmount = taxAmount.toLongOrZero(),
+            registrationNumber = registrationNumber.ifBlank { null },
+            expenseCategory = expenseCategory.ifBlank { null },
+            isConfirmed = isConfirmed && purchaseDateValue != null,
+            memo = memo.ifBlank { null },
+            updatedAt = now
+        )
+    }
+
+    private fun ExpenseInput.toExpenseRecord(now: Long): ExpenseRecord {
+        val amountValue = amount.trim().toLongOrNull()?.takeIf { it > 0L }
+            ?: error("1円以上の金額を入力してください")
+        val paymentMethodValue = normalizePaymentMethod(paymentMethod)
+        check(isSupportedPaymentMethod(paymentMethodValue)) { "支払方法を選択してください" }
+        return ExpenseRecord(
+            id = id.ifBlank { UUID.randomUUID().toString() },
+            expenseDate = expenseDate.ifBlank { todayString() },
+            category = category,
+            supplierName = supplierName.ifBlank { null },
+            amount = amountValue,
+            paymentMethod = paymentMethodValue,
+            memo = memo.ifBlank { null },
+            receiptId = receiptId.ifBlank { null },
+            sourceType = sourceType.ifBlank { ExpenseSourceType.Manual },
+            createdAt = createdAt ?: now,
+            updatedAt = now
+        )
+    }
     private fun DailyReportInput.utilityBreakdownTotal(): Long =
         electricityExpense.toLongOrZero() + gasExpense.toLongOrZero() + waterExpense.toLongOrZero()
 

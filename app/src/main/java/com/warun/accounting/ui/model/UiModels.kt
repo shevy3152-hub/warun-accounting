@@ -11,6 +11,11 @@ import com.warun.accounting.data.local.ReceiptRecord
 import com.warun.accounting.data.local.SupplierCandidateRecord
 import com.warun.accounting.ui.util.currentMonthString
 import com.warun.accounting.ui.util.todayString
+import com.warun.accounting.util.calculateCashBalance
+import com.warun.accounting.util.cashExpenseAmount
+import com.warun.accounting.util.expenseAmount
+import com.warun.accounting.util.preferredCashExpenseAmount
+import com.warun.accounting.util.preferredExpenseAmount
 
 data class DashboardUiState(
     val reports: List<DailyReport> = emptyList(),
@@ -31,7 +36,10 @@ data class DashboardUiState(
         cashSales + cardSales + qrSales + accountsReceivableSales + otherSales
 
     private fun expenseCategoryTotal(reportDate: String, category: String): Long =
-        expenses.filter { it.expenseDate == reportDate && it.category == category }.sumOf { it.amount }
+        expenses.filter { it.expenseDate == reportDate && it.category == category }.expenseAmount()
+
+    private fun cashExpenseCategoryTotal(reportDate: String, category: String): Long =
+        expenses.filter { it.expenseDate == reportDate && it.category == category }.cashExpenseAmount()
 
     private fun DailyReport.utilityExpenseTotal(): Long {
         val breakdownTotal = electricityExpense + gasExpense + waterExpense
@@ -41,10 +49,21 @@ data class DashboardUiState(
     private fun DailyReport.expenseTotal(): Long =
         expenseCategoryTotal(reportDate, ExpenseCategory.FoodPurchase) +
             expenseCategoryTotal(reportDate, ExpenseCategory.AlcoholPurchase) +
-            expenseCategoryTotal(reportDate, ExpenseCategory.Consumables) +
+            expenses.preferredExpenseAmount(reportDate, ExpenseCategory.Consumables, consumablesExpense) +
             expenseCategoryTotal(reportDate, ExpenseCategory.OtherExpense) +
             expenseCategoryTotal(reportDate, ExpenseCategory.VehicleTransport) +
-            consumablesExpense + utilityExpenseTotal() + communicationExpense + rentExpense + accountantFeeExpense + miscellaneousExpense
+            directExpenseTotal()
+
+    private fun DailyReport.cashExpenseTotal(): Long =
+        cashExpenseCategoryTotal(reportDate, ExpenseCategory.FoodPurchase) +
+            cashExpenseCategoryTotal(reportDate, ExpenseCategory.AlcoholPurchase) +
+            expenses.preferredCashExpenseAmount(reportDate, ExpenseCategory.Consumables, consumablesExpense) +
+            cashExpenseCategoryTotal(reportDate, ExpenseCategory.OtherExpense) +
+            cashExpenseCategoryTotal(reportDate, ExpenseCategory.VehicleTransport) +
+            directExpenseTotal()
+
+    private fun DailyReport.directExpenseTotal(): Long =
+        utilityExpenseTotal() + communicationExpense + rentExpense + accountantFeeExpense + miscellaneousExpense
 
     val salesTotal: Long = reports.sumOf { it.salesTotal() }
     val expenseTotal: Long = reports.sumOf { it.expenseTotal() } + expensesWithoutReportsTotal(reports, expenses)
@@ -53,22 +72,23 @@ data class DashboardUiState(
     val qrSales: Long = reports.sumOf { it.qrSales }
     val accountsReceivableSales: Long = reports.sumOf { it.accountsReceivableSales }
     val otherSales: Long = reports.sumOf { it.otherSales }
-    val cashExpenses: Long = expenseTotal
+    val cashExpenses: Long = reports.sumOf { it.cashExpenseTotal() } + cashExpensesWithoutReportsTotal(reports, expenses)
     val latestReport: DailyReport? = reports.maxByOrNull { it.reportDate }
-    val closingCash: Long = latestReport?.actualClosingCash?.takeIf { it > 0 }
-        ?: ((latestReport?.openingCash ?: 0L) + cashSales - cashExpenses)
+    val closingCash: Long = latestReport?.takeIf { it.hasActualClosingCash }?.actualClosingCash
+        ?: calculateCashBalance(latestReport?.openingCash ?: 0L, cashSales, cashExpenses)
 
     val todaySales: Long = todayReports.sumOf { it.salesTotal() }
     private val todayExpensesWithoutReports: Long = expensesWithoutReportsTotal(todayReports, expenses.filter { it.expenseDate == today })
     val todayExpensesTotal: Long = todayReports.sumOf { it.expenseTotal() } + todayExpensesWithoutReports
     val todayBalance: Long = todaySales - todayExpensesTotal
     val todayCashSales: Long = todayReports.sumOf { it.cashSales }
-    val todayCashExpenses: Long = todayExpensesTotal
+    val todayCashExpenses: Long = todayReports.sumOf { it.cashExpenseTotal() } + cashExpensesWithoutReportsTotal(todayReports, expenses.filter { it.expenseDate == today })
     private val todayLatestReport: DailyReport? = todayReports.maxByOrNull { it.reportDate }
     private val todayTheoreticalClosingCash: Long =
-        (todayLatestReport?.openingCash ?: 0L) + todayCashSales - todayCashExpenses
-    val todayCashDifference: Long =
-        (todayLatestReport?.actualClosingCash?.takeIf { it > 0 } ?: todayTheoreticalClosingCash) - todayTheoreticalClosingCash
+        calculateCashBalance(todayLatestReport?.openingCash ?: 0L, todayCashSales, todayCashExpenses)
+    val todayClosingCash: Long = todayLatestReport?.takeIf { it.hasActualClosingCash }?.actualClosingCash
+        ?: todayTheoreticalClosingCash
+    val todayCashDifference: Long = todayClosingCash - todayTheoreticalClosingCash
 
     val monthSales: Long = monthReports.sumOf { it.salesTotal() }
     val monthReceiptExpensesTotal: Long = 0L
@@ -90,5 +110,10 @@ data class DashboardUiState(
 
 private fun expensesWithoutReportsTotal(reports: List<DailyReport>, expenses: List<ExpenseRecord>): Long {
     val reportDates = reports.map { it.reportDate }.toSet()
-    return expenses.filterNot { it.expenseDate in reportDates }.sumOf { it.amount }
+    return expenses.filterNot { it.expenseDate in reportDates }.expenseAmount()
+}
+
+private fun cashExpensesWithoutReportsTotal(reports: List<DailyReport>, expenses: List<ExpenseRecord>): Long {
+    val reportDates = reports.map { it.reportDate }.toSet()
+    return expenses.filterNot { it.expenseDate in reportDates }.cashExpenseAmount()
 }

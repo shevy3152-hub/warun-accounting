@@ -63,6 +63,7 @@ dependencies {
     androidTestImplementation("androidx.room:room-testing:2.6.1")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
+    testImplementation("junit:junit:4.13.2")
     androidTestImplementation("junit:junit:4.13.2")
 
     implementation("com.google.dagger:hilt-android:2.52")

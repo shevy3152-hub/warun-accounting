@@ -5,6 +5,7 @@ import androidx.room.Delete
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
 
@@ -51,6 +52,18 @@ interface WarunDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertExpenseRecord(expense: ExpenseRecord)
+
+    @Transaction
+    suspend fun saveDailyReportWithExpense(report: DailyReport, expense: ExpenseRecord?) {
+        insertDailyReport(report)
+        expense?.let { insertExpenseRecord(it) }
+    }
+
+    @Transaction
+    suspend fun saveReceiptWithExpense(receipt: ReceiptRecord, expense: ExpenseRecord?) {
+        insertReceipt(receipt)
+        expense?.let { insertExpenseRecord(it) }
+    }
 
     @Upsert
     suspend fun upsertMonthlySubmission(submission: MonthlySubmission)

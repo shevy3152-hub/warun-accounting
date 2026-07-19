@@ -19,7 +19,9 @@ interface AccountingRepository {
     fun observeMonthlySubmissions(): Flow<List<MonthlySubmission>>
     fun observeAppSettings(): Flow<AppSettings?>
     suspend fun saveDailyReport(report: DailyReport)
+    suspend fun saveDailyReportWithExpense(report: DailyReport, expense: ExpenseRecord?)
     suspend fun saveReceipt(receipt: ReceiptRecord)
+    suspend fun saveReceiptWithExpense(receipt: ReceiptRecord, expense: ExpenseRecord?)
     suspend fun saveExpenseRecord(expense: ExpenseRecord)
     suspend fun deleteExpenseRecord(expense: ExpenseRecord)
     suspend fun deleteReceipt(receipt: ReceiptRecord)

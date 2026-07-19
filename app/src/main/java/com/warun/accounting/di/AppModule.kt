@@ -72,6 +72,17 @@ object DatabaseModule {
         }
     }
 
+    private val MIGRATION_9_10 = object : Migration(9, 10) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                "ALTER TABLE daily_reports ADD COLUMN hasActualClosingCash INTEGER NOT NULL DEFAULT 0"
+            )
+            db.execSQL(
+                "UPDATE daily_reports SET hasActualClosingCash = 1 WHERE actualClosingCash <> 0"
+            )
+        }
+    }
+
     private fun SupportSQLiteDatabase.addColumnIfMissing(
         tableName: String,
         columnName: String,
@@ -261,7 +272,7 @@ object DatabaseModule {
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): WarunDatabase {
         return Room.databaseBuilder(context, WarunDatabase::class.java, DatabaseName)
-            .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
+            .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
             .build()
     }
 

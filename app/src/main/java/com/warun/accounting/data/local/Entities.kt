@@ -1,5 +1,6 @@
 package com.warun.accounting.data.local
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
@@ -34,7 +35,9 @@ data class DailyReport(
     val groupCount: Int,
     val memo: String?,
     val createdAt: Long,
-    val updatedAt: Long
+    val updatedAt: Long,
+    @ColumnInfo(defaultValue = "0")
+    val hasActualClosingCash: Boolean = false
 )
 
 object DailyReportStatus {
