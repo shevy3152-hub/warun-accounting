@@ -33,13 +33,18 @@ data class DashboardUiState(
     private fun expenseCategoryTotal(reportDate: String, category: String): Long =
         expenses.filter { it.expenseDate == reportDate && it.category == category }.sumOf { it.amount }
 
+    private fun DailyReport.utilityExpenseTotal(): Long {
+        val breakdownTotal = electricityExpense + gasExpense + waterExpense
+        return breakdownTotal.takeIf { it > 0L } ?: utilitiesExpense
+    }
+
     private fun DailyReport.expenseTotal(): Long =
         expenseCategoryTotal(reportDate, ExpenseCategory.FoodPurchase) +
             expenseCategoryTotal(reportDate, ExpenseCategory.AlcoholPurchase) +
             expenseCategoryTotal(reportDate, ExpenseCategory.Consumables) +
             expenseCategoryTotal(reportDate, ExpenseCategory.OtherExpense) +
             expenseCategoryTotal(reportDate, ExpenseCategory.VehicleTransport) +
-            consumablesExpense + utilitiesExpense + communicationExpense + rentExpense + accountantFeeExpense + miscellaneousExpense
+            consumablesExpense + utilityExpenseTotal() + communicationExpense + rentExpense + accountantFeeExpense + miscellaneousExpense
 
     val salesTotal: Long = reports.sumOf { it.salesTotal() }
     val expenseTotal: Long = reports.sumOf { it.expenseTotal() } + expensesWithoutReportsTotal(reports, expenses)

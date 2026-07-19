@@ -2,6 +2,7 @@
 
 package com.warun.accounting.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -29,6 +30,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Assessment
 import androidx.compose.material.icons.outlined.CalendarMonth
+import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.EditNote
@@ -39,6 +42,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -61,6 +65,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -102,6 +107,7 @@ import com.warun.accounting.ui.viewmodel.ExpenseInput
 import com.warun.accounting.ui.viewmodel.ReceiptInput
 import java.time.LocalDate
 import java.time.YearMonth
+import kotlinx.coroutines.delay
 
 private sealed class AppDestination(
     val route: String,
@@ -229,15 +235,57 @@ private fun expenseCategoryTotal(expenses: List<ExpenseRecord>, reportDate: Stri
 private fun detailExpense(input: DailyReportInput, expenses: List<ExpenseRecord>, category: String): Long =
     expenseCategoryTotal(expenses, input.reportDate, category)
 
-private fun DailyReportInput.utilityExpenseTotal(): Long {
-    val breakdownTotal = electricityExpense.toInputLong() + gasExpense.toInputLong() + waterExpense.toInputLong()
-    return breakdownTotal.takeIf { it > 0L } ?: utilitiesExpense.toInputLong()
+private fun cashExpenseCategoryTotal(expenses: List<ExpenseRecord>, reportDate: String, category: String): Long =
+    expenses.filter { it.expenseDate == reportDate && it.category == category && it.paymentMethod == "現金" }.sumOf { it.amount }
+
+private fun cashDetailExpense(input: DailyReportInput, expenses: List<ExpenseRecord>, category: String): Long =
+    cashExpenseCategoryTotal(expenses, input.reportDate, category)
+
+private fun DailyReportInput.utilityBreakdownExpenseTotal(): Long =
+    electricityExpense.toInputLong() + gasExpense.toInputLong() + waterExpense.toInputLong()
+
+private fun DailyReportInput.utilityExpenseTotal(): Long = utilityBreakdownExpenseTotal()
+
+private fun DailyReportInput.isLegacyUtilityExpense(): Boolean =
+    utilitiesExpense.toInputLong() > 0L && electricityExpense.toInputLong() == 0L && gasExpense.toInputLong() == 0L && waterExpense.toInputLong() == 0L
+
+private fun DailyReportInput.withUtilityCompatibility(
+    cleanInput: DailyReportInput,
+    utilityFieldsEdited: Boolean
+): DailyReportInput {
+    val utilitiesTotal = if (cleanInput.isLegacyUtilityExpense() && !utilityFieldsEdited) {
+        cleanInput.utilitiesExpense.toInputLong()
+    } else {
+        utilityBreakdownExpenseTotal()
+    }
+    return copy(utilitiesExpense = utilitiesTotal.toString())
 }
 
 private fun expensesWithoutReportsTotal(reports: List<DailyReport>, expenses: List<ExpenseRecord>): Long {
     val reportDates = reports.map { it.reportDate }.toSet()
     return expenses.filterNot { it.expenseDate in reportDates }.sumOf { it.amount }
 }
+
+private fun List<ExpenseRecord>.withDraftExpensePreview(draft: ExpenseInput?): List<ExpenseRecord> {
+    if (draft == null) return this
+    val amount = draft.amount.filter { it.isDigit() }.toLongOrNull() ?: 0L
+    val withoutEditingTarget = if (draft.id.isBlank()) this else filterNot { it.id == draft.id }
+    if (amount <= 0L || draft.expenseDate.isBlank() || draft.category.isBlank()) return withoutEditingTarget
+    return withoutEditingTarget + ExpenseRecord(
+        id = draft.id.ifBlank { "__draft_expense__" },
+        expenseDate = draft.expenseDate,
+        category = draft.category,
+        supplierName = draft.supplierName.ifBlank { null },
+        amount = amount,
+        paymentMethod = normalizePaymentMethod(draft.paymentMethod),
+        memo = draft.memo.ifBlank { null },
+        receiptId = draft.receiptId.ifBlank { null },
+        sourceType = draft.sourceType,
+        createdAt = draft.createdAt ?: Long.MAX_VALUE,
+        updatedAt = Long.MAX_VALUE
+    )
+}
+
 @Composable
 fun WarunApp(
     viewModel: DashboardViewModel = hiltViewModel()
@@ -246,7 +294,94 @@ fun WarunApp(
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route ?: AppDestination.Home.route
+    var liveSidebarSummary by remember { mutableStateOf<SidebarSummaryOverride?>(null) }
+    val reportEntryNavigationGuard = remember { ReportEntryNavigationGuard() }
+    var pendingNavigationAction by remember { mutableStateOf<(() -> Unit)?>(null) }
 
+    LaunchedEffect(currentRoute) {
+        if (currentRoute != AppDestination.ReportEntry.route && currentRoute != ReportRoutes.Entry) {
+            liveSidebarSummary = null
+        }
+    }
+
+    fun requestGuardedNavigation(action: () -> Unit) {
+        if (reportEntryNavigationGuard.isActive && reportEntryNavigationGuard.hasUnsavedChanges) {
+            pendingNavigationAction = action
+        } else {
+            action()
+        }
+    }
+
+    fun runPendingNavigation(action: () -> Unit) {
+        pendingNavigationAction = null
+        action()
+    }
+
+    val guardedNavigateSingleTop: (String) -> Unit = { route ->
+        requestGuardedNavigation { navController.navigateSingleTop(route) }
+    }
+    val guardedNavigate: (String) -> Unit = { route ->
+        requestGuardedNavigation { navController.navigate(route) }
+    }
+    val guardedPopBackStack: () -> Unit = {
+        requestGuardedNavigation { navController.popBackStack() }
+    }
+
+
+    pendingNavigationAction?.let { action ->
+        val isSaving = reportEntryNavigationGuard.isSaving
+        AlertDialog(
+            onDismissRequest = {
+                if (!isSaving) pendingNavigationAction = null
+            },
+            title = { Text("未保存の内容があります") },
+            text = { Text("この日報には未保存の変更があります。移動する前に保存できます。") },
+            confirmButton = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    Button(
+                        onClick = {
+                            reportEntryNavigationGuard.saveDraftAndContinue?.invoke {
+                                runPendingNavigation(action)
+                            }
+                        },
+                        enabled = !isSaving,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(if (isSaving) "保存中…" else "下書き保存")
+                    }
+                    Button(
+                        onClick = {
+                            reportEntryNavigationGuard.saveCompletedAndContinue?.invoke {
+                                runPendingNavigation(action)
+                            }
+                        },
+                        enabled = !isSaving,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(if (isSaving) "保存中…" else "入力完了で保存")
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            reportEntryNavigationGuard.discardChanges?.invoke()
+                            runPendingNavigation(action)
+                        },
+                        enabled = !isSaving,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("保存せずに続行")
+                    }
+                    TextButton(
+                        onClick = { pendingNavigationAction = null },
+                        enabled = !isSaving,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("戻る")
+                    }
+                }
+            },
+            dismissButton = {}
+        )
+    }
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
@@ -258,7 +393,7 @@ fun WarunApp(
                 bottomBar = {
                     BottomNavigation(
                         currentRoute = currentRoute,
-                        onSelect = navController::navigateSingleTop
+                        onSelect = guardedNavigateSingleTop
                     )
                 }
             ) { padding ->
@@ -266,7 +401,12 @@ fun WarunApp(
                     uiState = uiState,
                     viewModel = viewModel,
                     navController = navController,
-                    contentPadding = padding
+                    contentPadding = padding,
+                    onNavigateSingleTop = guardedNavigateSingleTop,
+                    onNavigate = guardedNavigate,
+                    onPopBackStack = guardedPopBackStack,
+                    reportEntryNavigationGuard = reportEntryNavigationGuard,
+                    onReportEntrySummaryChange = { liveSidebarSummary = it }
                 )
             }
         } else {
@@ -274,18 +414,25 @@ fun WarunApp(
                 SideNavigation(
                     uiState = uiState,
                     currentRoute = currentRoute,
-                    onSelect = navController::navigateSingleTop
+                    liveSummary = liveSidebarSummary,
+                    onSelect = guardedNavigateSingleTop
                 )
                 AppNavHost(
                     uiState = uiState,
                     viewModel = viewModel,
                     navController = navController,
                     contentPadding = PaddingValues(0.dp),
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f),
+                    onNavigateSingleTop = guardedNavigateSingleTop,
+                    onNavigate = guardedNavigate,
+                    onPopBackStack = guardedPopBackStack,
+                    reportEntryNavigationGuard = reportEntryNavigationGuard,
+                    onReportEntrySummaryChange = { liveSidebarSummary = it }
                 )
             }
         }
     }
+
 }
 @Composable
 private fun AppNavHost(
@@ -293,7 +440,12 @@ private fun AppNavHost(
     viewModel: DashboardViewModel,
     navController: NavHostController,
     contentPadding: PaddingValues,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onNavigateSingleTop: (String) -> Unit,
+    onNavigate: (String) -> Unit,
+    onPopBackStack: () -> Unit,
+    reportEntryNavigationGuard: ReportEntryNavigationGuard,
+    onReportEntrySummaryChange: (SidebarSummaryOverride?) -> Unit = {}
 ) {
     NavHost(
         navController = navController,
@@ -303,7 +455,7 @@ private fun AppNavHost(
             .padding(contentPadding)
     ) {
         composable(AppDestination.Home.route) {
-            HomeScreen(uiState = uiState, onNavigate = navController::navigateSingleTop)
+            HomeScreen(uiState = uiState, onNavigate = onNavigateSingleTop)
         }
         composable(AppDestination.ReportEntry.route) {
             ReportEntryScreen(
@@ -312,13 +464,16 @@ private fun AppNavHost(
                 onSaveExpense = viewModel::saveExpense,
                 onDeleteExpense = viewModel::deleteExpense,
                 onAddSupplierCandidate = viewModel::addSupplierCandidate,
-                onHideSupplierCandidate = viewModel::hideSupplierCandidate
+                onHideSupplierCandidate = viewModel::hideSupplierCandidate,
+                navigationGuard = reportEntryNavigationGuard,
+                onRequestBack = onPopBackStack,
+                onLiveSummaryChange = onReportEntrySummaryChange
             )
         }
         composable(AppDestination.Receipt.route) {
             ReceiptScreen(
                 uiState = uiState,
-                onNavigate = navController::navigateSingleTop,
+                onNavigate = onNavigateSingleTop,
                 onSaveReceipt = viewModel::saveReceipt
             )
         }
@@ -330,7 +485,7 @@ private fun AppNavHost(
                 uiState = uiState,
                 onMarkSubmitted = viewModel::markMonthSubmitted,
                 onOpenSubmit = {
-                    navController.navigateSingleTop(AppDestination.Submit.route)
+                    onNavigateSingleTop(AppDestination.Submit.route)
                 }
             )
         }
@@ -338,7 +493,7 @@ private fun AppNavHost(
             ReportListScreen(
                 uiState = uiState,
                 onOpenDate = { reportDate ->
-                    navController.navigate(ReportRoutes.detail(reportDate))
+                    onNavigate(ReportRoutes.detail(reportDate))
                 }
             )
         }
@@ -350,8 +505,8 @@ private fun AppNavHost(
             ReportDetailScreen(
                 uiState = uiState,
                 reportDate = reportDate,
-                onBack = { navController.popBackStack() },
-                onEntry = { navController.navigate(ReportRoutes.entry(reportDate)) }
+                onBack = onPopBackStack,
+                onEntry = { onNavigate(ReportRoutes.entry(reportDate)) }
             )
         }
         composable(
@@ -365,7 +520,10 @@ private fun AppNavHost(
                 onSaveExpense = viewModel::saveExpense,
                 onDeleteExpense = viewModel::deleteExpense,
                 onAddSupplierCandidate = viewModel::addSupplierCandidate,
-                onHideSupplierCandidate = viewModel::hideSupplierCandidate
+                onHideSupplierCandidate = viewModel::hideSupplierCandidate,
+                navigationGuard = reportEntryNavigationGuard,
+                onRequestBack = onPopBackStack,
+                onLiveSummaryChange = onReportEntrySummaryChange
             )
         }
         composable(AppDestination.Submit.route) {
@@ -373,7 +531,7 @@ private fun AppNavHost(
                 uiState = uiState,
                 onMarkSubmitted = viewModel::markMonthSubmitted,
                 onOpenMonthlyOrganization = {
-                    navController.navigateSingleTop(AppDestination.MonthlyOrganization.route)
+                    onNavigateSingleTop(AppDestination.MonthlyOrganization.route)
                 }
             )
         }
@@ -394,6 +552,7 @@ private fun NavHostController.navigateSingleTop(route: String) {
 private fun SideNavigation(
     uiState: DashboardUiState,
     currentRoute: String,
+    liveSummary: SidebarSummaryOverride?,
     onSelect: (String) -> Unit
 ) {
     Surface(
@@ -432,7 +591,7 @@ private fun SideNavigation(
                     )
                 }
             }
-            SidebarSummary(uiState)
+            SidebarSummary(uiState, liveSummary)
         }
     }
 }
@@ -478,12 +637,15 @@ private fun BottomNavigation(
     }
 }
 @Composable
-private fun SidebarSummary(uiState: DashboardUiState) {
+private fun SidebarSummary(uiState: DashboardUiState, liveSummary: SidebarSummaryOverride?) {
+    val salesTotal = liveSummary?.salesTotal ?: uiState.salesTotal
+    val estimatedBalance = liveSummary?.estimatedBalance ?: (uiState.salesTotal - uiState.expenseTotal)
+    val closingCash = liveSummary?.closingCash ?: uiState.closingCash
     DashboardCard(containerColor = Color(0xFF182538)) {
         Text("今日のサマリー", color = Color.White, fontWeight = FontWeight.Bold)
-        SummaryLine("売上合計", uiState.salesTotal.toYen(), Color.White)
-        SummaryLine("概算利益", (uiState.salesTotal - uiState.expenseTotal).toYen(), Color(0xFF6EE78A))
-        SummaryLine("現金残高", uiState.closingCash.toYen(), Color.White)
+        SummaryLine("売上合計", salesTotal.toYen(), Color.White)
+        SummaryLine("概算利益", estimatedBalance.toYen(), Color(0xFF6EE78A))
+        SummaryLine("現金残高", closingCash.toYen(), Color.White)
     }
 }
 @Composable
@@ -616,9 +778,10 @@ private fun SummaryCard(
 private fun PrimaryActionButton(
     label: String,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true
 ) {
-    Button(onClick = onClick, modifier = modifier.height(52.dp)) {
+    Button(onClick = onClick, enabled = enabled, modifier = modifier.height(52.dp)) {
         Text(label)
     }
 }
@@ -670,20 +833,26 @@ private fun SaveActionCard(
     draftLabel: String,
     completeLabel: String,
     onSaveDraft: () -> Unit,
-    onSaveComplete: () -> Unit
+    onSaveComplete: () -> Unit,
+    isSaving: Boolean = false
 ) {
     DashboardCard(containerColor = Color(0xFFEFF6FF)) {
         BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
             val isCompact = maxWidth < 520.dp
             if (isCompact) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    OutlinedButton(onClick = onSaveDraft, modifier = Modifier.fillMaxWidth().height(52.dp)) {
-                        Text(draftLabel)
+                    OutlinedButton(
+                        onClick = onSaveDraft,
+                        enabled = !isSaving,
+                        modifier = Modifier.fillMaxWidth().height(52.dp)
+                    ) {
+                        SaveButtonContent(draftLabel, isSaving && draftLabel == "保存中…")
                     }
                     PrimaryActionButton(
                         label = completeLabel,
                         onClick = onSaveComplete,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !isSaving
                     )
                 }
             } else {
@@ -692,16 +861,86 @@ private fun SaveActionCard(
                     horizontalArrangement = Arrangement.End,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    OutlinedButton(onClick = onSaveDraft, modifier = Modifier.width(180.dp).height(52.dp)) {
-                        Text(draftLabel)
+                    OutlinedButton(
+                        onClick = onSaveDraft,
+                        enabled = !isSaving,
+                        modifier = Modifier.width(180.dp).height(52.dp)
+                    ) {
+                        SaveButtonContent(draftLabel, isSaving && draftLabel == "保存中…")
                     }
                     Spacer(Modifier.width(10.dp))
                     PrimaryActionButton(
                         label = completeLabel,
                         onClick = onSaveComplete,
-                        modifier = Modifier.width(220.dp)
+                        modifier = Modifier.width(220.dp),
+                        enabled = !isSaving
                     )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SaveButtonContent(label: String, showProgress: Boolean) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (showProgress) {
+            CircularProgressIndicator(modifier = Modifier.width(18.dp).height(18.dp), strokeWidth = 2.dp)
+        }
+        Text(label)
+    }
+}
+
+private data class SaveFeedback(
+    val title: String,
+    val body: String,
+    val isError: Boolean
+)
+
+private data class SidebarSummaryOverride(
+    val salesTotal: Long,
+    val estimatedBalance: Long,
+    val closingCash: Long
+)
+
+private class ReportEntryNavigationGuard {
+    var isActive by mutableStateOf(false)
+    var hasUnsavedChanges by mutableStateOf(false)
+    var isSaving by mutableStateOf(false)
+    var saveDraftAndContinue: ((() -> Unit) -> Unit)? = null
+    var saveCompletedAndContinue: ((() -> Unit) -> Unit)? = null
+    var discardChanges: (() -> Unit)? = null
+
+    fun reset() {
+        isActive = false
+        hasUnsavedChanges = false
+        isSaving = false
+        saveDraftAndContinue = null
+        saveCompletedAndContinue = null
+        discardChanges = null
+    }
+}
+@Composable
+private fun SaveFeedbackOverlay(feedback: SaveFeedback, onDismiss: () -> Unit) {
+    LaunchedEffect(feedback) {
+        delay(if (feedback.isError) 2200 else 1400)
+        onDismiss()
+    }
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surface) {
+            Column(
+                modifier = Modifier.padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Icon(
+                    imageVector = if (feedback.isError) Icons.Outlined.ErrorOutline else Icons.Outlined.CheckCircle,
+                    contentDescription = null,
+                    tint = if (feedback.isError) MaterialTheme.colorScheme.error else Color(0xFF15803D),
+                    modifier = Modifier.width(44.dp).height(44.dp)
+                )
+                Text(feedback.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text(feedback.body, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }
@@ -752,11 +991,14 @@ private fun AdaptiveMenuButtonLayout(content: @Composable (Modifier) -> Unit) {
 private fun ReportEntryScreen(
     uiState: DashboardUiState,
     initialDate: String? = null,
-    onSaveReport: (DailyReportInput) -> Unit,
-    onSaveExpense: (ExpenseInput) -> Unit,
+    onSaveReport: (DailyReportInput, (Result<Unit>) -> Unit) -> Unit,
+    onSaveExpense: (ExpenseInput, (Result<Unit>) -> Unit) -> Unit,
     onDeleteExpense: (ExpenseRecord) -> Unit,
     onAddSupplierCandidate: (String, String, String) -> Unit,
-    onHideSupplierCandidate: (SupplierCandidateRecord) -> Unit
+    onHideSupplierCandidate: (SupplierCandidateRecord) -> Unit,
+    navigationGuard: ReportEntryNavigationGuard? = null,
+    onRequestBack: () -> Unit = {},
+    onLiveSummaryChange: (SidebarSummaryOverride?) -> Unit = {}
 ) {
     val initialReportDate = remember(initialDate) { initialDate ?: DailyReportInput().reportDate }
 
@@ -772,22 +1014,140 @@ private fun ReportEntryScreen(
     }
     var pendingReportDate by remember { mutableStateOf<String?>(null) }
     var expenseFormDirty by remember { mutableStateOf(false) }
+    var utilityFieldsEdited by remember(initialReportDate) { mutableStateOf(false) }
+    var draftExpenseInput by remember(initialReportDate) { mutableStateOf<ExpenseInput?>(null) }
+    var savingStatus by remember { mutableStateOf<String?>(null) }
+    var saveFeedback by remember { mutableStateOf<SaveFeedback?>(null) }
 
     val paymentVisibility = uiState.appSettings.toPaymentVisibility()
     val reportExpenses = uiState.expenses.filter { it.expenseDate == reportInput.reportDate }
+    val liveReportExpenses = reportExpenses.withDraftExpensePreview(draftExpenseInput?.takeIf { it.expenseDate == reportInput.reportDate })
     val enteredReportDates = remember(uiState.reports) { uiState.reports.map { it.reportDate }.toSet() }
-    val totals = reportInput.calculateTotals(paymentVisibility, reportExpenses)
+    val totals = reportInput.calculateTotals(paymentVisibility, liveReportExpenses)
+    val hasUnsavedChanges = reportInput != cleanReportInput || expenseFormDirty || utilityFieldsEdited
+
+    LaunchedEffect(reportInput.reportDate, totals) {
+        onLiveSummaryChange(
+            SidebarSummaryOverride(
+                salesTotal = totals.totalSales,
+                estimatedBalance = totals.todayBalance,
+                closingCash = totals.actualClosingCash
+            )
+        )
+    }
+    DisposableEffect(Unit) {
+        onDispose { onLiveSummaryChange(null) }
+    }
 
     fun openReportDate(reportDate: String) {
         val nextInput = inputForDate(reportDate)
         reportInput = nextInput
         cleanReportInput = nextInput
         expenseFormDirty = false
+        utilityFieldsEdited = false
+        draftExpenseInput = null
+    }
+
+    fun showSaveFailure(savedInput: DailyReportInput, throwable: Throwable) {
+        val errorMessage = throwable.localizedMessage ?: throwable::class.simpleName ?: "Unknown error"
+        saveFeedback = SaveFeedback(
+            title = "保存できませんでした",
+            body = "${savedInput.reportDate} の日報を\n保存できませんでした\n$errorMessage",
+            isError = true
+        )
+    }
+
+    fun showSaveSuccess(status: String, savedInput: DailyReportInput) {
+        reportInput = savedInput
+        cleanReportInput = savedInput
+        expenseFormDirty = false
+        utilityFieldsEdited = false
+        draftExpenseInput = null
+        saveFeedback = SaveFeedback(
+            title = if (status == DailyReportStatus.Draft) "下書きを保存しました" else "保存しました",
+            body = "${savedInput.reportDate} の日報を\n${if (status == DailyReportStatus.Draft) "下書き保存しました" else "保存しました"}",
+            isError = false
+        )
+    }
+
+    fun ExpenseInput.isReadyToSave(): Boolean {
+        val amountValue = amount.trim().toLongOrNull()
+        return expenseDate.isNotBlank() &&
+            category.isNotBlank() &&
+            amountValue != null &&
+            amountValue > 0L &&
+            isSupportedPaymentMethod(normalizePaymentMethod(paymentMethod))
+    }
+
+    fun saveCurrentReport(status: String, afterSuccess: (() -> Unit)? = null) {
+        if (savingStatus != null) return
+        val savedInput = reportInput
+            .copy(status = status)
+            .withUtilityCompatibility(cleanReportInput, utilityFieldsEdited)
+            .withHiddenPaymentsCleared(paymentVisibility)
+        val expenseToSave = draftExpenseInput?.takeIf { expenseFormDirty && it.expenseDate == reportInput.reportDate }
+
+        fun saveReportAfterExpense() {
+            onSaveReport(savedInput) { result ->
+                savingStatus = null
+                result.fold(
+                    onSuccess = {
+                        showSaveSuccess(status, savedInput)
+                        afterSuccess?.invoke()
+                    },
+                    onFailure = { throwable -> showSaveFailure(savedInput, throwable) }
+                )
+            }
+        }
+
+        savingStatus = status
+        when {
+            expenseToSave != null && !expenseToSave.isReadyToSave() -> {
+                savingStatus = null
+                showSaveFailure(savedInput, IllegalStateException("入力中の支出明細を保存できませんでした。1円以上の金額を入力してください。"))
+            }
+            expenseToSave != null -> {
+                onSaveExpense(expenseToSave) { expenseResult ->
+                    expenseResult.fold(
+                        onSuccess = { saveReportAfterExpense() },
+                        onFailure = { throwable ->
+                            savingStatus = null
+                            showSaveFailure(savedInput, throwable)
+                        }
+                    )
+                }
+            }
+            else -> saveReportAfterExpense()
+        }
+    }
+
+    LaunchedEffect(reportInput, cleanReportInput, expenseFormDirty, utilityFieldsEdited, savingStatus, draftExpenseInput) {
+        navigationGuard?.isActive = true
+        navigationGuard?.hasUnsavedChanges = hasUnsavedChanges
+        navigationGuard?.isSaving = savingStatus != null
+        navigationGuard?.saveDraftAndContinue = { afterSuccess -> saveCurrentReport(DailyReportStatus.Draft, afterSuccess) }
+        navigationGuard?.saveCompletedAndContinue = { afterSuccess -> saveCurrentReport(DailyReportStatus.Completed, afterSuccess) }
+        navigationGuard?.discardChanges = {
+            reportInput = cleanReportInput
+            expenseFormDirty = false
+            utilityFieldsEdited = false
+            draftExpenseInput = null
+        }
+    }
+    DisposableEffect(navigationGuard) {
+        navigationGuard?.isActive = true
+        onDispose { navigationGuard?.reset() }
+    }
+
+    BackHandler(enabled = hasUnsavedChanges && pendingReportDate == null && savingStatus == null) {
+        navigationGuard?.isActive = true
+        navigationGuard?.hasUnsavedChanges = true
+        onRequestBack()
     }
 
     fun requestOpenReportDate(reportDate: String) {
         if (reportDate == reportInput.reportDate) return
-        if (reportInput != cleanReportInput || expenseFormDirty) {
+        if (hasUnsavedChanges) {
             pendingReportDate = reportDate
         } else {
             openReportDate(reportDate)
@@ -795,26 +1155,63 @@ private fun ReportEntryScreen(
     }
 
     pendingReportDate?.let { targetDate ->
+        val isSaving = savingStatus != null
         AlertDialog(
-            onDismissRequest = { pendingReportDate = null },
+            onDismissRequest = {
+                if (!isSaving) pendingReportDate = null
+            },
             title = { Text("未保存の内容があります") },
-            text = { Text("保存せずに別の日報を開きますか？") },
+            text = { Text("この日報には未保存の変更があります。移動する前に保存できます。") },
             confirmButton = {
-                TextButton(
-                    onClick = {
-                        pendingReportDate = null
-                        openReportDate(targetDate)
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    Button(
+                        onClick = {
+                            saveCurrentReport(DailyReportStatus.Draft) {
+                                pendingReportDate = null
+                                openReportDate(targetDate)
+                            }
+                        },
+                        enabled = !isSaving,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(if (savingStatus == DailyReportStatus.Draft) "保存中…" else "下書き保存")
                     }
-                ) {
-                    Text("続行")
+                    Button(
+                        onClick = {
+                            saveCurrentReport(DailyReportStatus.Completed) {
+                                pendingReportDate = null
+                                openReportDate(targetDate)
+                            }
+                        },
+                        enabled = !isSaving,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(if (savingStatus == DailyReportStatus.Completed) "保存中…" else "入力完了で保存")
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            pendingReportDate = null
+                            openReportDate(targetDate)
+                        },
+                        enabled = !isSaving,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("保存せずに続行")
+                    }
+                    TextButton(
+                        onClick = { pendingReportDate = null },
+                        enabled = !isSaving,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("戻る")
+                    }
                 }
             },
-            dismissButton = {
-                TextButton(onClick = { pendingReportDate = null }) {
-                    Text("キャンセル")
-                }
-            }
+            dismissButton = {}
         )
+    }
+    saveFeedback?.let { feedback ->
+        SaveFeedbackOverlay(feedback = feedback, onDismiss = { saveFeedback = null })
     }
 
     ScreenColumn {
@@ -824,23 +1221,23 @@ private fun ReportEntryScreen(
             paymentVisibility = paymentVisibility,
             totals = totals,
             expenses = reportExpenses,
+            previewExpenses = liveReportExpenses,
             supplierCandidates = uiState.supplierCandidates,
             enteredReportDates = enteredReportDates,
             onInputChange = { reportInput = it },
+            onUtilityInputChange = { nextInput, editedValue ->
+                if (editedValue.isNotBlank()) utilityFieldsEdited = true
+                reportInput = nextInput
+            },
             onCalendarDateSelected = { requestOpenReportDate(it) },
             onSaveExpense = onSaveExpense,
             onDeleteExpense = onDeleteExpense,
             onAddSupplierCandidate = onAddSupplierCandidate,
             onHideSupplierCandidate = onHideSupplierCandidate,
             onExpenseFormDirtyChanged = { expenseFormDirty = it },
-            onSave = { status ->
-                val savedInput = reportInput
-                    .copy(status = status)
-                    .withHiddenPaymentsCleared(paymentVisibility)
-                onSaveReport(savedInput)
-                reportInput = savedInput
-                cleanReportInput = savedInput
-            }
+            onDraftExpenseChanged = { draftExpenseInput = it },
+            savingStatus = savingStatus,
+            onSave = { status -> saveCurrentReport(status) }
         )
         DailyReportList(uiState.reports.take(3))
     }
@@ -851,15 +1248,19 @@ private fun DailyReportForm(
     paymentVisibility: PaymentVisibility,
     totals: DailyReportTotals,
     expenses: List<ExpenseRecord>,
+    previewExpenses: List<ExpenseRecord>,
     supplierCandidates: List<SupplierCandidateRecord>,
     enteredReportDates: Set<String>,
     onInputChange: (DailyReportInput) -> Unit,
+    onUtilityInputChange: (DailyReportInput, String) -> Unit,
     onCalendarDateSelected: (String) -> Unit,
-    onSaveExpense: (ExpenseInput) -> Unit,
+    onSaveExpense: (ExpenseInput, (Result<Unit>) -> Unit) -> Unit,
     onDeleteExpense: (ExpenseRecord) -> Unit,
     onAddSupplierCandidate: (String, String, String) -> Unit,
     onHideSupplierCandidate: (SupplierCandidateRecord) -> Unit,
     onExpenseFormDirtyChanged: (Boolean) -> Unit,
+    onDraftExpenseChanged: (ExpenseInput?) -> Unit,
+    savingStatus: String?,
     onSave: (String) -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -881,15 +1282,18 @@ private fun DailyReportForm(
             ExpenseCard(
                 input = input,
                 expenses = expenses,
+                previewExpenses = previewExpenses,
                 supplierCandidates = supplierCandidates,
                 expenseTotal = totals.expenseTotal,
                 todayBalance = totals.todayBalance,
                 onInputChange = onInputChange,
+                onUtilityInputChange = onUtilityInputChange,
                 onSaveExpense = onSaveExpense,
                 onDeleteExpense = onDeleteExpense,
                 onAddSupplierCandidate = onAddSupplierCandidate,
                 onHideSupplierCandidate = onHideSupplierCandidate,
                 onExpenseFormDirtyChanged = onExpenseFormDirtyChanged,
+                onDraftExpenseChanged = onDraftExpenseChanged,
                 modifier = cardModifier
             )
             CashManagementCard(
@@ -906,10 +1310,11 @@ private fun DailyReportForm(
             )
         }
         SaveActionCard(
-            draftLabel = "下書き保存",
-            completeLabel = "入力完了で保存",
+            draftLabel = if (savingStatus == DailyReportStatus.Draft) "保存中…" else "下書き保存",
+            completeLabel = if (savingStatus == DailyReportStatus.Completed) "保存中…" else "入力完了で保存",
             onSaveDraft = { onSave(DailyReportStatus.Draft) },
-            onSaveComplete = { onSave(DailyReportStatus.Completed) }
+            onSaveComplete = { onSave(DailyReportStatus.Completed) },
+            isSaving = savingStatus != null
         )
     }
 }
@@ -1125,27 +1530,27 @@ private fun SalesCard(
         Text("売上", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         AdaptiveFormFields { fieldModifier ->
             if (paymentVisibility.useCashPayment) {
-                AppTextField("現金売上", input.cashSales, KeyboardType.Number, fieldModifier) {
+                AppTextField("現金売上", input.cashSales, KeyboardType.Number, fieldModifier, clearZeroOnFocus = true) {
                     onInputChange(input.copy(cashSales = it))
                 }
             }
             if (paymentVisibility.useCardPayment) {
-                AppTextField("クレジットカード売上", input.cardSales, KeyboardType.Number, fieldModifier) {
+                AppTextField("クレジットカード売上", input.cardSales, KeyboardType.Number, fieldModifier, clearZeroOnFocus = true) {
                     onInputChange(input.copy(cardSales = it))
                 }
             }
             if (paymentVisibility.useQrPayment) {
-                AppTextField("QR決済売上", input.qrSales, KeyboardType.Number, fieldModifier) {
+                AppTextField("QR決済売上", input.qrSales, KeyboardType.Number, fieldModifier, clearZeroOnFocus = true) {
                     onInputChange(input.copy(qrSales = it))
                 }
             }
             if (paymentVisibility.useAccountsReceivablePayment) {
-                AppTextField("売掛売上", input.accountsReceivableSales, KeyboardType.Number, fieldModifier) {
+                AppTextField("売掛売上", input.accountsReceivableSales, KeyboardType.Number, fieldModifier, clearZeroOnFocus = true) {
                     onInputChange(input.copy(accountsReceivableSales = it))
                 }
             }
             if (paymentVisibility.useOtherPayment) {
-                AppTextField("その他売上", input.otherSales, KeyboardType.Number, fieldModifier) {
+                AppTextField("その他売上", input.otherSales, KeyboardType.Number, fieldModifier, clearZeroOnFocus = true) {
                     onInputChange(input.copy(otherSales = it))
                 }
             }
@@ -1157,23 +1562,26 @@ private fun SalesCard(
 private fun ExpenseCard(
     input: DailyReportInput,
     expenses: List<ExpenseRecord>,
+    previewExpenses: List<ExpenseRecord>,
     expenseTotal: Long,
     todayBalance: Long,
     onInputChange: (DailyReportInput) -> Unit,
-    onSaveExpense: (ExpenseInput) -> Unit,
+    onUtilityInputChange: (DailyReportInput, String) -> Unit,
+    onSaveExpense: (ExpenseInput, (Result<Unit>) -> Unit) -> Unit,
     onDeleteExpense: (ExpenseRecord) -> Unit,
     supplierCandidates: List<SupplierCandidateRecord>,
     onAddSupplierCandidate: (String, String, String) -> Unit,
     onHideSupplierCandidate: (SupplierCandidateRecord) -> Unit,
     onExpenseFormDirtyChanged: (Boolean) -> Unit,
+    onDraftExpenseChanged: (ExpenseInput?) -> Unit,
     modifier: Modifier = Modifier.fillMaxWidth()
 ) {
     var selectedCategory by remember(input.reportDate) { mutableStateOf<String?>(null) }
-    val foodTotal = detailExpense(input, expenses, FoodPurchaseCategory)
-    val alcoholTotal = detailExpense(input, expenses, AlcoholPurchaseCategory)
-    val consumablesTotal = detailExpense(input, expenses, ConsumablesCategory)
-    val otherExpenseTotal = detailExpense(input, expenses, OtherExpenseCategory)
-    val vehicleTransportTotal = detailExpense(input, expenses, VehicleTransportCategory)
+    val foodTotal = detailExpense(input, previewExpenses, FoodPurchaseCategory)
+    val alcoholTotal = detailExpense(input, previewExpenses, AlcoholPurchaseCategory)
+    val consumablesTotal = detailExpense(input, previewExpenses, ConsumablesCategory)
+    val otherExpenseTotal = detailExpense(input, previewExpenses, OtherExpenseCategory)
+    val vehicleTransportTotal = detailExpense(input, previewExpenses, VehicleTransportCategory)
 
     FormCard(modifier = modifier) {
         Text("支出", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
@@ -1201,7 +1609,8 @@ private fun ExpenseCard(
                         supplierCandidates = supplierCandidates,
                         onAddSupplierCandidate = onAddSupplierCandidate,
                         onHideSupplierCandidate = onHideSupplierCandidate,
-                        onDirtyChanged = onExpenseFormDirtyChanged
+                        onDirtyChanged = onExpenseFormDirtyChanged,
+                        onDraftExpenseChanged = onDraftExpenseChanged
                     )
                 }
             }
@@ -1230,28 +1639,29 @@ private fun ExpenseCard(
                         onDeleteExpense = onDeleteExpense,
                         onAddSupplierCandidate = onAddSupplierCandidate,
                         onHideSupplierCandidate = onHideSupplierCandidate,
-                        onDirtyChanged = onExpenseFormDirtyChanged
+                        onDirtyChanged = onExpenseFormDirtyChanged,
+                        onDraftExpenseChanged = onDraftExpenseChanged
                     )
                 }
                 AdaptiveFormFields { fieldModifier ->
-                    AppTextField("電気代（中部電力）", input.electricityExpense, KeyboardType.Number, fieldModifier) {
-                        onInputChange(input.copy(electricityExpense = it))
+                    AppTextField("電気代（中部電力）", input.electricityExpense, KeyboardType.Number, fieldModifier, clearZeroOnFocus = true) {
+                        onUtilityInputChange(input.copy(electricityExpense = it), it)
                     }
-                    AppTextField("ガス代（丸栄ガス）", input.gasExpense, KeyboardType.Number, fieldModifier) {
-                        onInputChange(input.copy(gasExpense = it))
+                    AppTextField("ガス代（丸栄ガス）", input.gasExpense, KeyboardType.Number, fieldModifier, clearZeroOnFocus = true) {
+                        onUtilityInputChange(input.copy(gasExpense = it), it)
                     }
-                    AppTextField("水道代（水道）", input.waterExpense, KeyboardType.Number, fieldModifier) {
-                        onInputChange(input.copy(waterExpense = it))
+                    AppTextField("水道代（水道）", input.waterExpense, KeyboardType.Number, fieldModifier, clearZeroOnFocus = true) {
+                        onUtilityInputChange(input.copy(waterExpense = it), it)
                     }
                 }
-                TotalRow("水道光熱費", input.utilityExpenseTotal().toYen())
-                AppTextField("通信費（NTT）", input.communicationExpense, KeyboardType.Number) {
+                UtilityTotalRow(input.utilityBreakdownExpenseTotal().toYen())
+                AppTextField("通信費（NTT）", input.communicationExpense, KeyboardType.Number, clearZeroOnFocus = true) {
                     onInputChange(input.copy(communicationExpense = it))
                 }
-                AppTextField("家賃（ヒロセフサコ）", input.rentExpense, KeyboardType.Number) {
+                AppTextField("家賃（ヒロセフサコ）", input.rentExpense, KeyboardType.Number, clearZeroOnFocus = true) {
                     onInputChange(input.copy(rentExpense = it))
                 }
-                AppTextField("税理士顧問料", input.accountantFeeExpense, KeyboardType.Number) {
+                AppTextField("税理士顧問料", input.accountantFeeExpense, KeyboardType.Number, clearZeroOnFocus = true) {
                     onInputChange(input.copy(accountantFeeExpense = it))
                 }
                 DetailedExpenseCategoryRow(VehicleTransportCategory, vehicleTransportTotal) {
@@ -1268,10 +1678,11 @@ private fun ExpenseCard(
                         onDeleteExpense = onDeleteExpense,
                         onAddSupplierCandidate = onAddSupplierCandidate,
                         onHideSupplierCandidate = onHideSupplierCandidate,
-                        onDirtyChanged = onExpenseFormDirtyChanged
+                        onDirtyChanged = onExpenseFormDirtyChanged,
+                        onDraftExpenseChanged = onDraftExpenseChanged
                     )
                 }
-                AppTextField("雑費", input.miscellaneousExpense, KeyboardType.Number) {
+                AppTextField("雑費", input.miscellaneousExpense, KeyboardType.Number, clearZeroOnFocus = true) {
                     onInputChange(input.copy(miscellaneousExpense = it))
                 }
                 DetailedExpenseCategoryRow(OtherExpenseCategory, otherExpenseTotal) {
@@ -1288,7 +1699,8 @@ private fun ExpenseCard(
                         supplierCandidates = supplierCandidates,
                         onAddSupplierCandidate = onAddSupplierCandidate,
                         onHideSupplierCandidate = onHideSupplierCandidate,
-                        onDirtyChanged = onExpenseFormDirtyChanged
+                        onDirtyChanged = onExpenseFormDirtyChanged,
+                        onDraftExpenseChanged = onDraftExpenseChanged
                     )
                 }
             }
@@ -1326,12 +1738,13 @@ private fun ExpenseDetailPanel(
     category: String,
     expenses: List<ExpenseRecord>,
     onClose: () -> Unit,
-    onSaveExpense: (ExpenseInput) -> Unit,
+    onSaveExpense: (ExpenseInput, (Result<Unit>) -> Unit) -> Unit,
     onDeleteExpense: (ExpenseRecord) -> Unit,
     supplierCandidates: List<SupplierCandidateRecord>,
     onAddSupplierCandidate: (String, String, String) -> Unit,
     onHideSupplierCandidate: (SupplierCandidateRecord) -> Unit,
-    onDirtyChanged: (Boolean) -> Unit
+    onDirtyChanged: (Boolean) -> Unit,
+    onDraftExpenseChanged: (ExpenseInput?) -> Unit
 ) {
     var editingExpense by remember(reportDate, category) { mutableStateOf<ExpenseRecord?>(null) }
     var showForm by remember(reportDate, category) { mutableStateOf(true) }
@@ -1346,6 +1759,7 @@ private fun ExpenseDetailPanel(
             Text("${expenseCategoryLabel(category)} 明細", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
             OutlinedButton(onClick = {
                 onDirtyChanged(false)
+                onDraftExpenseChanged(null)
                 onClose()
             }) { Text("閉じる") }
         }
@@ -1366,6 +1780,7 @@ private fun ExpenseDetailPanel(
         Button(onClick = {
             editingExpense = null
             onDirtyChanged(false)
+            onDraftExpenseChanged(null)
             formResetKey++
             showForm = true
         }) {
@@ -1381,25 +1796,32 @@ private fun ExpenseDetailPanel(
                 onAddSupplierCandidate = onAddSupplierCandidate,
                 onHideSupplierCandidate = onHideSupplierCandidate,
                 onDirtyChanged = onDirtyChanged,
+                onDraftExpenseChanged = onDraftExpenseChanged,
                 onClose = {
                     onDirtyChanged(false)
+                    onDraftExpenseChanged(null)
                     onClose()
                 },
                 onCancel = {
                     onDirtyChanged(false)
+                    onDraftExpenseChanged(null)
                     editingExpense = null
                     showForm = false
                 },
                 onSave = { expenseInput ->
                     val wasEditing = editingExpense != null
-                    onDirtyChanged(false)
-                    onSaveExpense(expenseInput)
-                    editingExpense = null
-                    if (wasEditing) {
-                        showForm = false
-                    } else {
-                        formResetKey++
-                        showForm = true
+                    onSaveExpense(expenseInput) { result ->
+                        if (result.isSuccess) {
+                            onDirtyChanged(false)
+                            onDraftExpenseChanged(null)
+                            editingExpense = null
+                            if (wasEditing) {
+                                showForm = false
+                            } else {
+                                formResetKey++
+                                showForm = true
+                            }
+                        }
                     }
                 }
             )
@@ -1434,6 +1856,7 @@ private fun ExpenseRecordForm(
     onAddSupplierCandidate: (String, String, String) -> Unit,
     onHideSupplierCandidate: (SupplierCandidateRecord) -> Unit,
     onDirtyChanged: (Boolean) -> Unit,
+    onDraftExpenseChanged: (ExpenseInput?) -> Unit,
     onCancel: () -> Unit,
     onSave: (ExpenseInput) -> Unit
 ) {
@@ -1460,14 +1883,29 @@ private fun ExpenseRecordForm(
         memo != initialMemo
     val parsedAmount = amount.toLongOrNull()
     val isAmountValid = parsedAmount != null && parsedAmount > 0L
+    val currentExpenseInput = ExpenseInput(
+        id = editingExpense?.id.orEmpty(),
+        expenseDate = reportDate,
+        category = category,
+        supplierName = supplier,
+        amount = amount,
+        paymentMethod = normalizePaymentMethod(paymentMethod),
+        memo = memo,
+        receiptId = editingExpense?.receiptId.orEmpty(),
+        sourceType = editingExpense?.sourceType ?: ExpenseSourceType.Manual,
+        createdAt = editingExpense?.createdAt
+    )
 
-    LaunchedEffect(formDirty) {
+    LaunchedEffect(formDirty, currentExpenseInput) {
         onDirtyChanged(formDirty)
+        onDraftExpenseChanged(currentExpenseInput.takeIf { formDirty })
     }
     DisposableEffect(reportDate, initialCategory, editingExpense?.id, resetKey) {
-        onDispose { onDirtyChanged(false) }
+        onDispose {
+            onDirtyChanged(false)
+            onDraftExpenseChanged(null)
+        }
     }
-
     candidateToHide?.let { candidate ->
         AlertDialog(
             onDismissRequest = { candidateToHide = null },
@@ -1546,7 +1984,7 @@ private fun ExpenseRecordForm(
                     }
                 }
             }
-            AppTextField("金額", amount, KeyboardType.Number, Modifier.focusRequester(amountFocusRequester)) { value ->
+            AppTextField("金額", amount, KeyboardType.Number, Modifier.focusRequester(amountFocusRequester), clearZeroOnFocus = true) { value ->
                 amount = value.filter { it.isDigit() }
             }
             if (amount.isBlank()) {
@@ -1597,10 +2035,10 @@ private fun CashManagementCard(
     FormCard(modifier = modifier) {
         Text("現金管理", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         AdaptiveFormFields { fieldModifier ->
-            AppTextField("営業開始時現金", input.openingCash, KeyboardType.Number, fieldModifier) {
+            AppTextField("営業開始時現金", input.openingCash, KeyboardType.Number, fieldModifier, clearZeroOnFocus = true) {
                 onInputChange(input.copy(openingCash = it))
             }
-            AppTextField("実際の終了時現金", input.actualClosingCash, KeyboardType.Number, fieldModifier) {
+            AppTextField("実際の終了時現金", input.actualClosingCash, KeyboardType.Number, fieldModifier, clearZeroOnFocus = true) {
                 onInputChange(input.copy(actualClosingCash = it))
             }
         }
@@ -1620,11 +2058,11 @@ private fun BusinessInfoCard(
     FormCard(modifier = modifier) {
         Text("営業情報", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         AdaptiveFormFields { fieldModifier ->
-            AppTextField("来客数", input.customerCount, KeyboardType.Number, fieldModifier) {
-                onInputChange(input.copy(customerCount = it))
-            }
-            AppTextField("組数", input.groupCount, KeyboardType.Number, fieldModifier) {
+            AppTextField("組数", input.groupCount, KeyboardType.Number, fieldModifier, clearZeroOnFocus = true) {
                 onInputChange(input.copy(groupCount = it))
+            }
+            AppTextField("来客数", input.customerCount, KeyboardType.Number, fieldModifier, clearZeroOnFocus = true) {
+                onInputChange(input.copy(customerCount = it))
             }
         }
         TotalRow("客単価", customerUnitPrice.toYen())
@@ -1661,10 +2099,10 @@ private fun ReceiptScreen(
                 AppTextField("店名", input.storeName, modifier = fieldModifier) {
                     input = input.copy(storeName = it)
                 }
-                AppTextField("合計金額", input.totalAmount, KeyboardType.Number, fieldModifier) {
+                AppTextField("合計金額", input.totalAmount, KeyboardType.Number, fieldModifier, clearZeroOnFocus = true) {
                     input = input.copy(totalAmount = it)
                 }
-                AppTextField("消費税", input.taxAmount, KeyboardType.Number, fieldModifier) {
+                AppTextField("消費税", input.taxAmount, KeyboardType.Number, fieldModifier, clearZeroOnFocus = true) {
                     input = input.copy(taxAmount = it)
                 }
                 AppTextField("登録番号", input.registrationNumber, modifier = fieldModifier) {
@@ -2085,7 +2523,7 @@ private fun DailyReportDetailCard(index: Int, report: DailyReport, expenses: Lis
         TotalRow("食材仕入", report.detailExpense(expenses, FoodPurchaseCategory).toYen())
         TotalRow("酒類仕入", report.detailExpense(expenses, AlcoholPurchaseCategory).toYen())
         TotalRow("消耗品費", (report.consumablesExpense + report.detailExpense(expenses, ConsumablesCategory)).toYen())
-        TotalRow("水道光熱費", report.utilitiesExpense.toYen())
+        TotalRow(if (report.isLegacyUtilityExpense()) "水道光熱費（旧形式）" else "水道光熱費", report.utilityExpenseTotal().toYen())
         TotalRow("電気代", report.electricityExpense.toYen())
         TotalRow("ガス代", report.gasExpense.toYen())
         TotalRow("水道代", report.waterExpense.toYen())
@@ -2419,6 +2857,26 @@ private fun MiniAmountCard(label: String, value: Long) {
     }
 }
 @Composable
+private fun UtilityTotalRow(value: String) {
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("水道光熱費", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
+            Text("合計 $value", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+        }
+    }
+}
+@Composable
 private fun TotalRow(label: String, value: String) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -2435,14 +2893,27 @@ private fun AppTextField(
     value: String,
     keyboardType: KeyboardType = KeyboardType.Text,
     modifier: Modifier = Modifier.fillMaxWidth(),
+    clearZeroOnFocus: Boolean = false,
     onValueChange: (String) -> Unit
 ) {
+    val shouldClearZeroOnFocus = clearZeroOnFocus && keyboardType == KeyboardType.Number
+    var wasFocused by remember { mutableStateOf(false) }
     OutlinedTextField(
         value = value,
         onValueChange = onValueChange,
         label = { Text(label) },
         keyboardOptions = KeyboardOptions(keyboardType = keyboardType, imeAction = ImeAction.Next),
-        modifier = modifier,
+        modifier = modifier.onFocusChanged { focusState ->
+            if (shouldClearZeroOnFocus) {
+                if (focusState.isFocused && !wasFocused && value == "0") {
+                    onValueChange("")
+                }
+                if (!focusState.isFocused && wasFocused && value.isBlank()) {
+                    onValueChange("0")
+                }
+            }
+            wasFocused = focusState.isFocused
+        },
         singleLine = label != "営業メモ" && label != "メモ"
     )
 }
@@ -2613,7 +3084,10 @@ private fun AppSettings?.toPaymentVisibility(): PaymentVisibility =
         useOtherPayment = this?.useOtherPayment ?: false
     )
 
-private fun DailyReportInput.calculateTotals(paymentVisibility: PaymentVisibility, expenses: List<ExpenseRecord>): DailyReportTotals {
+private fun DailyReportInput.calculateTotals(
+    paymentVisibility: PaymentVisibility,
+    expenses: List<ExpenseRecord>
+): DailyReportTotals {
     val cashSales = if (paymentVisibility.useCashPayment) this.cashSales.toInputLong() else 0L
     val totalSales = listOf(
         cashSales,
@@ -2622,18 +3096,24 @@ private fun DailyReportInput.calculateTotals(paymentVisibility: PaymentVisibilit
         if (paymentVisibility.useAccountsReceivablePayment) this.accountsReceivableSales.toInputLong() else 0L,
         if (paymentVisibility.useOtherPayment) this.otherSales.toInputLong() else 0L
     ).sum()
-    val expenseTotal = detailExpense(this, expenses, FoodPurchaseCategory) +
-        detailExpense(this, expenses, AlcoholPurchaseCategory) +
-        detailExpense(this, expenses, ConsumablesCategory) +
-        detailExpense(this, expenses, OtherExpenseCategory) +
-        detailExpense(this, expenses, VehicleTransportCategory) +
-        this.consumablesExpense.toInputLong() +
+    val directExpenseTotal = this.consumablesExpense.toInputLong() +
         this.utilityExpenseTotal() +
         this.communicationExpense.toInputLong() +
         this.rentExpense.toInputLong() +
         this.accountantFeeExpense.toInputLong() +
         this.miscellaneousExpense.toInputLong()
-    val cashExpense = expenseTotal
+    val expenseTotal = detailExpense(this, expenses, FoodPurchaseCategory) +
+        detailExpense(this, expenses, AlcoholPurchaseCategory) +
+        detailExpense(this, expenses, ConsumablesCategory) +
+        detailExpense(this, expenses, OtherExpenseCategory) +
+        detailExpense(this, expenses, VehicleTransportCategory) +
+        directExpenseTotal
+    val cashExpense = cashDetailExpense(this, expenses, FoodPurchaseCategory) +
+        cashDetailExpense(this, expenses, AlcoholPurchaseCategory) +
+        cashDetailExpense(this, expenses, ConsumablesCategory) +
+        cashDetailExpense(this, expenses, OtherExpenseCategory) +
+        cashDetailExpense(this, expenses, VehicleTransportCategory) +
+        directExpenseTotal
     val theoreticalClosingCash = this.openingCash.toInputLong() + cashSales - cashExpense
     val actualClosingCash = this.actualClosingCash
         .takeIf { it.isNotBlank() }
@@ -2821,7 +3301,7 @@ private fun buildExpenseBreakdownTotals(
         "食材仕入" to expenses.filter { it.category == FoodPurchaseCategory }.sumOf { it.amount },
         "酒類仕入" to expenses.filter { it.category == AlcoholPurchaseCategory }.sumOf { it.amount },
         "消耗品費" to (reports.sumOf { it.consumablesExpense } + expenses.filter { it.category == ConsumablesCategory }.sumOf { it.amount }),
-        "水道光熱費" to reports.sumOf { it.utilitiesExpense },
+        "水道光熱費" to reports.sumOf { it.utilityExpenseTotal() },
         "通信費" to reports.sumOf { it.communicationExpense },
         "家賃" to reports.sumOf { it.rentExpense },
         "税理士顧問料" to reports.sumOf { it.accountantFeeExpense },
@@ -2836,13 +3316,21 @@ private fun DailyReport.totalSales(): Long =
 private fun DailyReport.detailExpense(expenses: List<ExpenseRecord>, category: String): Long =
     expenseCategoryTotal(expenses, reportDate, category)
 
+private fun DailyReport.utilityExpenseTotal(): Long {
+    val breakdownTotal = electricityExpense + gasExpense + waterExpense
+    return breakdownTotal.takeIf { it > 0L } ?: utilitiesExpense
+}
+
+private fun DailyReport.isLegacyUtilityExpense(): Boolean =
+    utilitiesExpense > 0L && electricityExpense == 0L && gasExpense == 0L && waterExpense == 0L
+
 private fun DailyReport.totalExpense(expenses: List<ExpenseRecord>): Long =
     detailExpense(expenses, FoodPurchaseCategory) +
         detailExpense(expenses, AlcoholPurchaseCategory) +
         detailExpense(expenses, ConsumablesCategory) +
         detailExpense(expenses, OtherExpenseCategory) +
         detailExpense(expenses, VehicleTransportCategory) +
-        consumablesExpense + utilitiesExpense + communicationExpense + rentExpense + accountantFeeExpense + miscellaneousExpense
+        consumablesExpense + utilityExpenseTotal() + communicationExpense + rentExpense + accountantFeeExpense + miscellaneousExpense
 private fun parseDateOrNull(value: String): LocalDate? =
     runCatching { LocalDate.parse(value.trim()) }.getOrNull()
 

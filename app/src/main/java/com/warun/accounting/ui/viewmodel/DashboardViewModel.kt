@@ -14,6 +14,7 @@ import com.warun.accounting.data.local.ReceiptRecord
 import com.warun.accounting.data.local.SupplierCandidateRecord
 import com.warun.accounting.ui.model.DashboardUiState
 import com.warun.accounting.ui.util.todayString
+import com.warun.accounting.util.isSupportedPaymentMethod
 import com.warun.accounting.util.normalizePaymentMethod
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.util.UUID
@@ -69,44 +70,46 @@ class DashboardViewModel @Inject constructor(
         started = SharingStarted.WhileSubscribed(5_000),
         initialValue = DashboardUiState()
     )
-    fun saveDailyReport(input: DailyReportInput) {
+    fun saveDailyReport(input: DailyReportInput, onResult: (Result<Unit>) -> Unit = {}) {
         viewModelScope.launch {
-            val now = System.currentTimeMillis()
-            val reportDate = input.reportDate.ifBlank { todayString() }
-            val utilityBreakdownTotal = input.utilityBreakdownTotal()
-            val utilitiesTotal = utilityBreakdownTotal.takeIf { it > 0L } ?: input.utilitiesExpense.toLongOrZero()
-            repository.saveDailyReport(
-                DailyReport(
-                    id = input.id.ifBlank { reportDate },
-                    reportDate = reportDate,
-                    status = input.status,
-                    authorName = input.authorName.ifBlank { null },
-                    cashSales = input.cashSales.toLongOrZero(),
-                    cardSales = input.cardSales.toLongOrZero(),
-                    qrSales = input.qrSales.toLongOrZero(),
-                    accountsReceivableSales = input.accountsReceivableSales.toLongOrZero(),
-                    otherSales = input.otherSales.toLongOrZero(),
-                    foodPurchases = 0L,
-                    alcoholPurchases = 0L,
-                    consumablesExpense = input.consumablesExpense.toLongOrZero(),
-                    utilitiesExpense = utilitiesTotal,
-                    electricityExpense = input.electricityExpense.toLongOrZero(),
-                    gasExpense = input.gasExpense.toLongOrZero(),
-                    waterExpense = input.waterExpense.toLongOrZero(),
-                    communicationExpense = input.communicationExpense.toLongOrZero(),
-                    rentExpense = input.rentExpense.toLongOrZero(),
-                    accountantFeeExpense = input.accountantFeeExpense.toLongOrZero(),
-                    miscellaneousExpense = input.miscellaneousExpense.toLongOrZero(),
-                    otherExpense = 0L,
-                    openingCash = input.openingCash.toLongOrZero(),
-                    actualClosingCash = input.actualClosingCash.toLongOrZero(),
-                    customerCount = input.customerCount.toIntOrZero(),
-                    groupCount = input.groupCount.toIntOrZero(),
-                    memo = input.memo.ifBlank { null },
-                    createdAt = now,
-                    updatedAt = now
+            runCatching {
+                val now = System.currentTimeMillis()
+                val reportDate = input.reportDate.ifBlank { todayString() }
+                val utilityBreakdownTotal = input.utilityBreakdownTotal()
+                val utilitiesTotal = utilityBreakdownTotal.takeIf { it > 0L } ?: input.utilitiesExpense.toLongOrZero()
+                repository.saveDailyReport(
+                    DailyReport(
+                        id = input.id.ifBlank { reportDate },
+                        reportDate = reportDate,
+                        status = input.status,
+                        authorName = input.authorName.ifBlank { null },
+                        cashSales = input.cashSales.toLongOrZero(),
+                        cardSales = input.cardSales.toLongOrZero(),
+                        qrSales = input.qrSales.toLongOrZero(),
+                        accountsReceivableSales = input.accountsReceivableSales.toLongOrZero(),
+                        otherSales = input.otherSales.toLongOrZero(),
+                        foodPurchases = 0L,
+                        alcoholPurchases = 0L,
+                        consumablesExpense = input.consumablesExpense.toLongOrZero(),
+                        utilitiesExpense = utilitiesTotal,
+                        electricityExpense = input.electricityExpense.toLongOrZero(),
+                        gasExpense = input.gasExpense.toLongOrZero(),
+                        waterExpense = input.waterExpense.toLongOrZero(),
+                        communicationExpense = input.communicationExpense.toLongOrZero(),
+                        rentExpense = input.rentExpense.toLongOrZero(),
+                        accountantFeeExpense = input.accountantFeeExpense.toLongOrZero(),
+                        miscellaneousExpense = input.miscellaneousExpense.toLongOrZero(),
+                        otherExpense = 0L,
+                        openingCash = input.openingCash.toLongOrZero(),
+                        actualClosingCash = input.actualClosingCash.toLongOrZero(),
+                        customerCount = input.customerCount.toIntOrZero(),
+                        groupCount = input.groupCount.toIntOrZero(),
+                        memo = input.memo.ifBlank { null },
+                        createdAt = now,
+                        updatedAt = now
+                    )
                 )
-            )
+            }.also(onResult)
         }
     }
 
@@ -133,30 +136,33 @@ class DashboardViewModel @Inject constructor(
         }
     }
 
-    fun saveExpense(input: ExpenseInput) {
+    fun saveExpense(input: ExpenseInput, onResult: (Result<Unit>) -> Unit = {}) {
         viewModelScope.launch {
-            val now = System.currentTimeMillis()
-            val expenseDate = input.expenseDate.ifBlank { todayString() }
-            val amount = input.amount.trim().toLongOrNull()?.takeIf { it > 0L } ?: return@launch
-            val paymentMethod = normalizePaymentMethod(input.paymentMethod)
-            repository.saveExpenseRecord(
-                ExpenseRecord(
-                    id = input.id.ifBlank { UUID.randomUUID().toString() },
-                    expenseDate = expenseDate,
-                    category = input.category,
-                    supplierName = input.supplierName.ifBlank { null },
-                    amount = amount,
-                    paymentMethod = paymentMethod,
-                    memo = input.memo.ifBlank { null },
-                    receiptId = input.receiptId.ifBlank { null },
-                    sourceType = input.sourceType.ifBlank { ExpenseSourceType.Manual },
-                    createdAt = input.createdAt ?: now,
-                    updatedAt = now
+            runCatching {
+                val now = System.currentTimeMillis()
+                val expenseDate = input.expenseDate.ifBlank { todayString() }
+                val amount = input.amount.trim().toLongOrNull()?.takeIf { it > 0L }
+                    ?: error("1円以上の金額を入力してください")
+                val paymentMethod = normalizePaymentMethod(input.paymentMethod)
+                check(isSupportedPaymentMethod(paymentMethod)) { "支払方法を選択してください" }
+                repository.saveExpenseRecord(
+                    ExpenseRecord(
+                        id = input.id.ifBlank { UUID.randomUUID().toString() },
+                        expenseDate = expenseDate,
+                        category = input.category,
+                        supplierName = input.supplierName.ifBlank { null },
+                        amount = amount,
+                        paymentMethod = paymentMethod,
+                        memo = input.memo.ifBlank { null },
+                        receiptId = input.receiptId.ifBlank { null },
+                        sourceType = input.sourceType.ifBlank { ExpenseSourceType.Manual },
+                        createdAt = input.createdAt ?: now,
+                        updatedAt = now
+                    )
                 )
-            )
+            }.also(onResult)
         }
     }
-
     fun addSupplierCandidate(category: String, name: String, paymentMethod: String) {
         val trimmedName = name.trim()
         if (category.isBlank() || trimmedName.isBlank()) return
