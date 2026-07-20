@@ -89,6 +89,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.warun.accounting.camera.ReceiptCaptureResult
 import com.warun.accounting.data.local.AppSettings
 import com.warun.accounting.data.local.DailyReport
 import com.warun.accounting.data.local.DailyReportStatus
@@ -99,6 +100,10 @@ import com.warun.accounting.data.local.MonthlySubmissionStatus
 import com.warun.accounting.data.local.ReceiptRecord
 import com.warun.accounting.data.local.SupplierCandidateRecord
 import com.warun.accounting.ui.model.DashboardUiState
+import com.warun.accounting.ui.receipt.ReceiptCameraScreen
+import com.warun.accounting.ui.receipt.ReceiptCaptureResultKey
+import com.warun.accounting.ui.receipt.consumeReceiptCaptureResult
+import com.warun.accounting.ui.receipt.toSavedValue
 import com.warun.accounting.ui.util.toYen
 import com.warun.accounting.util.calculateCashBalance
 import com.warun.accounting.util.cashExpenseAmount
@@ -160,6 +165,10 @@ private object ReportRoutes {
 
     fun detail(reportDate: String): String = "report_detail/$reportDate"
     fun entry(reportDate: String): String = "report_entry/$reportDate"
+}
+
+private object ReceiptRoutes {
+    const val Camera = "receipt_camera"
 }
 
 private const val FoodPurchaseCategory = ExpenseCategory.FoodPurchase
@@ -472,7 +481,11 @@ private fun AppNavHost(
         composable(AppDestination.Home.route) {
             HomeScreen(uiState = uiState, onNavigate = onNavigateSingleTop)
         }
-        composable(AppDestination.ReportEntry.route) {
+        composable(AppDestination.ReportEntry.route) { backStackEntry ->
+            var capturedReceipt by remember { mutableStateOf<ReceiptCaptureResult?>(null) }
+            LaunchedEffect(backStackEntry) {
+                consumeReceiptCaptureResult(backStackEntry.savedStateHandle)?.let { capturedReceipt = it }
+            }
             ReportEntryScreen(
                 uiState = uiState,
                 onSaveReport = viewModel::saveDailyReportWithExpense,
@@ -480,16 +493,35 @@ private fun AppNavHost(
                 onDeleteExpense = viewModel::deleteExpense,
                 onAddSupplierCandidate = viewModel::addSupplierCandidate,
                 onHideSupplierCandidate = viewModel::hideSupplierCandidate,
+                onOpenReceiptCamera = { navController.navigate(ReceiptRoutes.Camera) },
+                capturedReceipt = capturedReceipt,
                 navigationGuard = reportEntryNavigationGuard,
                 onRequestBack = onPopBackStack,
                 onLiveSummaryChange = onReportEntrySummaryChange
             )
         }
-        composable(AppDestination.Receipt.route) {
+        composable(AppDestination.Receipt.route) { backStackEntry ->
+            var capturedReceipt by remember { mutableStateOf<ReceiptCaptureResult?>(null) }
+            LaunchedEffect(backStackEntry) {
+                consumeReceiptCaptureResult(backStackEntry.savedStateHandle)?.let { capturedReceipt = it }
+            }
             ReceiptScreen(
                 uiState = uiState,
                 onNavigate = onNavigateSingleTop,
-                onSaveReceipt = viewModel::saveReceipt
+                onSaveReceipt = viewModel::saveReceipt,
+                onOpenReceiptCamera = { navController.navigate(ReceiptRoutes.Camera) },
+                capturedReceipt = capturedReceipt
+            )
+        }
+        composable(ReceiptRoutes.Camera) {
+            ReceiptCameraScreen(
+                onCaptured = { result ->
+                    navController.previousBackStackEntry
+                        ?.savedStateHandle
+                        ?.set(ReceiptCaptureResultKey, result.toSavedValue())
+                    navController.popBackStack()
+                },
+                onCancel = { navController.popBackStack() }
             )
         }
         composable(AppDestination.Balance.route) {
@@ -528,6 +560,10 @@ private fun AppNavHost(
             route = ReportRoutes.Entry,
             arguments = listOf(navArgument(ReportRoutes.ReportDateArg) { type = NavType.StringType })
         ) { backStackEntry ->
+            var capturedReceipt by remember { mutableStateOf<ReceiptCaptureResult?>(null) }
+            LaunchedEffect(backStackEntry) {
+                consumeReceiptCaptureResult(backStackEntry.savedStateHandle)?.let { capturedReceipt = it }
+            }
             ReportEntryScreen(
                 uiState = uiState,
                 initialDate = backStackEntry.arguments?.getString(ReportRoutes.ReportDateArg),
@@ -536,6 +572,8 @@ private fun AppNavHost(
                 onDeleteExpense = viewModel::deleteExpense,
                 onAddSupplierCandidate = viewModel::addSupplierCandidate,
                 onHideSupplierCandidate = viewModel::hideSupplierCandidate,
+                onOpenReceiptCamera = { navController.navigate(ReceiptRoutes.Camera) },
+                capturedReceipt = capturedReceipt,
                 navigationGuard = reportEntryNavigationGuard,
                 onRequestBack = onPopBackStack,
                 onLiveSummaryChange = onReportEntrySummaryChange
@@ -1037,6 +1075,8 @@ private fun ReportEntryScreen(
     onDeleteExpense: (ExpenseRecord) -> Unit,
     onAddSupplierCandidate: (String, String, String) -> Unit,
     onHideSupplierCandidate: (SupplierCandidateRecord) -> Unit,
+    onOpenReceiptCamera: () -> Unit,
+    capturedReceipt: ReceiptCaptureResult? = null,
     navigationGuard: ReportEntryNavigationGuard? = null,
     onRequestBack: () -> Unit = {},
     onLiveSummaryChange: (SidebarSummaryOverride?) -> Unit = {},
@@ -1057,6 +1097,16 @@ private fun ReportEntryScreen(
     var draftExpenseInput by inputStateViewModel.draftExpenseInputState
     var savingStatus by inputStateViewModel.reportSavingStatusState
     var saveFeedback by remember { mutableStateOf<SaveFeedback?>(null) }
+
+    LaunchedEffect(capturedReceipt?.captureId) {
+        if (capturedReceipt != null) {
+            saveFeedback = SaveFeedback(
+                title = "レシートを撮影しました",
+                body = "編集中の支出内容は保持されています。OCRへの受け渡しはPhase 2で追加します。",
+                isError = false
+            )
+        }
+    }
 
     val paymentVisibility = uiState.appSettings.toPaymentVisibility()
     val reportExpenses = uiState.expenses.filter { it.expenseDate == reportInput.reportDate }
@@ -1246,6 +1296,7 @@ private fun ReportEntryScreen(
             onDeleteExpense = onDeleteExpense,
             onAddSupplierCandidate = onAddSupplierCandidate,
             onHideSupplierCandidate = onHideSupplierCandidate,
+            onOpenReceiptCamera = onOpenReceiptCamera,
             onExpenseFormDirtyChanged = { expenseFormDirty = it },
             onDraftExpenseChanged = { draftExpenseInput = it },
             savingStatus = savingStatus,
@@ -1271,6 +1322,7 @@ private fun DailyReportForm(
     onDeleteExpense: (ExpenseRecord) -> Unit,
     onAddSupplierCandidate: (String, String, String) -> Unit,
     onHideSupplierCandidate: (SupplierCandidateRecord) -> Unit,
+    onOpenReceiptCamera: () -> Unit,
     onExpenseFormDirtyChanged: (Boolean) -> Unit,
     onDraftExpenseChanged: (ExpenseInput?) -> Unit,
     savingStatus: String?,
@@ -1306,6 +1358,7 @@ private fun DailyReportForm(
                 onDeleteExpense = onDeleteExpense,
                 onAddSupplierCandidate = onAddSupplierCandidate,
                 onHideSupplierCandidate = onHideSupplierCandidate,
+                onOpenReceiptCamera = onOpenReceiptCamera,
                 onExpenseFormDirtyChanged = onExpenseFormDirtyChanged,
                 onDraftExpenseChanged = onDraftExpenseChanged,
                 modifier = cardModifier
@@ -1587,6 +1640,7 @@ private fun ExpenseCard(
     supplierCandidates: List<SupplierCandidateRecord>,
     onAddSupplierCandidate: (String, String, String) -> Unit,
     onHideSupplierCandidate: (SupplierCandidateRecord) -> Unit,
+    onOpenReceiptCamera: () -> Unit,
     onExpenseFormDirtyChanged: (Boolean) -> Unit,
     onDraftExpenseChanged: (ExpenseInput?) -> Unit,
     modifier: Modifier = Modifier.fillMaxWidth()
@@ -1626,6 +1680,7 @@ private fun ExpenseCard(
                         supplierCandidates = supplierCandidates,
                         onAddSupplierCandidate = onAddSupplierCandidate,
                         onHideSupplierCandidate = onHideSupplierCandidate,
+                        onOpenReceiptCamera = onOpenReceiptCamera,
                         onDirtyChanged = onExpenseFormDirtyChanged,
                         onDraftExpenseChanged = onDraftExpenseChanged,
                         restoredDraft = draftExpenseInput
@@ -1660,6 +1715,7 @@ private fun ExpenseCard(
                         onDeleteExpense = onDeleteExpense,
                         onAddSupplierCandidate = onAddSupplierCandidate,
                         onHideSupplierCandidate = onHideSupplierCandidate,
+                        onOpenReceiptCamera = onOpenReceiptCamera,
                         onDirtyChanged = onExpenseFormDirtyChanged,
                         onDraftExpenseChanged = onDraftExpenseChanged,
                         restoredDraft = draftExpenseInput
@@ -1700,6 +1756,7 @@ private fun ExpenseCard(
                         onDeleteExpense = onDeleteExpense,
                         onAddSupplierCandidate = onAddSupplierCandidate,
                         onHideSupplierCandidate = onHideSupplierCandidate,
+                        onOpenReceiptCamera = onOpenReceiptCamera,
                         onDirtyChanged = onExpenseFormDirtyChanged,
                         onDraftExpenseChanged = onDraftExpenseChanged,
                         restoredDraft = draftExpenseInput
@@ -1722,6 +1779,7 @@ private fun ExpenseCard(
                         supplierCandidates = supplierCandidates,
                         onAddSupplierCandidate = onAddSupplierCandidate,
                         onHideSupplierCandidate = onHideSupplierCandidate,
+                        onOpenReceiptCamera = onOpenReceiptCamera,
                         onDirtyChanged = onExpenseFormDirtyChanged,
                         onDraftExpenseChanged = onDraftExpenseChanged,
                         restoredDraft = draftExpenseInput
@@ -1767,6 +1825,7 @@ private fun ExpenseDetailPanel(
     supplierCandidates: List<SupplierCandidateRecord>,
     onAddSupplierCandidate: (String, String, String) -> Unit,
     onHideSupplierCandidate: (SupplierCandidateRecord) -> Unit,
+    onOpenReceiptCamera: () -> Unit,
     onDirtyChanged: (Boolean) -> Unit,
     onDraftExpenseChanged: (ExpenseInput?) -> Unit,
     restoredDraft: ExpenseInput?
@@ -1823,6 +1882,7 @@ private fun ExpenseDetailPanel(
                 supplierCandidates = supplierCandidates,
                 onAddSupplierCandidate = onAddSupplierCandidate,
                 onHideSupplierCandidate = onHideSupplierCandidate,
+                onOpenReceiptCamera = onOpenReceiptCamera,
                 onDirtyChanged = onDirtyChanged,
                 onDraftExpenseChanged = onDraftExpenseChanged,
                 restoredDraft = restoredDraft,
@@ -1896,6 +1956,7 @@ private fun ExpenseRecordForm(
     onClose: () -> Unit,
     onAddSupplierCandidate: (String, String, String) -> Unit,
     onHideSupplierCandidate: (SupplierCandidateRecord) -> Unit,
+    onOpenReceiptCamera: () -> Unit,
     onDirtyChanged: (Boolean) -> Unit,
     onDraftExpenseChanged: (ExpenseInput?) -> Unit,
     restoredDraft: ExpenseInput?,
@@ -2032,6 +2093,16 @@ private fun ExpenseRecordForm(
                 Text("1円以上の金額を入力してください", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium)
             }
             AppTextField("メモ", memo) { memo = it }
+            OutlinedButton(
+                onClick = {
+                    onDraftExpenseChanged(currentExpenseInput)
+                    onDirtyChanged(true)
+                    onOpenReceiptCamera()
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("レシートから入力")
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
                     enabled = isAmountValid && isSupportedPaymentMethod(paymentMethod),
@@ -2115,6 +2186,8 @@ private fun ReceiptScreen(
     uiState: DashboardUiState,
     onNavigate: (String) -> Unit,
     onSaveReceipt: (ReceiptInput, (Result<Unit>) -> Unit) -> Unit,
+    onOpenReceiptCamera: () -> Unit,
+    capturedReceipt: ReceiptCaptureResult? = null,
     inputStateViewModel: InputStateViewModel = hiltViewModel()
 ) {
     var input by inputStateViewModel.receiptInputState
@@ -2150,6 +2223,12 @@ private fun ReceiptScreen(
 
     ScreenColumn {
         ScreenTitle("レシート", "撮影とOCRは次フェーズです。購入日ベースで仮登録できます。")
+        Button(onClick = onOpenReceiptCamera, modifier = Modifier.fillMaxWidth()) {
+            Text("レシートを撮影")
+        }
+        capturedReceipt?.let {
+            Text("撮影済み画像: ${it.captureId}", color = MaterialTheme.colorScheme.primary)
+        }
         FormCard {
             Text("仮レシート登録", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Text(

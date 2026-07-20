@@ -36,7 +36,9 @@ class InputStateViewModelTest {
             supplierName = "バロー",
             amount = "01000",
             paymentMethod = "現金",
-            memo = "入力中"
+            memo = "入力中",
+            receiptId = "pending-camera-capture",
+            sourceType = "manual"
         )
         first.expenseFormDirtyState.value = true
         first.draftExpenseInputState.value = expense
@@ -47,6 +49,9 @@ class InputStateViewModelTest {
         assertEquals(expense, restored.draftExpenseInputState.value)
         assertEquals("stable-expense-id", restored.draftExpenseInputState.value?.id)
         assertEquals("01000", restored.draftExpenseInputState.value?.amount)
+        assertEquals("現金", restored.draftExpenseInputState.value?.paymentMethod)
+        assertEquals("入力中", restored.draftExpenseInputState.value?.memo)
+        assertEquals("pending-camera-capture", restored.draftExpenseInputState.value?.receiptId)
     }
 
     @Test
