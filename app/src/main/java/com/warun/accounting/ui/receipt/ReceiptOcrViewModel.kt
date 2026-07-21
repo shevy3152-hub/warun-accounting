@@ -5,8 +5,12 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.warun.accounting.camera.ReceiptCaptureResult
 import com.warun.accounting.future.ReceiptOcrGateway
+import com.warun.accounting.future.ReceiptOcrDraft
+import com.warun.accounting.future.ReceiptOcrEngine
 import com.warun.accounting.future.ReceiptOcrRequest
 import com.warun.accounting.ocr.ReceiptOcrException
+import com.warun.accounting.ocr.parser.ReceiptParseResult
+import com.warun.accounting.ocr.parser.ReceiptParser
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.Job
@@ -19,7 +23,13 @@ sealed interface ReceiptOcrUiState {
     data object Idle : ReceiptOcrUiState
     data class Ready(val capture: ReceiptCaptureResult) : ReceiptOcrUiState
     data class Processing(val capture: ReceiptCaptureResult) : ReceiptOcrUiState
-    data class Success(val capture: ReceiptCaptureResult, val rawText: String) : ReceiptOcrUiState
+    data class Success(
+        val capture: ReceiptCaptureResult,
+        val draft: ReceiptOcrDraft,
+        val parseResult: ReceiptParseResult
+    ) : ReceiptOcrUiState {
+        val rawText: String get() = draft.rawText
+    }
     data class Empty(val capture: ReceiptCaptureResult) : ReceiptOcrUiState
     data class Error(val capture: ReceiptCaptureResult, val message: String) : ReceiptOcrUiState
 }
@@ -37,11 +47,21 @@ val ReceiptOcrUiState.captureOrNull: ReceiptCaptureResult?
 @HiltViewModel
 class ReceiptOcrViewModel @Inject constructor(
     private val savedStateHandle: SavedStateHandle,
-    private val ocrGateway: ReceiptOcrGateway
+    private val ocrGateway: ReceiptOcrGateway,
+    private val receiptParser: ReceiptParser
 ) : ViewModel() {
+    private var knownStoreNames: List<String> = emptyList()
     private val _uiState = MutableStateFlow(restoreState())
     val uiState: StateFlow<ReceiptOcrUiState> = _uiState.asStateFlow()
     private var activeJob: Job? = null
+
+    fun updateKnownStoreNames(names: Collection<String>) {
+        val normalized = names.map(String::trim).filter(String::isNotBlank).distinct()
+        if (knownStoreNames == normalized) return
+        knownStoreNames = normalized
+        val current = _uiState.value as? ReceiptOcrUiState.Success ?: return
+        _uiState.value = analyzeDraft(current.capture, current.draft)
+    }
 
     fun runOcr(capture: ReceiptCaptureResult): Boolean {
         val current = _uiState.value
@@ -66,7 +86,7 @@ class ReceiptOcrViewModel @Inject constructor(
                     setState(ReceiptOcrUiState.Empty(capture), StatusEmpty)
                 } else {
                     savedStateHandle[RawTextKey] = draft.rawText
-                    setState(ReceiptOcrUiState.Success(capture, draft.rawText), StatusSuccess)
+                    setState(analyzeDraft(capture, draft), StatusSuccess)
                 }
             }.onFailure { error ->
                 if (_uiState.value.captureOrNull?.captureId != capture.captureId) return@onFailure
@@ -103,7 +123,7 @@ class ReceiptOcrViewModel @Inject constructor(
             StatusSuccess -> {
                 val rawText = savedStateHandle.get<String>(RawTextKey).orEmpty()
                 if (rawText.isBlank()) ReceiptOcrUiState.Empty(capture)
-                else ReceiptOcrUiState.Success(capture, rawText)
+                else analyzeDraft(capture, restoredDraft(capture, rawText))
             }
             StatusEmpty -> ReceiptOcrUiState.Empty(capture)
             StatusError -> ReceiptOcrUiState.Error(
@@ -125,6 +145,33 @@ class ReceiptOcrViewModel @Inject constructor(
         savedStateHandle.remove<String>(RawTextKey)
         savedStateHandle.remove<String>(ErrorMessageKey)
     }
+
+    private fun analyzeDraft(
+        capture: ReceiptCaptureResult,
+        draft: ReceiptOcrDraft
+    ): ReceiptOcrUiState.Success {
+        val result = receiptParser.parse(draft.rawText, knownStoreNames)
+        return ReceiptOcrUiState.Success(
+            capture = capture,
+            draft = draft.copy(
+                dateCandidates = result.dateTimeCandidates.map { it.normalizedValue },
+                storeNameCandidates = result.storeCandidates.map { it.displayName },
+                totalAmountCandidates = result.totalAmountCandidates.map { it.amount }
+            ),
+            parseResult = result
+        )
+    }
+
+    private fun restoredDraft(capture: ReceiptCaptureResult, rawText: String) = ReceiptOcrDraft(
+        imageId = capture.captureId,
+        engine = ReceiptOcrEngine.MlKitTextRecognition,
+        dateCandidates = emptyList(),
+        storeNameCandidates = emptyList(),
+        totalAmountCandidates = emptyList(),
+        taxAmountCandidates = emptyList(),
+        registrationNumberCandidates = emptyList(),
+        rawText = rawText
+    )
 
     private fun setState(state: ReceiptOcrUiState, status: String) {
         savedStateHandle[StatusKey] = status

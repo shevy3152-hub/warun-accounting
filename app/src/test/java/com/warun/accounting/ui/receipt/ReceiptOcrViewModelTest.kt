@@ -7,6 +7,7 @@ import com.warun.accounting.future.ReceiptOcrEngine
 import com.warun.accounting.future.ReceiptOcrGateway
 import com.warun.accounting.future.ReceiptOcrRequest
 import com.warun.accounting.ocr.ReceiptOcrRecognitionException
+import com.warun.accounting.ocr.parser.ReceiptParser
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -39,17 +40,17 @@ class ReceiptOcrViewModelTest {
 
     @Test
     fun successPreservesRawTextAndTransitionsToSuccess() = runTest(dispatcher) {
-        val gateway = FakeGateway { draft("店名\n合計 1,234円") }
-        val viewModel = ReceiptOcrViewModel(SavedStateHandle(), gateway)
+        val gateway = FakeGateway { draft("バロー\n合計 1,234円") }
+        val viewModel = viewModel(gateway = gateway)
 
         assertTrue(viewModel.runOcr(capture))
         assertEquals(ReceiptOcrUiState.Processing(capture), viewModel.uiState.value)
         runCurrent()
 
-        assertEquals(
-            ReceiptOcrUiState.Success(capture, "店名\n合計 1,234円"),
-            viewModel.uiState.value
-        )
+        val success = viewModel.uiState.value as ReceiptOcrUiState.Success
+        assertEquals("バロー\n合計 1,234円", success.rawText)
+        assertEquals("バロー", success.draft.storeNameCandidates.first())
+        assertEquals(1_234L, success.draft.totalAmountCandidates.first())
     }
 
     @Test
@@ -57,7 +58,7 @@ class ReceiptOcrViewModelTest {
         val gateway = FakeGateway {
             throw ReceiptOcrRecognitionException(IllegalStateException("ML failure"))
         }
-        val viewModel = ReceiptOcrViewModel(SavedStateHandle(), gateway)
+        val viewModel = viewModel(gateway = gateway)
 
         viewModel.runOcr(capture)
         runCurrent()
@@ -72,7 +73,7 @@ class ReceiptOcrViewModelTest {
     fun processingPreventsDuplicateExecution() = runTest(dispatcher) {
         val gate = CompletableDeferred<ReceiptOcrDraft>()
         val gateway = FakeGateway { gate.await() }
-        val viewModel = ReceiptOcrViewModel(SavedStateHandle(), gateway)
+        val viewModel = viewModel(gateway = gateway)
 
         assertTrue(viewModel.runOcr(capture))
         assertFalse(viewModel.runOcr(capture))
@@ -81,12 +82,12 @@ class ReceiptOcrViewModelTest {
 
         gate.complete(draft("結果"))
         runCurrent()
-        assertEquals(ReceiptOcrUiState.Success(capture, "結果"), viewModel.uiState.value)
+        assertEquals("結果", (viewModel.uiState.value as ReceiptOcrUiState.Success).rawText)
     }
 
     @Test
     fun blankRecognitionTransitionsToEmpty() = runTest(dispatcher) {
-        val viewModel = ReceiptOcrViewModel(SavedStateHandle(), FakeGateway { draft(" \n ") })
+        val viewModel = viewModel(gateway = FakeGateway { draft(" \n ") })
 
         viewModel.runOcr(capture)
         runCurrent()
@@ -98,20 +99,31 @@ class ReceiptOcrViewModelTest {
     fun restoredSuccessIsNotExecutedAgain() = runTest(dispatcher) {
         val handle = SavedStateHandle()
         val firstGateway = FakeGateway { draft("復元する結果") }
-        val first = ReceiptOcrViewModel(handle, firstGateway)
+        val first = viewModel(handle, firstGateway)
         first.runOcr(capture)
         runCurrent()
 
         val restoredGateway = FakeGateway { draft("実行されない") }
-        val restored = ReceiptOcrViewModel(handle, restoredGateway)
+        val restored = viewModel(handle, restoredGateway)
 
-        assertEquals(
-            ReceiptOcrUiState.Success(capture, "復元する結果"),
-            restored.uiState.value
-        )
+        assertEquals("復元する結果", (restored.uiState.value as ReceiptOcrUiState.Success).rawText)
         assertFalse(restored.runOcr(capture))
         runCurrent()
         assertEquals(0, restoredGateway.callCount)
+    }
+
+    @Test
+    fun knownStoreCandidatesReparseExistingResultWithoutRunningOcrAgain() = runTest(dispatcher) {
+        val gateway = FakeGateway { draft("テスト商店\n合計 980円") }
+        val viewModel = viewModel(gateway = gateway)
+        viewModel.runOcr(capture)
+        runCurrent()
+
+        viewModel.updateKnownStoreNames(listOf("テスト商店"))
+
+        val success = viewModel.uiState.value as ReceiptOcrUiState.Success
+        assertEquals("テスト商店", success.draft.storeNameCandidates.first())
+        assertEquals(1, gateway.callCount)
     }
 
     private fun draft(rawText: String) = ReceiptOcrDraft(
@@ -124,6 +136,11 @@ class ReceiptOcrViewModelTest {
         registrationNumberCandidates = emptyList(),
         rawText = rawText
     )
+
+    private fun viewModel(
+        handle: SavedStateHandle = SavedStateHandle(),
+        gateway: ReceiptOcrGateway
+    ) = ReceiptOcrViewModel(handle, gateway, ReceiptParser())
 
     private class FakeGateway(
         private val result: suspend () -> ReceiptOcrDraft

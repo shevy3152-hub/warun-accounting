@@ -239,6 +239,19 @@ private fun supplierCandidatesFor(
         }
     return fixedCandidates + userCandidates
 }
+
+private fun receiptParserStoreNames(savedCandidates: List<SupplierCandidateRecord>): List<String> {
+    val fixedNames = (
+        foodSupplierCandidates + alcoholSupplierCandidates + consumablesCandidates +
+            vehicleTransportCandidates
+        ).map { it.name }
+        .filter { it != "他" }
+    val savedNames = savedCandidates
+        .filterNot { it.isHidden }
+        .map { it.name }
+    return (fixedNames + savedNames).distinct()
+}
+
 private fun expenseCategoryLabel(category: String): String =
     when (category) {
         FoodPurchaseCategory -> "食材仕入"
@@ -1285,7 +1298,8 @@ private fun ReportEntryScreen(
         ReceiptOcrPanel(
             capturedReceipt = capturedReceipt,
             onCaptureCleared = onCaptureCleared,
-            onOpenReceiptCamera = onOpenReceiptCamera
+            onOpenReceiptCamera = onOpenReceiptCamera,
+            knownStoreNames = receiptParserStoreNames(uiState.supplierCandidates)
         )
         DailyReportForm(
             input = reportInput,
@@ -2240,7 +2254,8 @@ private fun ReceiptScreen(
         ReceiptOcrPanel(
             capturedReceipt = capturedReceipt,
             onCaptureCleared = onCaptureCleared,
-            onOpenReceiptCamera = onOpenReceiptCamera
+            onOpenReceiptCamera = onOpenReceiptCamera,
+            knownStoreNames = receiptParserStoreNames(uiState.supplierCandidates)
         )
         FormCard {
             Text("仮レシート登録", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)

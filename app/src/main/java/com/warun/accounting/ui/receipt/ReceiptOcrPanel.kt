@@ -26,13 +26,18 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.warun.accounting.camera.ReceiptCaptureResult
 import com.warun.accounting.camera.ReceiptImageStore
+import com.warun.accounting.ocr.parser.ReceiptCandidateConfidence
+import com.warun.accounting.ocr.parser.ReceiptCandidateEvidence
 import java.io.File
+import java.text.NumberFormat
+import java.util.Locale
 
 @Composable
 fun ReceiptOcrPanel(
     capturedReceipt: ReceiptCaptureResult?,
     onCaptureCleared: () -> Unit,
     onOpenReceiptCamera: () -> Unit,
+    knownStoreNames: List<String> = emptyList(),
     viewModel: ReceiptOcrViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
@@ -41,6 +46,10 @@ fun ReceiptOcrPanel(
     }
     val uiState by viewModel.uiState.collectAsState()
     val effectiveCapture = capturedReceipt ?: uiState.captureOrNull
+
+    LaunchedEffect(knownStoreNames) {
+        viewModel.updateKnownStoreNames(knownStoreNames)
+    }
 
     LaunchedEffect(capturedReceipt?.captureId, uiState is ReceiptOcrUiState.Ready) {
         val capture = capturedReceipt ?: (uiState as? ReceiptOcrUiState.Ready)?.capture
@@ -73,6 +82,33 @@ fun ReceiptOcrPanel(
                     Text("レシートの文字を読み取っています…")
                 }
                 is ReceiptOcrUiState.Success -> {
+                    val parseResult = state.parseResult
+                    Text("抽出候補", style = MaterialTheme.typography.labelLarge)
+                    CandidateText(
+                        label = "店舗名",
+                        value = parseResult.bestStore?.displayName,
+                        evidence = parseResult.bestStore?.evidence,
+                        confidence = parseResult.bestStore?.confidence,
+                        alternatives = parseResult.storeCandidates.drop(1).map { it.displayName }
+                    )
+                    CandidateText(
+                        label = "購入日時",
+                        value = parseResult.bestDateTime?.normalizedValue,
+                        evidence = parseResult.bestDateTime?.evidence,
+                        confidence = parseResult.bestDateTime?.confidence,
+                        alternatives = parseResult.dateTimeCandidates.drop(1).map { it.normalizedValue }
+                    )
+                    CandidateText(
+                        label = "合計金額",
+                        value = parseResult.bestTotalAmount?.amount?.let {
+                            "${NumberFormat.getNumberInstance(Locale.JAPAN).format(it)}円"
+                        },
+                        evidence = parseResult.bestTotalAmount?.evidence,
+                        confidence = parseResult.bestTotalAmount?.confidence,
+                        alternatives = parseResult.totalAmountCandidates.drop(1).map {
+                            "${NumberFormat.getNumberInstance(Locale.JAPAN).format(it.amount)}円"
+                        }
+                    )
                     Text("認識した全文", style = MaterialTheme.typography.labelLarge)
                     Surface(
                         color = MaterialTheme.colorScheme.surface,
@@ -117,3 +153,38 @@ fun ReceiptOcrPanel(
         }
     }
 }
+
+@Composable
+private fun CandidateText(
+    label: String,
+    value: String?,
+    evidence: ReceiptCandidateEvidence?,
+    confidence: ReceiptCandidateConfidence?,
+    alternatives: List<String>
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text("$label：${value ?: "未検出"}")
+        if (evidence != null && confidence != null) {
+            val source = evidence.lines.joinToString(" / ") { it.original.trim() }.take(120)
+            Text(
+                text = "根拠：${evidence.reason}（${confidence.label}）${if (source.isBlank()) "" else " / $source"}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        if (alternatives.isNotEmpty()) {
+            Text(
+                text = "他候補：${alternatives.take(3).joinToString("、")}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+private val ReceiptCandidateConfidence.label: String
+    get() = when (this) {
+        ReceiptCandidateConfidence.High -> "高"
+        ReceiptCandidateConfidence.Medium -> "中"
+        ReceiptCandidateConfidence.Low -> "低"
+    }
