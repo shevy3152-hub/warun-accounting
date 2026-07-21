@@ -102,14 +102,48 @@ class ReceiptOcrViewModelTest {
         val first = viewModel(handle, firstGateway)
         first.runOcr(capture)
         runCurrent()
+        first.updateSupplierName("編集した店舗")
 
         val restoredGateway = FakeGateway { draft("実行されない") }
         val restored = viewModel(handle, restoredGateway)
 
         assertEquals("復元する結果", (restored.uiState.value as ReceiptOcrUiState.Success).rawText)
+        assertEquals("編集した店舗", (restored.uiState.value as ReceiptOcrUiState.Success).review.supplierName)
         assertFalse(restored.runOcr(capture))
         runCurrent()
         assertEquals(0, restoredGateway.callCount)
+    }
+
+    @Test
+    fun alternativeSelectionUpdatesReviewAndCreatesNormalizedApplyResult() = runTest(dispatcher) {
+        val gateway = FakeGateway { draft("バロー\n2026/07/21\n合計 1,540円") }
+        val viewModel = viewModel(gateway = gateway)
+        viewModel.runOcr(capture)
+        runCurrent()
+
+        viewModel.updateSupplierName("代替店舗")
+        viewModel.updatePurchaseDate("２０２６年７月２１日")
+        viewModel.updateTotalAmount("￥１，５４０円")
+
+        val result = viewModel.createApplyResult()!!
+        assertEquals("代替店舗", result.supplierName)
+        assertEquals("2026-07-21", result.expenseDate)
+        assertEquals("1540", result.amount)
+        assertEquals(capture, result.capture)
+    }
+
+    @Test
+    fun clearDiscardsCaptureOcrAndEditedReviewState() = runTest(dispatcher) {
+        val handle = SavedStateHandle()
+        val viewModel = viewModel(handle, FakeGateway { draft("バロー\n2026/07/21\n合計 1,540円") })
+        viewModel.runOcr(capture)
+        runCurrent()
+        viewModel.updateSupplierName("編集した店舗")
+
+        viewModel.clear()
+
+        assertEquals(ReceiptOcrUiState.Idle, viewModel.uiState.value)
+        assertEquals(ReceiptOcrUiState.Idle, viewModel(handle, FakeGateway { draft("再実行") }).uiState.value)
     }
 
     @Test

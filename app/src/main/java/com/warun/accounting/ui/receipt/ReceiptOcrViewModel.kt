@@ -26,7 +26,8 @@ sealed interface ReceiptOcrUiState {
     data class Success(
         val capture: ReceiptCaptureResult,
         val draft: ReceiptOcrDraft,
-        val parseResult: ReceiptParseResult
+        val parseResult: ReceiptParseResult,
+        val review: ReceiptOcrReviewState
     ) : ReceiptOcrUiState {
         val rawText: String get() = draft.rawText
     }
@@ -60,7 +61,7 @@ class ReceiptOcrViewModel @Inject constructor(
         if (knownStoreNames == normalized) return
         knownStoreNames = normalized
         val current = _uiState.value as? ReceiptOcrUiState.Success ?: return
-        _uiState.value = analyzeDraft(current.capture, current.draft)
+        _uiState.value = analyzeDraft(current.capture, current.draft, current.review)
     }
 
     fun runOcr(capture: ReceiptCaptureResult): Boolean {
@@ -106,6 +107,36 @@ class ReceiptOcrViewModel @Inject constructor(
         return runOcr(capture)
     }
 
+    fun updateSupplierName(value: String) = updateReview {
+        it.copy(supplierName = value, supplierConfirmed = true)
+    }
+
+    fun updatePurchaseDate(value: String) = updateReview {
+        it.copy(purchaseDate = value, purchaseDateConfirmed = true)
+    }
+
+    fun updateTotalAmount(value: String) = updateReview {
+        it.copy(totalAmount = value, totalAmountConfirmed = true)
+    }
+
+    fun confirmSupplier() = updateReview { it.copy(supplierConfirmed = true) }
+
+    fun confirmPurchaseDate() = updateReview { it.copy(purchaseDateConfirmed = true) }
+
+    fun confirmTotalAmount() = updateReview { it.copy(totalAmountConfirmed = true) }
+
+    fun createApplyResult(): ReceiptOcrApplyResult? {
+        val success = _uiState.value as? ReceiptOcrUiState.Success ?: return null
+        val review = success.review
+        if (!review.canApply) return null
+        return ReceiptOcrApplyResult(
+            capture = success.capture,
+            supplierName = review.supplierName.trim(),
+            expenseDate = review.normalizedPurchaseDate ?: return null,
+            amount = review.normalizedTotalAmount?.toString() ?: return null
+        )
+    }
+
     fun clear() {
         activeJob?.cancel()
         activeJob = null
@@ -113,6 +144,7 @@ class ReceiptOcrViewModel @Inject constructor(
         savedStateHandle.remove<String>(StatusKey)
         savedStateHandle.remove<String>(RawTextKey)
         savedStateHandle.remove<String>(ErrorMessageKey)
+        savedStateHandle.remove<ArrayList<String>>(ReviewKey)
         _uiState.value = ReceiptOcrUiState.Idle
     }
 
@@ -144,13 +176,19 @@ class ReceiptOcrViewModel @Inject constructor(
         )
         savedStateHandle.remove<String>(RawTextKey)
         savedStateHandle.remove<String>(ErrorMessageKey)
+        savedStateHandle.remove<ArrayList<String>>(ReviewKey)
     }
 
     private fun analyzeDraft(
         capture: ReceiptCaptureResult,
-        draft: ReceiptOcrDraft
+        draft: ReceiptOcrDraft,
+        preservedReview: ReceiptOcrReviewState? = null
     ): ReceiptOcrUiState.Success {
         val result = receiptParser.parse(draft.rawText, knownStoreNames)
+        val review = preservedReview
+            ?: savedStateHandle.get<ArrayList<String>>(ReviewKey)?.toReviewState(capture.captureId)
+            ?: ReceiptOcrReviewState.from(result)
+        persistReview(capture.captureId, review)
         return ReceiptOcrUiState.Success(
             capture = capture,
             draft = draft.copy(
@@ -158,7 +196,39 @@ class ReceiptOcrViewModel @Inject constructor(
                 storeNameCandidates = result.storeCandidates.map { it.displayName },
                 totalAmountCandidates = result.totalAmountCandidates.map { it.amount }
             ),
-            parseResult = result
+            parseResult = result,
+            review = review
+        )
+    }
+
+    private fun updateReview(transform: (ReceiptOcrReviewState) -> ReceiptOcrReviewState) {
+        val success = _uiState.value as? ReceiptOcrUiState.Success ?: return
+        val review = transform(success.review)
+        persistReview(success.capture.captureId, review)
+        _uiState.value = success.copy(review = review)
+    }
+
+    private fun persistReview(captureId: String, review: ReceiptOcrReviewState) {
+        savedStateHandle[ReviewKey] = arrayListOf(
+            captureId,
+            review.supplierName,
+            review.purchaseDate,
+            review.totalAmount,
+            review.supplierConfirmed.toString(),
+            review.purchaseDateConfirmed.toString(),
+            review.totalAmountConfirmed.toString()
+        )
+    }
+
+    private fun ArrayList<String>.toReviewState(captureId: String): ReceiptOcrReviewState? {
+        if (getOrNull(0) != captureId) return null
+        return ReceiptOcrReviewState(
+            supplierName = getOrNull(1).orEmpty(),
+            purchaseDate = getOrNull(2).orEmpty(),
+            totalAmount = getOrNull(3).orEmpty(),
+            supplierConfirmed = getOrNull(4).toBoolean(),
+            purchaseDateConfirmed = getOrNull(5).toBoolean(),
+            totalAmountConfirmed = getOrNull(6).toBoolean()
         )
     }
 
@@ -191,6 +261,7 @@ class ReceiptOcrViewModel @Inject constructor(
         const val StatusKey = "receipt.ocr.status"
         const val RawTextKey = "receipt.ocr.rawText"
         const val ErrorMessageKey = "receipt.ocr.error"
+        const val ReviewKey = "receipt.ocr.review"
         const val StatusReady = "ready"
         const val StatusProcessing = "processing"
         const val StatusSuccess = "success"

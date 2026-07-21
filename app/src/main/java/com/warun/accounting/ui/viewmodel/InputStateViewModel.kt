@@ -4,8 +4,10 @@ import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
+import com.warun.accounting.camera.ReceiptCaptureResult
 import com.warun.accounting.data.local.DailyReportStatus
 import com.warun.accounting.data.local.ExpenseSourceType
+import com.warun.accounting.ui.receipt.ReceiptOcrApplyResult
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.util.UUID
 import javax.inject.Inject
@@ -22,6 +24,8 @@ class InputStateViewModel @Inject constructor(
         const val ExpenseDirtyKey = "input.expense.dirty"
         const val UtilityEditedKey = "input.utility.edited"
         const val ExpenseDraftKey = "input.expense.draft"
+        const val PendingExpenseCaptureKey = "input.expense.pendingCapture"
+        const val AppliedOcrCaptureIdKey = "input.expense.appliedOcrCaptureId"
         const val ReceiptInputKey = "input.receipt"
     }
 
@@ -41,6 +45,11 @@ class InputStateViewModel @Inject constructor(
     val draftExpenseInputState = persistedNullableList(
         ExpenseDraftKey,
         savedStateHandle.get<ArrayList<String>>(ExpenseDraftKey)?.toExpenseInput(),
+        { it.toSavedStrings() }
+    )
+    val pendingExpenseCaptureState = persistedNullableList(
+        PendingExpenseCaptureKey,
+        savedStateHandle.get<ArrayList<String>>(PendingExpenseCaptureKey)?.toReceiptCaptureResult(),
         { it.toSavedStrings() }
     )
     val receiptInputState = persistedState(
@@ -86,6 +95,22 @@ class InputStateViewModel @Inject constructor(
         val next = newReceiptInput()
         receiptInputState.value = next
         return next
+    }
+
+    fun applyReceiptOcr(result: ReceiptOcrApplyResult): Boolean {
+        val current = draftExpenseInputState.value ?: return false
+        if (savedStateHandle.get<String>(AppliedOcrCaptureIdKey) == result.capture.captureId) {
+            return false
+        }
+        draftExpenseInputState.value = current.copy(
+            supplierName = result.supplierName,
+            expenseDate = result.expenseDate,
+            amount = result.amount
+        )
+        pendingExpenseCaptureState.value = result.capture
+        savedStateHandle[AppliedOcrCaptureIdKey] = result.capture.captureId
+        expenseFormDirtyState.value = true
+        return true
     }
 
     private fun newReceiptInput() = ReceiptInput(
@@ -187,6 +212,21 @@ private fun List<String>.toExpenseInput() = ExpenseInput(
     sourceType = getOrElse(8) { ExpenseSourceType.Manual },
     createdAt = getOrElse(9) { "" }.toLongOrNull()
 )
+
+private fun ReceiptCaptureResult.toSavedStrings() = arrayListOf(
+    captureId, localUri, capturedAt.toString()
+)
+
+private fun List<String>.toReceiptCaptureResult(): ReceiptCaptureResult? {
+    val captureId = getOrElse(0) { "" }
+    val capturedAt = getOrElse(2) { "" }.toLongOrNull() ?: return null
+    if (captureId.isBlank()) return null
+    return ReceiptCaptureResult(
+        captureId = captureId,
+        localUri = getOrElse(1) { "" },
+        capturedAt = capturedAt
+    )
+}
 
 private fun ReceiptInput.toSavedStrings() = arrayListOf(
     id, purchaseDate, capturedDate, registeredAt?.toString().orEmpty(), storeName,

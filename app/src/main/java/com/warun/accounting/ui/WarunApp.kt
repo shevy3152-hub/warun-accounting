@@ -984,6 +984,29 @@ private data class SaveFeedback(
     val isError: Boolean
 )
 
+internal sealed interface ReportExpenseSaveDecision {
+    data class Allowed(val expenseToSave: ExpenseInput?) : ReportExpenseSaveDecision
+    data class BlockedDateMismatch(
+        val reportDate: String,
+        val draft: ExpenseInput
+    ) : ReportExpenseSaveDecision
+}
+
+internal fun reportExpenseSaveDecision(
+    reportDate: String,
+    draftExpense: ExpenseInput?,
+    expenseFormDirty: Boolean
+): ReportExpenseSaveDecision {
+    if (!expenseFormDirty || draftExpense == null) {
+        return ReportExpenseSaveDecision.Allowed(null)
+    }
+    return if (draftExpense.expenseDate == reportDate) {
+        ReportExpenseSaveDecision.Allowed(draftExpense)
+    } else {
+        ReportExpenseSaveDecision.BlockedDateMismatch(reportDate, draftExpense)
+    }
+}
+
 internal data class SidebarSummaryOverride(
     val salesTotal: Long,
     val estimatedBalance: Long,
@@ -1113,6 +1136,7 @@ private fun ReportEntryScreen(
     var expenseFormDirty by inputStateViewModel.expenseFormDirtyState
     var utilityFieldsEdited by inputStateViewModel.utilityFieldsEditedState
     var draftExpenseInput by inputStateViewModel.draftExpenseInputState
+    val pendingExpenseCapture by inputStateViewModel.pendingExpenseCaptureState
     var savingStatus by inputStateViewModel.reportSavingStatusState
     var saveFeedback by remember { mutableStateOf<SaveFeedback?>(null) }
 
@@ -1132,6 +1156,11 @@ private fun ReportEntryScreen(
     val enteredReportDates = remember(uiState.reports) { uiState.reports.map { it.reportDate }.toSet() }
     val totals = reportInput.calculateTotals(paymentVisibility, liveReportExpenses)
     val hasUnsavedChanges = reportInput != cleanReportInput || expenseFormDirty || utilityFieldsEdited
+    val expenseSaveDecision = reportExpenseSaveDecision(
+        reportDate = reportInput.reportDate,
+        draftExpense = draftExpenseInput,
+        expenseFormDirty = expenseFormDirty
+    )
 
     LaunchedEffect(reportInput.reportDate, totals) {
         onLiveSummaryChange(
@@ -1179,11 +1208,24 @@ private fun ReportEntryScreen(
 
     fun saveCurrentReport(status: String, afterSuccess: (() -> Unit)? = null) {
         if (savingStatus != null) return
+        val currentExpenseDecision = reportExpenseSaveDecision(
+            reportDate = reportInput.reportDate,
+            draftExpense = draftExpenseInput,
+            expenseFormDirty = expenseFormDirty
+        )
+        if (currentExpenseDecision is ReportExpenseSaveDecision.BlockedDateMismatch) {
+            saveFeedback = SaveFeedback(
+                title = "支出を先に保存してください",
+                body = "支出日 ${currentExpenseDecision.draft.expenseDate} は日報日 ${currentExpenseDecision.reportDate} と異なります。日報の一括保存ではこの支出は保存されません。支出フォームの「保存」で個別保存してください。",
+                isError = true
+            )
+            return
+        }
         val savedInput = reportInput
             .copy(status = status)
             .withUtilityCompatibility(cleanReportInput, utilityFieldsEdited)
             .withHiddenPaymentsCleared(paymentVisibility)
-        val expenseToSave = draftExpenseInput?.takeIf { expenseFormDirty && it.expenseDate == reportInput.reportDate }
+        val expenseToSave = (currentExpenseDecision as ReportExpenseSaveDecision.Allowed).expenseToSave
 
         savingStatus = status
         if (expenseToSave != null && !expenseToSave.isReadyToSave()) {
@@ -1299,8 +1341,49 @@ private fun ReportEntryScreen(
             capturedReceipt = capturedReceipt,
             onCaptureCleared = onCaptureCleared,
             onOpenReceiptCamera = onOpenReceiptCamera,
-            knownStoreNames = receiptParserStoreNames(uiState.supplierCandidates)
+            knownStoreNames = receiptParserStoreNames(uiState.supplierCandidates),
+            existingExpense = draftExpenseInput,
+            existingPendingCapture = pendingExpenseCapture,
+            onApplyToExpense = { result ->
+                val applied = inputStateViewModel.applyReceiptOcr(result)
+                if (applied) {
+                    saveFeedback = SaveFeedback(
+                        title = "支出入力へ反映しました",
+                        body = "支払先・支出日・金額を反映しました。内容を確認して編集できます。",
+                        isError = false
+                    )
+                }
+                applied
+            }
         )
+        (expenseSaveDecision as? ReportExpenseSaveDecision.BlockedDateMismatch)?.let { blocked ->
+            Surface(
+                color = MaterialTheme.colorScheme.errorContainer,
+                shape = MaterialTheme.shapes.medium,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        "日付が異なる未保存の支出があります",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                    Text(
+                        "支出日 ${blocked.draft.expenseDate} は日報日 ${blocked.reportDate} と異なります。日報の一括保存ではこの支出は保存されないため、先に支出フォームの「保存」で個別保存してください。",
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                    Text(
+                        "日報日とOCR購入日は自動変更されません。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                }
+            }
+        }
         DailyReportForm(
             input = reportInput,
             paymentVisibility = paymentVisibility,
@@ -1308,6 +1391,7 @@ private fun ReportEntryScreen(
             expenses = reportExpenses,
             previewExpenses = liveReportExpenses,
             draftExpenseInput = draftExpenseInput,
+            ocrApplyCaptureId = pendingExpenseCapture?.captureId,
             supplierCandidates = uiState.supplierCandidates,
             enteredReportDates = enteredReportDates,
             onInputChange = { reportInput = it },
@@ -1337,6 +1421,7 @@ private fun DailyReportForm(
     expenses: List<ExpenseRecord>,
     previewExpenses: List<ExpenseRecord>,
     draftExpenseInput: ExpenseInput?,
+    ocrApplyCaptureId: String?,
     supplierCandidates: List<SupplierCandidateRecord>,
     enteredReportDates: Set<String>,
     onInputChange: (DailyReportInput) -> Unit,
@@ -1373,6 +1458,7 @@ private fun DailyReportForm(
                 expenses = expenses,
                 previewExpenses = previewExpenses,
                 draftExpenseInput = draftExpenseInput,
+                ocrApplyCaptureId = ocrApplyCaptureId,
                 supplierCandidates = supplierCandidates,
                 expenseTotal = totals.expenseTotal,
                 todayBalance = totals.todayBalance,
@@ -1655,6 +1741,7 @@ private fun ExpenseCard(
     expenses: List<ExpenseRecord>,
     previewExpenses: List<ExpenseRecord>,
     draftExpenseInput: ExpenseInput?,
+    ocrApplyCaptureId: String?,
     expenseTotal: Long,
     todayBalance: Long,
     onInputChange: (DailyReportInput) -> Unit,
@@ -1670,7 +1757,7 @@ private fun ExpenseCard(
     modifier: Modifier = Modifier.fillMaxWidth()
 ) {
     var selectedCategory by remember(input.reportDate, draftExpenseInput?.id) {
-        mutableStateOf(draftExpenseInput?.takeIf { it.expenseDate == input.reportDate }?.category)
+        mutableStateOf(draftExpenseInput?.category)
     }
     val foodTotal = detailExpense(input, previewExpenses, FoodPurchaseCategory)
     val alcoholTotal = detailExpense(input, previewExpenses, AlcoholPurchaseCategory)
@@ -1707,7 +1794,8 @@ private fun ExpenseCard(
                         onOpenReceiptCamera = onOpenReceiptCamera,
                         onDirtyChanged = onExpenseFormDirtyChanged,
                         onDraftExpenseChanged = onDraftExpenseChanged,
-                        restoredDraft = draftExpenseInput
+                        restoredDraft = draftExpenseInput,
+                        ocrApplyCaptureId = ocrApplyCaptureId
                     )
                 }
             }
@@ -1742,7 +1830,8 @@ private fun ExpenseCard(
                         onOpenReceiptCamera = onOpenReceiptCamera,
                         onDirtyChanged = onExpenseFormDirtyChanged,
                         onDraftExpenseChanged = onDraftExpenseChanged,
-                        restoredDraft = draftExpenseInput
+                        restoredDraft = draftExpenseInput,
+                        ocrApplyCaptureId = ocrApplyCaptureId
                     )
                 }
                 AdaptiveFormFields { fieldModifier ->
@@ -1783,7 +1872,8 @@ private fun ExpenseCard(
                         onOpenReceiptCamera = onOpenReceiptCamera,
                         onDirtyChanged = onExpenseFormDirtyChanged,
                         onDraftExpenseChanged = onDraftExpenseChanged,
-                        restoredDraft = draftExpenseInput
+                        restoredDraft = draftExpenseInput,
+                        ocrApplyCaptureId = ocrApplyCaptureId
                     )
                 }
                 AppTextField("雑費", input.miscellaneousExpense, KeyboardType.Number, clearZeroOnFocus = true) {
@@ -1806,7 +1896,8 @@ private fun ExpenseCard(
                         onOpenReceiptCamera = onOpenReceiptCamera,
                         onDirtyChanged = onExpenseFormDirtyChanged,
                         onDraftExpenseChanged = onDraftExpenseChanged,
-                        restoredDraft = draftExpenseInput
+                        restoredDraft = draftExpenseInput,
+                        ocrApplyCaptureId = ocrApplyCaptureId
                     )
                 }
             }
@@ -1852,7 +1943,8 @@ private fun ExpenseDetailPanel(
     onOpenReceiptCamera: () -> Unit,
     onDirtyChanged: (Boolean) -> Unit,
     onDraftExpenseChanged: (ExpenseInput?) -> Unit,
-    restoredDraft: ExpenseInput?
+    restoredDraft: ExpenseInput?,
+    ocrApplyCaptureId: String?
 ) {
     var editingExpense by remember(reportDate, category, restoredDraft?.id) {
         mutableStateOf(restoredDraft?.let { draft -> expenses.firstOrNull { it.id == draft.id } })
@@ -1910,6 +2002,7 @@ private fun ExpenseDetailPanel(
                 onDirtyChanged = onDirtyChanged,
                 onDraftExpenseChanged = onDraftExpenseChanged,
                 restoredDraft = restoredDraft,
+                ocrApplyCaptureId = ocrApplyCaptureId,
                 onClose = {
                     onDirtyChanged(false)
                     onDraftExpenseChanged(null)
@@ -1984,10 +2077,12 @@ private fun ExpenseRecordForm(
     onDirtyChanged: (Boolean) -> Unit,
     onDraftExpenseChanged: (ExpenseInput?) -> Unit,
     restoredDraft: ExpenseInput?,
+    ocrApplyCaptureId: String?,
     onCancel: () -> Unit,
     onSave: (ExpenseInput) -> Unit
 ) {
-    val restoredInput = restoredDraft?.takeIf { it.expenseDate == reportDate && it.category == initialCategory }
+    val restoredInput = restoredDraft
+    var expenseDate by remember(editingExpense, initialCategory, resetKey, restoredInput?.id) { mutableStateOf(restoredInput?.expenseDate ?: editingExpense?.expenseDate ?: reportDate) }
     var supplier by remember(editingExpense, initialCategory, resetKey, restoredInput?.id) { mutableStateOf(restoredInput?.supplierName ?: editingExpense?.supplierName.orEmpty()) }
     var category by remember(editingExpense, initialCategory, resetKey, restoredInput?.id) { mutableStateOf(restoredInput?.category ?: editingExpense?.category ?: initialCategory) }
     var paymentMethod by remember(editingExpense, initialCategory, resetKey, restoredInput?.id) { mutableStateOf(normalizePaymentMethod(restoredInput?.paymentMethod ?: editingExpense?.paymentMethod)) }
@@ -2002,33 +2097,51 @@ private fun ExpenseRecordForm(
     val candidates = remember(category, supplierCandidates) { supplierCandidatesFor(category, supplierCandidates) }
     val canAddCandidate = isCustomSupplier && supplier.trim().isNotBlank() && candidates.none { it.name == supplier.trim() }
     val initialSupplier = editingExpense?.supplierName.orEmpty()
+    val initialExpenseDate = editingExpense?.expenseDate ?: reportDate
     val initialCategoryValue = editingExpense?.category ?: initialCategory
     val initialPaymentMethod = normalizePaymentMethod(editingExpense?.paymentMethod)
     val initialAmount = editingExpense?.amount?.takeIf { it > 0L }?.toString().orEmpty()
     val initialMemo = editingExpense?.memo.orEmpty()
-    val formDirty = supplier != initialSupplier ||
+    val formDirty = expenseDate != initialExpenseDate ||
+        supplier != initialSupplier ||
         category != initialCategoryValue ||
         paymentMethod != initialPaymentMethod ||
         amount != initialAmount ||
         memo != initialMemo
     val parsedAmount = amount.toLongOrNull()
     val isAmountValid = parsedAmount != null && parsedAmount > 0L
+    val isExpenseDateValid = runCatching { LocalDate.parse(expenseDate) }.isSuccess
+    val restoredReceiptId = restoredInput?.receiptId ?: editingExpense?.receiptId.orEmpty()
     val currentExpenseInput = ExpenseInput(
         id = expenseId,
-        expenseDate = reportDate,
+        expenseDate = expenseDate,
         category = category,
         supplierName = supplier,
         amount = amount,
         paymentMethod = normalizePaymentMethod(paymentMethod),
         memo = memo,
-        receiptId = editingExpense?.receiptId.orEmpty(),
-        sourceType = editingExpense?.sourceType ?: ExpenseSourceType.Manual,
-        createdAt = editingExpense?.createdAt
+        receiptId = restoredReceiptId,
+        sourceType = restoredInput?.sourceType ?: editingExpense?.sourceType ?: ExpenseSourceType.Manual,
+        createdAt = restoredInput?.createdAt ?: editingExpense?.createdAt
     )
 
-    LaunchedEffect(formDirty, currentExpenseInput) {
-        onDirtyChanged(formDirty)
-        onDraftExpenseChanged(currentExpenseInput.takeIf { formDirty })
+    var consumedOcrApplyCaptureId by remember(editingExpense, initialCategory, resetKey, restoredInput?.id) {
+        mutableStateOf<String?>(null)
+    }
+    val isRestoringOcrValues = ocrApplyCaptureId != null && consumedOcrApplyCaptureId != ocrApplyCaptureId
+    LaunchedEffect(ocrApplyCaptureId) {
+        if (isRestoringOcrValues && restoredInput != null) {
+            supplier = restoredInput.supplierName
+            expenseDate = restoredInput.expenseDate
+            amount = restoredInput.amount
+            consumedOcrApplyCaptureId = ocrApplyCaptureId
+        }
+    }
+    LaunchedEffect(formDirty, currentExpenseInput, isRestoringOcrValues) {
+        if (!isRestoringOcrValues) {
+            onDirtyChanged(formDirty)
+            onDraftExpenseChanged(currentExpenseInput.takeIf { formDirty })
+        }
     }
     candidateToHide?.let { candidate ->
         AlertDialog(
@@ -2090,6 +2203,10 @@ private fun ExpenseRecordForm(
                 }
             }
             AppTextField("支払先", supplier, modifier = Modifier.focusRequester(supplierFocusRequester)) { supplier = it }
+            AppTextField("支出日（yyyy-MM-dd）", expenseDate) { expenseDate = it }
+            if (!isExpenseDateValid) {
+                Text("正しい支出日を入力してください", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium)
+            }
             Text("支払方法", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 paymentMethodOptions.forEach { option ->
@@ -2129,20 +2246,20 @@ private fun ExpenseRecordForm(
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
-                    enabled = isAmountValid && isSupportedPaymentMethod(paymentMethod),
+                    enabled = isExpenseDateValid && isAmountValid && isSupportedPaymentMethod(paymentMethod),
                     onClick = {
                         onSave(
                             ExpenseInput(
                                 id = expenseId,
-                                expenseDate = reportDate,
+                                expenseDate = expenseDate,
                                 category = category,
                                 supplierName = supplier,
                                 amount = amount,
                                 paymentMethod = normalizePaymentMethod(paymentMethod),
                                 memo = memo,
-                                receiptId = editingExpense?.receiptId.orEmpty(),
-                                sourceType = editingExpense?.sourceType ?: ExpenseSourceType.Manual,
-                                createdAt = editingExpense?.createdAt
+                                receiptId = restoredReceiptId,
+                                sourceType = restoredInput?.sourceType ?: editingExpense?.sourceType ?: ExpenseSourceType.Manual,
+                                createdAt = restoredInput?.createdAt ?: editingExpense?.createdAt
                             )
                         )
                     }

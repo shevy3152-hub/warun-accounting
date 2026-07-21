@@ -1,7 +1,10 @@
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+
 package com.warun.accounting.ui.receipt
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -12,6 +15,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -21,13 +25,16 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.warun.accounting.camera.ReceiptCaptureResult
 import com.warun.accounting.camera.ReceiptImageStore
 import com.warun.accounting.ocr.parser.ReceiptCandidateConfidence
 import com.warun.accounting.ocr.parser.ReceiptCandidateEvidence
+import com.warun.accounting.ui.viewmodel.ExpenseInput
 import java.io.File
 import java.text.NumberFormat
 import java.util.Locale
@@ -38,6 +45,9 @@ fun ReceiptOcrPanel(
     onCaptureCleared: () -> Unit,
     onOpenReceiptCamera: () -> Unit,
     knownStoreNames: List<String> = emptyList(),
+    existingExpense: ExpenseInput? = null,
+    existingPendingCapture: ReceiptCaptureResult? = null,
+    onApplyToExpense: ((ReceiptOcrApplyResult) -> Boolean)? = null,
     viewModel: ReceiptOcrViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
@@ -83,32 +93,84 @@ fun ReceiptOcrPanel(
                 }
                 is ReceiptOcrUiState.Success -> {
                     val parseResult = state.parseResult
-                    Text("抽出候補", style = MaterialTheme.typography.labelLarge)
-                    CandidateText(
-                        label = "店舗名",
-                        value = parseResult.bestStore?.displayName,
+                    val review = state.review
+                    Text("抽出候補を確認・編集", style = MaterialTheme.typography.labelLarge)
+                    EditableCandidate(
+                        label = "支払先／店舗名",
+                        value = review.supplierName,
+                        onValueChange = viewModel::updateSupplierName,
+                        error = review.supplierError,
                         evidence = parseResult.bestStore?.evidence,
                         confidence = parseResult.bestStore?.confidence,
-                        alternatives = parseResult.storeCandidates.drop(1).map { it.displayName }
-                    )
-                    CandidateText(
-                        label = "購入日時",
-                        value = parseResult.bestDateTime?.normalizedValue,
-                        evidence = parseResult.bestDateTime?.evidence,
-                        confidence = parseResult.bestDateTime?.confidence,
-                        alternatives = parseResult.dateTimeCandidates.drop(1).map { it.normalizedValue }
-                    )
-                    CandidateText(
-                        label = "合計金額",
-                        value = parseResult.bestTotalAmount?.amount?.let {
-                            "${NumberFormat.getNumberInstance(Locale.JAPAN).format(it)}円"
+                        alternatives = parseResult.storeCandidates.drop(1).take(3).map {
+                            it.displayName to it.displayName
                         },
-                        evidence = parseResult.bestTotalAmount?.evidence,
-                        confidence = parseResult.bestTotalAmount?.confidence,
-                        alternatives = parseResult.totalAmountCandidates.drop(1).map {
-                            "${NumberFormat.getNumberInstance(Locale.JAPAN).format(it.amount)}円"
+                        onAlternativeSelected = viewModel::updateSupplierName,
+                        onConfirmLowConfidence = viewModel::confirmSupplier,
+                        isConfirmed = review.supplierConfirmed,
+                        confirmLabel = if (review.supplierName.isBlank()) {
+                            "支払先を空欄で反映することを確認"
+                        } else {
+                            "この支払先候補を確認"
                         }
                     )
+                    EditableCandidate(
+                        label = "購入日",
+                        value = review.purchaseDate,
+                        onValueChange = viewModel::updatePurchaseDate,
+                        error = review.purchaseDateError,
+                        evidence = parseResult.bestDateTime?.evidence,
+                        confidence = parseResult.bestDateTime?.confidence,
+                        alternatives = parseResult.dateTimeCandidates.drop(1).take(3).map {
+                            it.normalizedValue to it.normalizedDate
+                        },
+                        onAlternativeSelected = viewModel::updatePurchaseDate,
+                        onConfirmLowConfidence = viewModel::confirmPurchaseDate,
+                        isConfirmed = review.purchaseDateConfirmed,
+                        confirmLabel = "この購入日候補を確認"
+                    )
+                    EditableCandidate(
+                        label = "合計金額",
+                        value = review.totalAmount,
+                        onValueChange = viewModel::updateTotalAmount,
+                        error = review.totalAmountError,
+                        evidence = parseResult.bestTotalAmount?.evidence,
+                        confidence = parseResult.bestTotalAmount?.confidence,
+                        alternatives = parseResult.totalAmountCandidates.drop(1).take(3).map {
+                            "${NumberFormat.getNumberInstance(Locale.JAPAN).format(it.amount)}円" to it.amount.toString()
+                        },
+                        onAlternativeSelected = viewModel::updateTotalAmount,
+                        onConfirmLowConfidence = viewModel::confirmTotalAmount,
+                        isConfirmed = review.totalAmountConfirmed,
+                        confirmLabel = "この合計金額候補を確認",
+                        keyboardType = KeyboardType.Number
+                    )
+                    existingExpense?.let { expense ->
+                        OverwriteNotice(expense, review)
+                    }
+                    if (onApplyToExpense != null) {
+                        Button(
+                            onClick = {
+                                val result = viewModel.createApplyResult()
+                                if (result != null && onApplyToExpense(result)) {
+                                    existingPendingCapture
+                                        ?.takeIf { it.captureId != result.capture.captureId }
+                                        ?.let { imageStore.delete(it.captureId) }
+                                    viewModel.clear()
+                                    onCaptureCleared()
+                                }
+                            },
+                            enabled = review.canApply,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("支出入力へ反映")
+                        }
+                        Text(
+                            "反映するのは支払先・支出日・金額だけです。カテゴリ・支払方法・メモは保持されます。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     Text("認識した全文", style = MaterialTheme.typography.labelLarge)
                     Surface(
                         color = MaterialTheme.colorScheme.surface,
@@ -155,16 +217,40 @@ fun ReceiptOcrPanel(
 }
 
 @Composable
-private fun CandidateText(
+private fun EditableCandidate(
     label: String,
-    value: String?,
+    value: String,
+    onValueChange: (String) -> Unit,
+    error: String?,
     evidence: ReceiptCandidateEvidence?,
     confidence: ReceiptCandidateConfidence?,
-    alternatives: List<String>
+    alternatives: List<Pair<String, String>>,
+    onAlternativeSelected: (String) -> Unit,
+    onConfirmLowConfidence: () -> Unit,
+    isConfirmed: Boolean,
+    confirmLabel: String,
+    keyboardType: KeyboardType = KeyboardType.Text
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text("$label：${value ?: "未検出"}")
-        if (evidence != null && confidence != null) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            label = { Text(label) },
+            singleLine = true,
+            isError = error != null,
+            keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
+            modifier = Modifier.fillMaxWidth()
+        )
+        if (error != null) {
+            Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+        if (evidence == null) {
+            Text(
+                "OCR候補：未検出",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else if (confidence != null) {
             val source = evidence.lines.joinToString(" / ") { it.original.trim() }.take(120)
             Text(
                 text = "根拠：${evidence.reason}（${confidence.label}）${if (source.isBlank()) "" else " / $source"}",
@@ -173,11 +259,45 @@ private fun CandidateText(
             )
         }
         if (alternatives.isNotEmpty()) {
-            Text(
-                text = "他候補：${alternatives.take(3).joinToString("、")}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Text("代替候補", style = MaterialTheme.typography.bodySmall)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                alternatives.forEach { (display, editValue) ->
+                    OutlinedButton(onClick = { onAlternativeSelected(editValue) }) {
+                        Text(display)
+                    }
+                }
+            }
+        }
+        if (!isConfirmed && (confidence == ReceiptCandidateConfidence.Low || value.isBlank())) {
+            OutlinedButton(onClick = onConfirmLowConfidence, modifier = Modifier.fillMaxWidth()) {
+                Text(confirmLabel)
+            }
+        }
+    }
+}
+
+@Composable
+private fun OverwriteNotice(existing: ExpenseInput, review: ReceiptOcrReviewState) {
+    val changes = buildList {
+        if (existing.supplierName.isNotBlank() && existing.supplierName.trim() != review.supplierName.trim()) {
+            add("支払先「${existing.supplierName}」→「${review.supplierName.ifBlank { "空欄" }}」")
+        }
+        val nextDate = review.normalizedPurchaseDate
+        if (existing.expenseDate.isNotBlank() && nextDate != null && existing.expenseDate != nextDate) {
+            add("支出日 ${existing.expenseDate} → $nextDate")
+        }
+        val currentAmount = ReceiptOcrReviewValidator.normalizeAmount(existing.amount)
+        val nextAmount = review.normalizedTotalAmount
+        if (currentAmount != null && nextAmount != null && currentAmount != nextAmount) {
+            add("金額 ${NumberFormat.getNumberInstance(Locale.JAPAN).format(currentAmount)}円 → ${NumberFormat.getNumberInstance(Locale.JAPAN).format(nextAmount)}円")
+        }
+    }
+    if (changes.isNotEmpty()) {
+        Surface(color = MaterialTheme.colorScheme.tertiaryContainer, modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("現在の入力を上書きします", style = MaterialTheme.typography.labelLarge)
+                changes.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
+            }
         }
     }
 }
