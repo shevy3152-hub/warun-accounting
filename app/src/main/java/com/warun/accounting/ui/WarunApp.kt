@@ -102,6 +102,7 @@ import com.warun.accounting.data.local.SupplierCandidateRecord
 import com.warun.accounting.ui.model.DashboardUiState
 import com.warun.accounting.ui.receipt.ReceiptCameraScreen
 import com.warun.accounting.ui.receipt.ReceiptCaptureResultKey
+import com.warun.accounting.ui.receipt.ReceiptOcrPanel
 import com.warun.accounting.ui.receipt.consumeReceiptCaptureResult
 import com.warun.accounting.ui.receipt.toSavedValue
 import com.warun.accounting.ui.util.toYen
@@ -495,6 +496,7 @@ private fun AppNavHost(
                 onHideSupplierCandidate = viewModel::hideSupplierCandidate,
                 onOpenReceiptCamera = { navController.navigate(ReceiptRoutes.Camera) },
                 capturedReceipt = capturedReceipt,
+                onCaptureCleared = { capturedReceipt = null },
                 navigationGuard = reportEntryNavigationGuard,
                 onRequestBack = onPopBackStack,
                 onLiveSummaryChange = onReportEntrySummaryChange
@@ -510,7 +512,8 @@ private fun AppNavHost(
                 onNavigate = onNavigateSingleTop,
                 onSaveReceipt = viewModel::saveReceipt,
                 onOpenReceiptCamera = { navController.navigate(ReceiptRoutes.Camera) },
-                capturedReceipt = capturedReceipt
+                capturedReceipt = capturedReceipt,
+                onCaptureCleared = { capturedReceipt = null }
             )
         }
         composable(ReceiptRoutes.Camera) {
@@ -574,6 +577,7 @@ private fun AppNavHost(
                 onHideSupplierCandidate = viewModel::hideSupplierCandidate,
                 onOpenReceiptCamera = { navController.navigate(ReceiptRoutes.Camera) },
                 capturedReceipt = capturedReceipt,
+                onCaptureCleared = { capturedReceipt = null },
                 navigationGuard = reportEntryNavigationGuard,
                 onRequestBack = onPopBackStack,
                 onLiveSummaryChange = onReportEntrySummaryChange
@@ -1077,6 +1081,7 @@ private fun ReportEntryScreen(
     onHideSupplierCandidate: (SupplierCandidateRecord) -> Unit,
     onOpenReceiptCamera: () -> Unit,
     capturedReceipt: ReceiptCaptureResult? = null,
+    onCaptureCleared: () -> Unit,
     navigationGuard: ReportEntryNavigationGuard? = null,
     onRequestBack: () -> Unit = {},
     onLiveSummaryChange: (SidebarSummaryOverride?) -> Unit = {},
@@ -1101,8 +1106,8 @@ private fun ReportEntryScreen(
     LaunchedEffect(capturedReceipt?.captureId) {
         if (capturedReceipt != null) {
             saveFeedback = SaveFeedback(
-                title = "レシートを撮影しました",
-                body = "編集中の支出内容は保持されています。OCRへの受け渡しはPhase 2で追加します。",
+                title = "レシート画像を受け取りました",
+                body = "編集中の支出内容を保持したまま、文字を読み取ります。",
                 isError = false
             )
         }
@@ -1277,6 +1282,11 @@ private fun ReportEntryScreen(
 
     ScreenColumn {
         ScreenTitle("日報入力", "空いた時間に任意の日付で入力できます。途中でも下書き保存できます。")
+        ReceiptOcrPanel(
+            capturedReceipt = capturedReceipt,
+            onCaptureCleared = onCaptureCleared,
+            onOpenReceiptCamera = onOpenReceiptCamera
+        )
         DailyReportForm(
             input = reportInput,
             paymentVisibility = paymentVisibility,
@@ -2188,6 +2198,7 @@ private fun ReceiptScreen(
     onSaveReceipt: (ReceiptInput, (Result<Unit>) -> Unit) -> Unit,
     onOpenReceiptCamera: () -> Unit,
     capturedReceipt: ReceiptCaptureResult? = null,
+    onCaptureCleared: () -> Unit,
     inputStateViewModel: InputStateViewModel = hiltViewModel()
 ) {
     var input by inputStateViewModel.receiptInputState
@@ -2222,13 +2233,15 @@ private fun ReceiptScreen(
     }
 
     ScreenColumn {
-        ScreenTitle("レシート", "撮影とOCRは次フェーズです。購入日ベースで仮登録できます。")
+        ScreenTitle("レシート", "撮影した画像から文字を読み取り、全文を確認できます。")
         Button(onClick = onOpenReceiptCamera, modifier = Modifier.fillMaxWidth()) {
             Text("レシートを撮影")
         }
-        capturedReceipt?.let {
-            Text("撮影済み画像: ${it.captureId}", color = MaterialTheme.colorScheme.primary)
-        }
+        ReceiptOcrPanel(
+            capturedReceipt = capturedReceipt,
+            onCaptureCleared = onCaptureCleared,
+            onOpenReceiptCamera = onOpenReceiptCamera
+        )
         FormCard {
             Text("仮レシート登録", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Text(
@@ -2270,7 +2283,7 @@ private fun ReceiptScreen(
             isSaving = isSaving
         )
         DashboardCard {
-            Text("CameraX撮影とML Kit OCRは次フェーズで追加します。OCR結果は自動確定せず、確認画面にします。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("OCR結果は確認用です。内容の自動入力と保存は今後のフェーズで追加します。", color = MaterialTheme.colorScheme.onSurfaceVariant)
             ResponsivePrimaryAction("日報入力へ移動", onClick = { onNavigate(AppDestination.ReportEntry.route) })
         }
         ReceiptList(uiState.receipts.take(8))

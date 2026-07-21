@@ -9,6 +9,8 @@ import com.warun.accounting.data.AccountingRepository
 import com.warun.accounting.data.OfflineAccountingRepository
 import com.warun.accounting.data.local.WarunDao
 import com.warun.accounting.data.local.WarunDatabase
+import com.warun.accounting.future.ReceiptOcrGateway
+import com.warun.accounting.ocr.MlKitReceiptOcrGateway
 import dagger.Binds
 import dagger.Module
 import dagger.Provides
@@ -288,4 +290,10 @@ abstract class RepositoryModule {
     abstract fun bindAccountingRepository(
         repository: OfflineAccountingRepository
     ): AccountingRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindReceiptOcrGateway(
+        gateway: MlKitReceiptOcrGateway
+    ): ReceiptOcrGateway
 }
