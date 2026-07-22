@@ -7,7 +7,7 @@ data class ReceiptStoreRule(
 
 object ReceiptStoreRules {
     val defaults: List<ReceiptStoreRule> = listOf(
-        ReceiptStoreRule("バロー", setOf("バロー", "valor", "valar")),
+        ReceiptStoreRule("バロー", setOf("バロー", "valor", "valar", "valey")),
         ReceiptStoreRule("トキノ屋", setOf("トキノ屋")),
         ReceiptStoreRule("ピアゴ", setOf("ピアゴ")),
         ReceiptStoreRule("アミカ", setOf("アミカ")),

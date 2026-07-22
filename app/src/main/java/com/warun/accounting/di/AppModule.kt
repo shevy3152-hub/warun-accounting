@@ -9,6 +9,9 @@ import com.warun.accounting.data.AccountingRepository
 import com.warun.accounting.data.OfflineAccountingRepository
 import com.warun.accounting.data.local.WarunDao
 import com.warun.accounting.data.local.WarunDatabase
+import com.warun.accounting.evidence.EvidenceFileStore
+import com.warun.accounting.evidence.EvidenceFilePromoter
+import com.warun.accounting.evidence.EvidenceFinalizationJournal
 import com.warun.accounting.future.ReceiptOcrGateway
 import com.warun.accounting.ocr.MlKitReceiptOcrGateway
 import dagger.Binds
@@ -17,6 +20,7 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
+import java.io.File
 import javax.inject.Singleton
 
 @Module
@@ -296,4 +300,28 @@ abstract class RepositoryModule {
     abstract fun bindReceiptOcrGateway(
         gateway: MlKitReceiptOcrGateway
     ): ReceiptOcrGateway
+}
+
+@Module
+@InstallIn(SingletonComponent::class)
+object EvidenceStorageModule {
+    @Provides
+    @Singleton
+    fun provideEvidenceFileStore(@ApplicationContext context: Context): EvidenceFileStore =
+        EvidenceFileStore(
+            pendingDirectory = File(context.filesDir, "receipt-images/pending"),
+            storedDirectory = File(context.filesDir, "accounting-evidence/stored")
+        )
+
+    @Provides
+    @Singleton
+    fun provideEvidenceFilePromoter(store: EvidenceFileStore): EvidenceFilePromoter = store
+
+    @Provides
+    @Singleton
+    fun provideEvidenceFinalizationJournal(
+        @ApplicationContext context: Context
+    ): EvidenceFinalizationJournal = EvidenceFinalizationJournal(
+        journalDirectory = File(context.filesDir, "accounting-evidence/finalization-journal")
+    )
 }

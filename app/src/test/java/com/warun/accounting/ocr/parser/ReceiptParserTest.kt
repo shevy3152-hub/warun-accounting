@@ -41,6 +41,31 @@ class ReceiptParserTest {
     }
 
     @Test
+    fun a90OcrVariantRecoversValorAndTotalFromObservedRecognitionNoise() {
+        val rawText = """
+            岐南店
+            、valey
+            2026年07月20日 (月)15:48
+            外税計
+            合計
+            お預り
+            お的り
+            hf1., 540
+            2,000
+            460
+        """.trimIndent()
+
+        val result = parser.parse(rawText, knownStoreNames = listOf("バロー"))
+
+        assertEquals("バロー", result.bestStore?.normalizedName)
+        assertEquals("岐南店", result.bestStore?.branchName)
+        assertEquals("2026-07-20 15:48", result.bestDateTime?.normalizedValue)
+        assertEquals(1_540L, result.bestTotalAmount?.amount)
+        assertFalse(result.totalAmountCandidates.any { it.amount == 2_000L })
+        assertFalse(result.totalAmountCandidates.any { it.amount == 460L })
+    }
+
+    @Test
     fun totalAmountCanFollowLabelOnNextLine() {
         val result = parser.parse("お買上計\n￥1,234")
 
@@ -61,6 +86,29 @@ class ReceiptParserTest {
 
         assertEquals(1_234L, result.bestTotalAmount?.amount)
         assertTrue(result.lines[1].normalized.contains("1,234"))
+    }
+
+    @Test
+    fun totalAmountIsKeptWhenTaxRateAppearsOnTheSameLine() {
+        val result = parser.parse("税込合計 1,540円 8 %")
+
+        assertEquals(1_540L, result.bestTotalAmount?.amount)
+        assertFalse(result.totalAmountCandidates.any { it.amount == 8L })
+    }
+
+    @Test
+    fun recognizesOcrWhitespaceInsideAmountLabels() {
+        val result = parser.parse(
+            """
+                合 計 1,540円
+                お 預 り 2,000円
+                お 釣 り 460円
+            """.trimIndent()
+        )
+
+        assertEquals(1_540L, result.bestTotalAmount?.amount)
+        assertFalse(result.totalAmountCandidates.any { it.amount == 2_000L })
+        assertFalse(result.totalAmountCandidates.any { it.amount == 460L })
     }
 
     @Test
@@ -187,5 +235,46 @@ class ReceiptParserTest {
         assertEquals(ReceiptCandidateConfidence.Low, result.bestTotalAmount?.confidence)
         assertFalse(result.totalAmountCandidates.any { it.amount == 2_000L })
         assertFalse(result.totalAmountCandidates.any { it.amount == 445L })
+    }
+
+    @Test
+    fun a90MultiColumnOcrDoesNotTreatNearbyItemPriceAsTotal() {
+        val rawText = """
+            Valsr
+            2026年07月20日 (月)15:48
+            外税計
+            合計
+            * 日清ウェル ママー香味野¥198
+            お預り
+            *フジバン ネオバターロー¥168
+            小計
+            お釣り
+            タイショウ
+            -140
+            4358
+            -60
+            1,420)
+            *1,427
+            113
+            7)
+            1, 540
+            113
+            2.000
+            生鮮食品は商品に不良不具合がない
+            限りお断りいたします
+            460
+            113)
+        """.trimIndent()
+
+        val result = parser.parse(rawText, knownStoreNames = listOf("バロー"))
+
+        assertEquals("バロー", result.bestStore?.normalizedName)
+        assertEquals("2026-07-20 15:48", result.bestDateTime?.normalizedValue)
+        assertEquals(1_540L, result.bestTotalAmount?.amount)
+        assertEquals(ReceiptCandidateConfidence.Low, result.bestTotalAmount?.confidence)
+        assertTrue(result.bestTotalAmount?.evidence?.reason?.contains("補助推定") == true)
+        assertFalse(result.totalAmountCandidates.any { it.amount == 198L })
+        assertFalse(result.totalAmountCandidates.any { it.amount == 2_000L })
+        assertFalse(result.totalAmountCandidates.any { it.amount == 460L })
     }
 }

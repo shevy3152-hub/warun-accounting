@@ -25,6 +25,7 @@ class InputStateViewModel @Inject constructor(
         const val UtilityEditedKey = "input.utility.edited"
         const val ExpenseDraftKey = "input.expense.draft"
         const val PendingExpenseCaptureKey = "input.expense.pendingCapture"
+        const val PendingExpenseCaptureOwnerKey = "input.expense.pendingCaptureOwner"
         const val AppliedOcrCaptureIdKey = "input.expense.appliedOcrCaptureId"
         const val ReceiptInputKey = "input.receipt"
     }
@@ -99,6 +100,7 @@ class InputStateViewModel @Inject constructor(
 
     fun applyReceiptOcr(result: ReceiptOcrApplyResult): Boolean {
         val current = draftExpenseInputState.value ?: return false
+        if (current.id.isBlank()) return false
         if (savedStateHandle.get<String>(AppliedOcrCaptureIdKey) == result.capture.captureId) {
             return false
         }
@@ -108,9 +110,36 @@ class InputStateViewModel @Inject constructor(
             amount = result.amount
         )
         pendingExpenseCaptureState.value = result.capture
+        savedStateHandle[PendingExpenseCaptureOwnerKey] = current.id
         savedStateHandle[AppliedOcrCaptureIdKey] = result.capture.captureId
         expenseFormDirtyState.value = true
         return true
+    }
+
+    fun pendingCaptureFor(expenseId: String): ReceiptCaptureResult? {
+        if (expenseId.isBlank()) return null
+        return pendingExpenseCaptureState.value?.takeIf {
+            savedStateHandle.get<String>(PendingExpenseCaptureOwnerKey) == expenseId
+        }
+    }
+
+    fun markPendingEvidenceStored(expenseId: String, captureId: String): Boolean {
+        val capture = pendingCaptureFor(expenseId) ?: return false
+        if (capture.captureId != captureId) return false
+        clearPendingExpenseCapture()
+        return true
+    }
+
+    fun discardPendingExpenseCapture(): ReceiptCaptureResult? {
+        val capture = pendingExpenseCaptureState.value ?: return null
+        clearPendingExpenseCapture()
+        return capture
+    }
+
+    private fun clearPendingExpenseCapture() {
+        pendingExpenseCaptureState.value = null
+        savedStateHandle.remove<String>(PendingExpenseCaptureOwnerKey)
+        savedStateHandle.remove<String>(AppliedOcrCaptureIdKey)
     }
 
     private fun newReceiptInput() = ReceiptInput(

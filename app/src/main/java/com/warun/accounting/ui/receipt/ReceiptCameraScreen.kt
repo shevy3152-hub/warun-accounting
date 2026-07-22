@@ -38,6 +38,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -55,6 +56,9 @@ import com.warun.accounting.camera.ReceiptCameraController
 import com.warun.accounting.camera.ReceiptCaptureResult
 import com.warun.accounting.camera.ReceiptImageStore
 import java.io.File
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @Composable
 fun ReceiptCameraScreen(
@@ -76,7 +80,9 @@ fun ReceiptCameraScreen(
     }
     var acceptedCaptureId by remember { mutableStateOf<String?>(null) }
     var activeCaptureId by remember { mutableStateOf<String?>(null) }
+    var stabilizationJob by remember { mutableStateOf<Job?>(null) }
     val cancelledCaptureIds = remember { mutableSetOf<String>() }
+    val captureScope = rememberCoroutineScope()
     val latestUiState by rememberUpdatedState(uiState)
     val latestAcceptedCaptureId by rememberUpdatedState(acceptedCaptureId)
     val latestActiveCaptureId by rememberUpdatedState(activeCaptureId)
@@ -89,6 +95,8 @@ fun ReceiptCameraScreen(
     }
 
     fun cancel() {
+        stabilizationJob?.cancel()
+        stabilizationJob = null
         activeCaptureId?.let {
             cancelledCaptureIds += it
             imageStore.delete(it)
@@ -152,26 +160,34 @@ fun ReceiptCameraScreen(
                                     cameraViewModel.onError("撮影画像の保存先を準備できませんでした")
                                     return@CameraContent
                                 }
-                            controller.capture(
-                                file = file,
-                                onSuccess = { localUri ->
-                                    activeCaptureId = null
-                                    if (captureId in cancelledCaptureIds) {
-                                        imageStore.delete(captureId)
-                                    } else {
-                                        cameraViewModel.onCaptured(
-                                            ReceiptCaptureResult(captureId, localUri, System.currentTimeMillis())
-                                        )
-                                    }
-                                },
-                                onError = {
-                                    activeCaptureId = null
+                            stabilizationJob?.cancel()
+                            stabilizationJob = captureScope.launch {
+                                delay(CaptureStabilizationDelayMillis)
+                                if (activeCaptureId != captureId || captureId in cancelledCaptureIds) {
                                     imageStore.delete(captureId)
-                                    if (captureId !in cancelledCaptureIds) {
-                                        cameraViewModel.onError("レシートを撮影できませんでした")
-                                    }
+                                    return@launch
                                 }
-                            )
+                                controller.capture(
+                                    file = file,
+                                    onSuccess = { localUri ->
+                                        activeCaptureId = null
+                                        if (captureId in cancelledCaptureIds) {
+                                            imageStore.delete(captureId)
+                                        } else {
+                                            cameraViewModel.onCaptured(
+                                                ReceiptCaptureResult(captureId, localUri, System.currentTimeMillis())
+                                            )
+                                        }
+                                    },
+                                    onError = {
+                                        activeCaptureId = null
+                                        imageStore.delete(captureId)
+                                        if (captureId !in cancelledCaptureIds) {
+                                            cameraViewModel.onError("レシートを撮影できませんでした")
+                                        }
+                                    }
+                                )
+                            }
                         }
                     },
                     onRetake = { result ->
@@ -280,7 +296,7 @@ private fun CameraContent(
                     onClick = {},
                     enabled = false,
                     modifier = Modifier.fillMaxWidth()
-                ) { Text("撮影中…") }
+                ) { Text("端末を動かさずにお待ちください…") }
                 is ReceiptCameraUiState.Captured -> {
                     Text("レシートを撮影しました", color = MaterialTheme.colorScheme.onPrimaryContainer)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -354,3 +370,5 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
     is ContextWrapper -> baseContext.findActivity()
     else -> null
 }
+
+private const val CaptureStabilizationDelayMillis = 750L

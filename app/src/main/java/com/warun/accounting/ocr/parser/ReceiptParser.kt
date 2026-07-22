@@ -147,7 +147,9 @@ class ReceiptParser @Inject constructor() {
         if (occurrences.isEmpty()) return emptyList()
         val totalLabels = lines.mapNotNull { line -> totalLabelWeight(line.normalized)?.let { line to it } }
         if (totalLabels.isEmpty()) return emptyList()
-        val excludedLabels = lines.filter { ExcludedAmountLabelRegex.containsMatchIn(it.normalized) }
+        val excludedLabels = lines.filter {
+            ExcludedAmountLabelRegex.containsMatchIn(normalizeAmountLabel(it.normalized))
+        }
         val candidates = mutableListOf<ReceiptAmountCandidate>()
 
         for ((labelLine, labelWeight) in totalLabels) {
@@ -158,7 +160,7 @@ class ReceiptParser @Inject constructor() {
                     kotlin.math.abs(excluded.index - occurrence.line.index) < distance ||
                         (excluded.index == occurrence.line.index && excluded.index != labelLine.index)
                 }
-                if (closerExcludedLabel || occurrence.isExcluded) continue
+                if (closerExcludedLabel || occurrence.isExcluded || occurrence.isLikelyItemLine) continue
                 val priority = labelWeight + (AmountContextRadius - distance) * 80 +
                     if (occurrence.hasCurrencyMarker) 40 else 0
                 candidates += ReceiptAmountCandidate(
@@ -188,32 +190,59 @@ class ReceiptParser @Inject constructor() {
         occurrences: List<AmountOccurrence>,
         totalLabel: ReceiptLine
     ): ReceiptAmountCandidate? {
-        if (lines.none { DepositLabelRegex.containsMatchIn(it.normalized) } ||
-            lines.none { ChangeLabelRegex.containsMatchIn(it.normalized) }
+        if (lines.none { DepositLabelRegex.containsMatchIn(normalizeAmountLabel(it.normalized)) } ||
+            lines.none { ChangeLabelRegex.containsMatchIn(normalizeAmountLabel(it.normalized)) }
         ) return null
         val values = occurrences
-            .filterNot { it.isExcluded }
+            .filterNot { it.isExcluded || it.isLikelyItemLine }
             .filter { it.amount in MinimumAmount..MaximumAmount }
-            .distinctBy { it.amount }
-        val deposit = values.maxByOrNull { it.amount } ?: return null
-        val inferred = values.asSequence()
-            .filter { it.amount < deposit.amount }
-            .mapNotNull { change ->
-                val totalValue = deposit.amount - change.amount
-                val total = values.firstOrNull { it.amount == totalValue } ?: return@mapNotNull null
-                if (total.amount <= change.amount) return@mapNotNull null
-                Triple(total, deposit, change)
-            }
-            .maxByOrNull { it.first.amount }
+        val amountFrequencies = values.groupingBy { it.amount }.eachCount()
+        val inferred = values.asSequence().flatMap { deposit ->
+            values.asSequence()
+                .filter { change ->
+                    change !== deposit && change.amount < deposit.amount
+                }
+                .flatMap { change ->
+                    val totalValue = deposit.amount - change.amount
+                    values.asSequence()
+                        .filter { total ->
+                            total !== deposit &&
+                                total !== change &&
+                                total.amount == totalValue &&
+                                total.amount > change.amount
+                        }
+                        .map { total ->
+                            CashArithmeticMatch(
+                                total = total,
+                                deposit = deposit,
+                                change = change,
+                                changeFrequency = amountFrequencies.getValue(change.amount)
+                            )
+                        }
+                }
+        }.minWithOrNull(
+            compareBy<CashArithmeticMatch>(
+                { it.depositRoundnessPenalty },
+                { it.changeFrequency },
+                { it.lineSpan },
+                { it.depositChangeDistance },
+                { it.sequencePenalty },
+                { -it.total.amount }
+            )
+        )
             ?: return null
-        val (total, matchedDeposit, change) = inferred
         return ReceiptAmountCandidate(
-            amount = total.amount,
-            originalText = total.originalText,
+            amount = inferred.total.amount,
+            originalText = inferred.total.originalText,
             priority = 500,
             confidence = ReceiptCandidateConfidence.Low,
             evidence = ReceiptCandidateEvidence(
-                listOf(totalLabel, total.line, matchedDeposit.line, change.line).distinctBy { it.index },
+                listOf(
+                    totalLabel,
+                    inferred.total.line,
+                    inferred.deposit.line,
+                    inferred.change.line
+                ).distinctBy { it.index },
                 "現金払いの補助推定: 預り額 - 釣銭 = 合計額の関係と一致"
             )
         )
@@ -226,7 +255,8 @@ class ReceiptParser @Inject constructor() {
             DatePatterns.any { it.containsMatchIn(line.normalized) }
         ) return emptyList()
         return AmountRegex.findAll(line.normalized).mapNotNull { match ->
-            if (match.range.last + 1 < line.normalized.length && line.normalized[match.range.last + 1] == '%') {
+            val suffix = line.normalized.substring(match.range.last + 1).trimStart()
+            if (suffix.startsWith('%')) {
                 return@mapNotNull null
             }
             val amount = match.groupValues[1].filter(Char::isDigit).toLongOrNull() ?: return@mapNotNull null
@@ -237,9 +267,20 @@ class ReceiptParser @Inject constructor() {
                 amount = amount,
                 originalText = matchedText,
                 hasCurrencyMarker = matchedText.contains('¥') || matchedText.contains('￥') || matchedText.contains('円'),
-                isExcluded = matchedText.startsWith('-') || ExcludedAmountLabelRegex.containsMatchIn(line.normalized)
+                isLikelyItemLine = isLikelyItemAmountLine(line.normalized, match.range),
+                isExcluded = matchedText.startsWith('-') ||
+                    ExcludedAmountLabelRegex.containsMatchIn(normalizeAmountLabel(line.normalized))
             )
         }.toList()
+    }
+
+    private fun isLikelyItemAmountLine(line: String, amountRange: IntRange): Boolean {
+        if (totalLabelWeight(line) != null) return false
+        val surroundingText = line.removeRange(amountRange)
+            .replace(ItemLinePunctuationRegex, "")
+            .trim()
+        return surroundingText.count(Char::isLetter) >= 3 ||
+            GenericItemLabelRegex.containsMatchIn(surroundingText)
     }
 
     private fun parseDate(match: MatchResult): LocalDate? = try {
@@ -259,13 +300,19 @@ class ReceiptParser @Inject constructor() {
         return "%02d:%02d".format(Locale.ROOT, hour, minute)
     }
 
-    private fun totalLabelWeight(line: String): Int? = when {
-        Regex("税込\\s*合計|総\\s*合計|ご請求額").containsMatchIn(line) -> 1_000
-        Regex("お買上(?:計|額)|現計").containsMatchIn(line) -> 950
-        Regex("(^|\\s)合計($|\\s|[:：])").containsMatchIn(line) || line.trim() == "合計" -> 900
-        line.contains("合計") && !line.contains("小計") -> 850
-        else -> null
+    private fun totalLabelWeight(line: String): Int? = when (val label = normalizeAmountLabel(line)) {
+        in listOf("税込合計", "総合計", "ご請求額") -> 1_000
+        in listOf("お買上計", "お買上額", "現計") -> 950
+        "合計" -> 900
+        else -> when {
+            Regex("税込合計|総合計|ご請求額").containsMatchIn(label) -> 1_000
+            Regex("お買上(?:計|額)|現計").containsMatchIn(label) -> 950
+            label.contains("合計") && !label.contains("小計") -> 850
+            else -> null
+        }
     }
+
+    private fun normalizeAmountLabel(value: String): String = value.replace(WhitespaceRegex, "")
 
     private fun isPossibleGenericStoreLine(line: String): Boolean {
         if (line.length !in 2..40 || line.count(Char::isLetter) < 2) return false
@@ -322,8 +369,24 @@ class ReceiptParser @Inject constructor() {
         val amount: Long,
         val originalText: String,
         val hasCurrencyMarker: Boolean,
+        val isLikelyItemLine: Boolean,
         val isExcluded: Boolean
     )
+
+    private data class CashArithmeticMatch(
+        val total: AmountOccurrence,
+        val deposit: AmountOccurrence,
+        val change: AmountOccurrence,
+        val changeFrequency: Int
+    ) {
+        private val lineIndexes = listOf(total.line.index, deposit.line.index, change.line.index)
+        val depositRoundnessPenalty: Int = if (deposit.amount % 100L == 0L) 0 else 1
+        val lineSpan: Int = lineIndexes.max() - lineIndexes.min()
+        val depositChangeDistance: Int = kotlin.math.abs(deposit.line.index - change.line.index)
+        val sequencePenalty: Int = if (
+            total.line.index < deposit.line.index && deposit.line.index < change.line.index
+        ) 0 else 1
+    }
 
     private companion object {
         const val StoreSearchLineCount = 14
@@ -338,16 +401,21 @@ class ReceiptParser @Inject constructor() {
         )
         val TimeRegex = Regex("(?<!\\d)([01]?\\d|2[0-3])[:時]([0-5]\\d)(?:分)?")
         val DateLabelRegex = Regex("取引日時|購入日時|日時|発行日|購入日|お買上日")
-        val AmountRegex = Regex("[-*]?\\s*[¥￥]?\\s*(\\d{1,3}(?:(?:,\\s*|\\s+)\\d{3})+|\\d{1,8})\\s*円?")
+        val AmountRegex = Regex(
+            "[-*]?\\s*[¥￥]?\\s*(\\d{1,3}(?:(?:(?:,|\\.,?)\\s*|\\s+)\\d{3})+|\\d{1,8})\\s*円?"
+        )
         val ExcludedAmountLabelRegex = Regex(
             "お?預り|預かり|お?釣り|お?的り|釣銭|小計|消費税|内税|外税|税計|値引|ポイント|支払前残高"
         )
         val DepositLabelRegex = Regex("お?預り|預かり")
         val ChangeLabelRegex = Regex("お?釣り|お?的り|釣銭")
         val IgnoredNumericLineRegex = Regex(
-            "登録番号|電話|TEL|レジ|担当|[責貴手]No|チNo|店No|(?:レ)?シートNo|Code|コード|ポイント|\\d+点|%",
+            "登録番号|電話|TEL|レジ|担当|[責貴手]No|チNo|店No|(?:レ)?シートNo|Code|コード|ポイント|\\d+点",
             RegexOption.IGNORE_CASE
         )
+        val WhitespaceRegex = Regex("\\s+")
+        val ItemLinePunctuationRegex = Regex("[\\s*※()（）:：/\\-]+")
+        val GenericItemLabelRegex = Regex("商品|品名")
         val GenericStoreExcludedRegex = Regex(
             "領収証|領収書|レシート|登録番号|電話|TEL|住所|〒|\\d{2,4}[-ー]\\d{2,4}|日時|発行日|購入日|" +
                 "担当|レジ|責No|チNo|店No|合計|小計|預り|釣り|税|ポイント|キャンペーン|ご入会|募集|受付|店長",

@@ -2,6 +2,8 @@
 
 package com.warun.accounting.ui.receipt
 
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
@@ -22,10 +24,16 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -38,6 +46,8 @@ import com.warun.accounting.ui.viewmodel.ExpenseInput
 import java.io.File
 import java.text.NumberFormat
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 fun ReceiptOcrPanel(
@@ -84,6 +94,7 @@ fun ReceiptOcrPanel(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text("OCR確認", style = MaterialTheme.typography.titleMedium)
+            ReceiptCapturePreview(effectiveCapture, imageStore)
             when (val state = uiState) {
                 ReceiptOcrUiState.Idle,
                 is ReceiptOcrUiState.Ready,
@@ -200,10 +211,7 @@ fun ReceiptOcrPanel(
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
-                    onClick = {
-                        discardCapture()
-                        onOpenReceiptCamera()
-                    },
+                    onClick = onOpenReceiptCamera,
                     modifier = Modifier.weight(1f)
                 ) {
                     Text("再撮影")
@@ -215,6 +223,71 @@ fun ReceiptOcrPanel(
         }
     }
 }
+
+@Composable
+private fun ReceiptCapturePreview(
+    capture: ReceiptCaptureResult,
+    imageStore: ReceiptImageStore
+) {
+    key(capture.captureId) {
+        val previewState by produceState<ReceiptPreviewState>(
+            initialValue = ReceiptPreviewState.Loading,
+            key1 = capture.captureId,
+            key2 = capture.localUri
+        ) {
+            value = withContext(Dispatchers.IO) {
+                runCatching {
+                    decodeReceiptPreview(imageStore.fileFor(capture.captureId))
+                }.getOrNull()?.let(ReceiptPreviewState::Loaded)
+                    ?: ReceiptPreviewState.Unavailable
+            }
+        }
+        when (val state = previewState) {
+            ReceiptPreviewState.Loading -> Text(
+                "撮影画像を読み込んでいます…",
+                style = MaterialTheme.typography.bodySmall
+            )
+            ReceiptPreviewState.Unavailable -> Text(
+                "撮影画像を表示できません",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
+            )
+            is ReceiptPreviewState.Loaded -> Image(
+                bitmap = state.bitmap,
+                contentDescription = "撮影したレシート",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 320.dp)
+                    .clip(MaterialTheme.shapes.small)
+            )
+        }
+    }
+}
+
+private fun decodeReceiptPreview(file: File): ImageBitmap? {
+    if (!file.isFile || file.length() <= 0L) return null
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeFile(file.absolutePath, bounds)
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
+    var sampleSize = 1
+    while (maxOf(bounds.outWidth, bounds.outHeight) / sampleSize > ReceiptPreviewMaxDimension) {
+        sampleSize *= 2
+    }
+    return BitmapFactory.decodeFile(
+        file.absolutePath,
+        BitmapFactory.Options().apply { inSampleSize = sampleSize }
+    )?.asImageBitmap()
+}
+
+private sealed interface ReceiptPreviewState {
+    data object Loading : ReceiptPreviewState
+    data object Unavailable : ReceiptPreviewState
+    data class Loaded(val bitmap: ImageBitmap) : ReceiptPreviewState
+}
+
+private const val ReceiptPreviewMaxDimension = 1_600
 
 @Composable
 private fun EditableCandidate(

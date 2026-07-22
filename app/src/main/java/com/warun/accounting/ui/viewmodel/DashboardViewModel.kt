@@ -3,6 +3,7 @@ package com.warun.accounting.ui.viewmodel
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.warun.accounting.camera.ReceiptCaptureResult
 import com.warun.accounting.data.AccountingRepository
 import com.warun.accounting.data.local.AppSettings
 import com.warun.accounting.data.local.DailyReport
@@ -13,6 +14,7 @@ import com.warun.accounting.data.local.MonthlySubmission
 import com.warun.accounting.data.local.MonthlySubmissionStatus
 import com.warun.accounting.data.local.ReceiptRecord
 import com.warun.accounting.data.local.SupplierCandidateRecord
+import com.warun.accounting.evidence.EvidenceSaveCoordinator
 import com.warun.accounting.ui.model.DashboardUiState
 import com.warun.accounting.ui.util.todayString
 import com.warun.accounting.util.isSupportedPaymentMethod
@@ -23,12 +25,14 @@ import javax.inject.Inject
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 @HiltViewModel
 class DashboardViewModel @Inject constructor(
-    private val repository: AccountingRepository
+    private val repository: AccountingRepository,
+    private val evidenceSaveCoordinator: EvidenceSaveCoordinator
 ) : ViewModel() {
     companion object {
         private const val LogTag = "DashboardViewModel"
@@ -74,6 +78,23 @@ class DashboardViewModel @Inject constructor(
         started = SharingStarted.WhileSubscribed(5_000),
         initialValue = DashboardUiState()
     )
+
+    init {
+        viewModelScope.launch {
+            runCatching {
+                evidenceSaveCoordinator.recoverPendingFinalizations(
+                    repository.observeExpenseRecords().first()
+                )
+            }.onSuccess { recovery ->
+                recovery.failures.forEach { failure ->
+                    Log.e(LogTag, "Failed to recover evidence ${failure.captureId}", failure.error)
+                }
+            }.onFailure { error ->
+                Log.e(LogTag, "Failed to load evidence finalization journal", error)
+            }
+        }
+    }
+
     fun saveDailyReport(input: DailyReportInput, onResult: (Result<Unit>) -> Unit = {}) {
         saveDailyReportWithExpense(input, null, onResult)
     }
@@ -82,13 +103,27 @@ class DashboardViewModel @Inject constructor(
         input: DailyReportInput,
         expenseInput: ExpenseInput?,
         onResult: (Result<Unit>) -> Unit = {}
+    ) = saveDailyReportWithExpenseAndEvidence(input, expenseInput, null, onResult)
+
+    fun saveDailyReportWithExpenseAndEvidence(
+        input: DailyReportInput,
+        expenseInput: ExpenseInput?,
+        pendingCapture: ReceiptCaptureResult?,
+        onResult: (Result<Unit>) -> Unit = {}
     ) {
         viewModelScope.launch {
             val result = runCatching {
                 val now = System.currentTimeMillis()
-                repository.saveDailyReportWithExpense(
-                    report = input.toDailyReport(now),
-                    expense = expenseInput?.toExpenseRecord(now)
+                val report = input.toDailyReport(now)
+                val expense = expenseInput?.toExpenseRecord(now)
+                evidenceSaveCoordinator.saveDailyReportWithExpense(
+                    expense = expense,
+                    expenseDraftId = expenseInput?.id,
+                    pendingCapture = pendingCapture,
+                    findSavedExpense = ::findSavedExpense,
+                    saveAccounting = {
+                        repository.saveDailyReportWithExpense(report = report, expense = expense)
+                    }
                 )
             }
             result.onFailure { Log.e(LogTag, "Failed to save daily report transaction", it) }
@@ -120,14 +155,33 @@ class DashboardViewModel @Inject constructor(
     }
 
     fun saveExpense(input: ExpenseInput, onResult: (Result<Unit>) -> Unit = {}) {
+        saveExpenseWithEvidence(input, null, onResult)
+    }
+
+    fun saveExpenseWithEvidence(
+        input: ExpenseInput,
+        pendingCapture: ReceiptCaptureResult?,
+        onResult: (Result<Unit>) -> Unit = {}
+    ) {
         viewModelScope.launch {
             val result = runCatching {
-                repository.saveExpenseRecord(input.toExpenseRecord(System.currentTimeMillis()))
+                val expense = input.toExpenseRecord(System.currentTimeMillis())
+                evidenceSaveCoordinator.saveExpense(
+                    expense = expense,
+                    expenseDraftId = input.id,
+                    pendingCapture = pendingCapture,
+                    findSavedExpense = ::findSavedExpense,
+                    saveAccounting = { repository.saveExpenseRecord(expense) }
+                )
             }
             result.onFailure { Log.e(LogTag, "Failed to save expense", it) }
             onResult(result)
         }
     }
+
+    private suspend fun findSavedExpense(expenseId: String): ExpenseRecord? =
+        repository.observeExpenseRecords().first().firstOrNull { it.id == expenseId }
+
     fun addSupplierCandidate(category: String, name: String, paymentMethod: String) {
         val trimmedName = name.trim()
         if (category.isBlank() || trimmedName.isBlank()) return

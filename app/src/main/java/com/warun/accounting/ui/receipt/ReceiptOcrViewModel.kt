@@ -66,11 +66,13 @@ class ReceiptOcrViewModel @Inject constructor(
 
     fun runOcr(capture: ReceiptCaptureResult): Boolean {
         val current = _uiState.value
-        if (current is ReceiptOcrUiState.Processing) return false
-        if (current.captureOrNull?.captureId == capture.captureId && current !is ReceiptOcrUiState.Ready) {
+        val isSameCapture = current.captureOrNull?.captureId == capture.captureId
+        if (isSameCapture && current !is ReceiptOcrUiState.Ready) {
             return false
         }
 
+        activeJob?.cancel()
+        activeJob = null
         persistCapture(capture)
         setState(ReceiptOcrUiState.Processing(capture), StatusProcessing)
         activeJob = viewModelScope.launch {

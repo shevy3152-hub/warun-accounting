@@ -86,6 +86,97 @@ class ReceiptOcrViewModelTest {
     }
 
     @Test
+    fun newCaptureCancelsProcessingForPreviousCaptureAndUsesOnlyNewResult() = runTest(dispatcher) {
+        val firstGate = CompletableDeferred<ReceiptOcrDraft>()
+        val secondCapture = ReceiptCaptureResult("capture-2", "file:/receipt-2.jpg", 456L)
+        val gateway = object : ReceiptOcrGateway {
+            override suspend fun readReceipt(request: ReceiptOcrRequest): ReceiptOcrDraft =
+                if (request.imageId == capture.captureId) {
+                    firstGate.await()
+                } else {
+                    draftFor(request.imageId, "二回目商店\n2026/07/22\n合計 2,000円")
+                }
+        }
+        val viewModel = viewModel(gateway = gateway)
+
+        assertTrue(viewModel.runOcr(capture))
+        runCurrent()
+        assertEquals(ReceiptOcrUiState.Processing(capture), viewModel.uiState.value)
+
+        assertTrue(viewModel.runOcr(secondCapture))
+        runCurrent()
+
+        val success = viewModel.uiState.value as ReceiptOcrUiState.Success
+        assertEquals(secondCapture, success.capture)
+        assertEquals("二回目商店", success.review.supplierName)
+        assertEquals("2026-07-22", success.review.purchaseDate)
+        assertEquals("2000", success.review.totalAmount)
+
+        firstGate.complete(draftFor(capture.captureId, "一回目商店\n2026/07/21\n合計 1,540円"))
+        runCurrent()
+        val afterOldJobCompletion = viewModel.uiState.value as ReceiptOcrUiState.Success
+        assertEquals(secondCapture, afterOldJobCompletion.capture)
+        assertEquals("二回目商店", afterOldJobCompletion.review.supplierName)
+        assertEquals("2000", afterOldJobCompletion.review.totalAmount)
+    }
+
+    @Test
+    fun observedA90TextPopulatesStoreDateAndAmountTogether() = runTest(dispatcher) {
+        val rawText = """
+            岐南店
+            、valey
+            2026年07月20日 (月)15:48
+            外税計
+            合計
+            お預り
+            お的り
+            hf1., 540
+            2,000
+            460
+        """.trimIndent()
+        val viewModel = viewModel(gateway = FakeGateway { draft(rawText) })
+
+        viewModel.runOcr(capture)
+        runCurrent()
+
+        val success = viewModel.uiState.value as ReceiptOcrUiState.Success
+        assertEquals("バロー（岐南店）", success.review.supplierName)
+        assertEquals("2026-07-20", success.review.purchaseDate)
+        assertEquals("1540", success.review.totalAmount)
+        assertTrue(success.review.supplierError == null)
+        assertTrue(success.review.purchaseDateError == null)
+        assertEquals("低confidence候補を確認してください", success.review.totalAmountError)
+    }
+
+    @Test
+    fun secondCaptureWithMissingFieldDoesNotRetainFirstReviewValue() = runTest(dispatcher) {
+        val secondCapture = ReceiptCaptureResult("capture-2", "file:/receipt-2.jpg", 456L)
+        val gateway = object : ReceiptOcrGateway {
+            override suspend fun readReceipt(request: ReceiptOcrRequest): ReceiptOcrDraft =
+                when (request.imageId) {
+                    capture.captureId -> draftFor(
+                        request.imageId,
+                        "一回目商店\n2026/07/21\n合計 1,540円"
+                    )
+                    else -> draftFor(request.imageId, "2026/07/22\n合計 980円")
+                }
+        }
+        val viewModel = viewModel(gateway = gateway)
+        viewModel.runOcr(capture)
+        runCurrent()
+        viewModel.updateSupplierName("一回目の編集値")
+
+        assertTrue(viewModel.runOcr(secondCapture))
+        runCurrent()
+
+        val second = viewModel.uiState.value as ReceiptOcrUiState.Success
+        assertEquals(secondCapture, second.capture)
+        assertEquals("", second.review.supplierName)
+        assertEquals("2026-07-22", second.review.purchaseDate)
+        assertEquals("980", second.review.totalAmount)
+    }
+
+    @Test
     fun blankRecognitionTransitionsToEmpty() = runTest(dispatcher) {
         val viewModel = viewModel(gateway = FakeGateway { draft(" \n ") })
 
@@ -162,6 +253,17 @@ class ReceiptOcrViewModelTest {
 
     private fun draft(rawText: String) = ReceiptOcrDraft(
         imageId = capture.captureId,
+        engine = ReceiptOcrEngine.MlKitTextRecognition,
+        dateCandidates = emptyList(),
+        storeNameCandidates = emptyList(),
+        totalAmountCandidates = emptyList(),
+        taxAmountCandidates = emptyList(),
+        registrationNumberCandidates = emptyList(),
+        rawText = rawText
+    )
+
+    private fun draftFor(imageId: String, rawText: String) = ReceiptOcrDraft(
+        imageId = imageId,
         engine = ReceiptOcrEngine.MlKitTextRecognition,
         dateCandidates = emptyList(),
         storeNameCandidates = emptyList(),
