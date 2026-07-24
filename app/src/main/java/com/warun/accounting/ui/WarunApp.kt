@@ -104,7 +104,11 @@ import com.warun.accounting.data.local.ExpenseSourceType
 import com.warun.accounting.data.local.MonthlySubmissionStatus
 import com.warun.accounting.data.local.ReceiptRecord
 import com.warun.accounting.data.local.SupplierCandidateRecord
+import com.warun.accounting.ui.model.BusinessAnalysisSummary
+import com.warun.accounting.ui.model.breakEvenStatusMessage
+import com.warun.accounting.ui.model.buildBusinessAnalysisSummary
 import com.warun.accounting.ui.model.DashboardUiState
+import com.warun.accounting.ui.model.formatBusinessRate
 import com.warun.accounting.ui.receipt.ReceiptCameraScreen
 import com.warun.accounting.ui.receipt.ReceiptCaptureStartCoordinator
 import com.warun.accounting.ui.receipt.ReceiptCaptureResultKey
@@ -176,7 +180,7 @@ private val phoneDestinations = listOf(
     AppDestination.MonthlyOrganization
 )
 
-private object ReportRoutes {
+internal object ReportRoutes {
     const val ReportDateArg = "reportDate"
     const val Detail = "report_detail/{reportDate}"
     const val Entry = "report_entry/{reportDate}"
@@ -184,6 +188,19 @@ private object ReportRoutes {
     fun detail(reportDate: String): String = "report_detail/$reportDate"
     fun entry(reportDate: String): String = "report_entry/$reportDate"
 }
+
+internal data class TopLevelNavigationPolicy(
+    val saveState: Boolean,
+    val restoreState: Boolean
+)
+
+internal val topLevelNavigationPolicy = TopLevelNavigationPolicy(
+    saveState = false,
+    restoreState = false
+)
+
+internal fun topLevelRouteForLabel(label: String): String? =
+    destinations.firstOrNull { it.label == label }?.route
 
 private object ReceiptRoutes {
     const val Camera = "receipt_camera"
@@ -668,9 +685,11 @@ private fun AppNavHost(
 
 private fun NavHostController.navigateSingleTop(route: String) {
     navigate(route) {
-        popUpTo(graph.findStartDestination().id) { saveState = true }
+        popUpTo(graph.findStartDestination().id) {
+            saveState = topLevelNavigationPolicy.saveState
+        }
         launchSingleTop = true
-        restoreState = true
+        restoreState = topLevelNavigationPolicy.restoreState
     }
 }
 @Composable
@@ -776,7 +795,7 @@ private fun SidebarSummary(uiState: DashboardUiState, liveSummary: SidebarSummar
     DashboardCard(containerColor = Color(0xFF182538)) {
         Text("今日のサマリー", color = Color.White, fontWeight = FontWeight.Bold)
         SummaryLine("売上合計", salesTotal.toYen(), Color.White)
-        SummaryLine("概算利益", estimatedBalance.toYen(), Color(0xFF6EE78A))
+        SummaryLine("概算差額", estimatedBalance.toYen(), Color(0xFF6EE78A))
         SummaryLine("現金残高", closingCash.toYen(), Color.White)
     }
 }
@@ -2851,6 +2870,7 @@ private fun BalanceScreen(uiState: DashboardUiState) {
             onCustomEndChange = { customEndDate = it }
         )
         BalanceSummaryCards(summary)
+        BusinessAnalysisCard(summary.businessAnalysis)
         AdaptiveGrid {
             ExpenseBreakdown(summary.categoryTotals)
             DailyBalanceList(summary.dailyRows)
@@ -2932,6 +2952,61 @@ private fun BalanceSummaryCards(summary: BalanceSummary) {
             SummaryCard("現金差額", summary.cashDifference.toYen(), modifier = cardModifier)
             SummaryCard("未確認レシート件数", "${summary.unconfirmedReceiptCount}件", modifier = cardModifier)
         }
+    }
+}
+
+@Composable
+private fun BusinessAnalysisCard(summary: BusinessAnalysisSummary) {
+    DashboardCard {
+        Text(
+            "経営分析（概算）",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold
+        )
+        Text(
+            "食材仕入・酒類仕入を原価として、選択期間の参考値を計算します。",
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        AdaptiveSummaryGrid { cardModifier ->
+            SummaryCard("売上合計", summary.salesTotal.toYen(), modifier = cardModifier)
+            SummaryCard(
+                "概算原価",
+                summary.estimatedCost?.toYen() ?: "計算不可",
+                modifier = cardModifier
+            )
+            SummaryCard(
+                "概算原価率",
+                formatBusinessRate(summary.estimatedCostRate),
+                modifier = cardModifier
+            )
+            SummaryCard(
+                "概算粗利",
+                summary.estimatedGrossProfit?.toYen() ?: "計算不可",
+                modifier = cardModifier
+            )
+            SummaryCard(
+                "概算粗利率",
+                formatBusinessRate(summary.estimatedGrossMargin),
+                modifier = cardModifier
+            )
+            SummaryCard(
+                "固定費相当額（簡易）",
+                summary.simpleFixedCost?.toYen() ?: "計算不可",
+                modifier = cardModifier
+            )
+            SummaryCard(
+                "概算損益分岐点売上",
+                summary.estimatedBreakEvenSales?.toYen() ?: "計算不可",
+                modifier = cardModifier
+            )
+        }
+        Text("損益分岐点との差", style = MaterialTheme.typography.labelLarge)
+        Text(summary.breakEvenStatusMessage(), fontWeight = FontWeight.Bold)
+        Text(
+            "概算値です。食材・酒類仕入を原価として計算しています。棚卸、人件費、費用の固定費・変動費分類は反映していません。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 @Composable
@@ -3594,7 +3669,7 @@ private enum class BalancePeriodMode(val label: String) {
     Custom("期間指定")
 }
 
-private data class BalancePeriod(
+internal data class BalancePeriod(
     val start: LocalDate,
     val end: LocalDate
 ) {
@@ -3607,7 +3682,7 @@ private data class BalancePeriod(
     }
 }
 
-private data class BalanceSummary(
+internal data class BalanceSummary(
     val periodLabel: String,
     val salesTotal: Long,
     val expenseTotal: Long,
@@ -3619,10 +3694,11 @@ private data class BalanceSummary(
     val cashDifference: Long,
     val categoryTotals: List<Pair<String, Long>>,
     val unconfirmedReceiptCount: Int,
-    val dailyRows: List<DailyBalanceRow>
+    val dailyRows: List<DailyBalanceRow>,
+    val businessAnalysis: BusinessAnalysisSummary
 )
 
-private data class DailyBalanceRow(
+internal data class DailyBalanceRow(
     val reportDate: String,
     val salesTotal: Long,
     val expenseTotal: Long,
@@ -3813,7 +3889,7 @@ private fun DailyReportInput.withHiddenPaymentsCleared(paymentVisibility: Paymen
         otherSales = if (paymentVisibility.useOtherPayment) otherSales else ""
     )
 
-private fun buildBalanceSummary(
+internal fun buildBalanceSummary(
     reports: List<DailyReport>,
     expenses: List<ExpenseRecord>,
     period: BalancePeriod
@@ -3833,6 +3909,11 @@ private fun buildBalanceSummary(
     val theoreticalCashBalance = calculateCashBalance(firstReport?.openingCash ?: 0L, cashSales, cashExpense)
     val actualCashBalance = latestReport?.takeIf { it.hasActualClosingCash }?.actualClosingCash ?: theoreticalCashBalance
     val categoryTotals = buildExpenseBreakdownTotals(periodReports, periodExpenses)
+    val businessAnalysis = buildBusinessAnalysisSummary(
+        salesTotal = salesTotal,
+        expenseTotal = expenseTotal,
+        periodExpenses = periodExpenses
+    )
     val dailyRows = (periodReports.map { it.reportDate } + periodExpenses.map { it.expenseDate })
         .distinct()
         .sortedDescending()
@@ -3856,7 +3937,8 @@ private fun buildBalanceSummary(
         cashDifference = actualCashBalance - theoreticalCashBalance,
         categoryTotals = categoryTotals,
         unconfirmedReceiptCount = 0,
-        dailyRows = dailyRows
+        dailyRows = dailyRows,
+        businessAnalysis = businessAnalysis
     )
 }
 
