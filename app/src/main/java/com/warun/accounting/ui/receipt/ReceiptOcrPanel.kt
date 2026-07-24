@@ -47,6 +47,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import com.warun.accounting.ui.input.DateInputTextField
 import androidx.compose.ui.window.DialogProperties
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.warun.accounting.camera.ReceiptCaptureResult
@@ -151,7 +152,8 @@ fun ReceiptOcrPanel(
                         onAlternativeSelected = viewModel::updatePurchaseDate,
                         onConfirmLowConfidence = viewModel::confirmPurchaseDate,
                         isConfirmed = review.purchaseDateConfirmed,
-                        confirmLabel = "この購入日候補を確認"
+                        confirmLabel = "この購入日候補を確認",
+                        isDateInput = true
                     )
                     EditableCandidate(
                         label = "合計金額",
@@ -438,18 +440,29 @@ private fun EditableCandidate(
     onConfirmLowConfidence: () -> Unit,
     isConfirmed: Boolean,
     confirmLabel: String,
-    keyboardType: KeyboardType = KeyboardType.Text
+    keyboardType: KeyboardType = KeyboardType.Text,
+    isDateInput: Boolean = false
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        OutlinedTextField(
-            value = value,
-            onValueChange = onValueChange,
-            label = { Text(label) },
-            singleLine = true,
-            isError = error != null,
-            keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
-            modifier = Modifier.fillMaxWidth()
-        )
+        if (isDateInput) {
+            DateInputTextField(
+                label = label,
+                value = value,
+                onValueChange = onValueChange,
+                isError = error != null,
+                modifier = Modifier.fillMaxWidth()
+            )
+        } else {
+            OutlinedTextField(
+                value = value,
+                onValueChange = onValueChange,
+                label = { Text(label) },
+                singleLine = true,
+                isError = error != null,
+                keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
         if (error != null) {
             Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }

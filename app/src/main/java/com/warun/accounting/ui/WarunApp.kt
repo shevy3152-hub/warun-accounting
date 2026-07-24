@@ -104,6 +104,7 @@ import com.warun.accounting.data.local.ExpenseSourceType
 import com.warun.accounting.data.local.MonthlySubmissionStatus
 import com.warun.accounting.data.local.ReceiptRecord
 import com.warun.accounting.data.local.SupplierCandidateRecord
+import com.warun.accounting.ui.input.DateInputTextField
 import com.warun.accounting.ui.model.BusinessAnalysisSummary
 import com.warun.accounting.ui.model.breakEvenStatusMessage
 import com.warun.accounting.ui.model.buildBusinessAnalysisSummary
@@ -1838,18 +1839,16 @@ private fun ReportDateField(
         )
     }
 
-    OutlinedTextField(
+    DateInputTextField(
+        label = "日付",
         value = value,
         onValueChange = onDateChange,
-        label = { Text("日付") },
         trailingIcon = {
             IconButton(onClick = { showCalendar = true }) {
                 Icon(Icons.Outlined.CalendarMonth, contentDescription = "カレンダーを開く")
             }
         },
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Next),
-        modifier = modifier,
-        singleLine = true
+        modifier = modifier
     )
 }
 @Composable
@@ -2533,7 +2532,12 @@ private fun ExpenseRecordForm(
                 }
             }
             AppTextField("支払先", supplier, modifier = Modifier.focusRequester(supplierFocusRequester)) { supplier = it }
-            AppTextField("支出日（yyyy-MM-dd）", expenseDate) { expenseDate = it }
+            DateInputTextField(
+                label = "支出日（yyyy-MM-dd）",
+                value = expenseDate
+            ) {
+                expenseDate = it
+            }
             if (!isExpenseDateValid) {
                 Text("正しい支出日を入力してください", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium)
             }
@@ -2783,10 +2787,18 @@ private fun ReceiptScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             AdaptiveFormFields { fieldModifier ->
-                AppTextField("購入日 yyyy-MM-dd", input.purchaseDate, modifier = fieldModifier) {
+                DateInputTextField(
+                    label = "購入日 yyyy-MM-dd",
+                    value = input.purchaseDate,
+                    modifier = fieldModifier
+                ) {
                     input = input.copy(purchaseDate = it)
                 }
-                AppTextField("撮影日 yyyy-MM-dd", input.capturedDate, modifier = fieldModifier) {
+                DateInputTextField(
+                    label = "撮影日 yyyy-MM-dd",
+                    value = input.capturedDate,
+                    modifier = fieldModifier
+                ) {
                     input = input.copy(capturedDate = it)
                 }
                 AppTextField("店名", input.storeName, modifier = fieldModifier) {
@@ -2903,10 +2915,16 @@ private fun BalancePeriodSelector(
         }
         if (selectedMode == BalancePeriodMode.Custom) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                AppTextField("開始日 yyyy-MM-dd", customStartDate) {
+                DateInputTextField(
+                    label = "開始日 yyyy-MM-dd",
+                    value = customStartDate
+                ) {
                     onCustomStartChange(it)
                 }
-                AppTextField("終了日 yyyy-MM-dd", customEndDate) {
+                DateInputTextField(
+                    label = "終了日 yyyy-MM-dd",
+                    value = customEndDate
+                ) {
                     onCustomEndChange(it)
                 }
             }
