@@ -4,10 +4,13 @@ package com.warun.accounting.ui.receipt
 
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -15,18 +18,24 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.text.KeyboardOptions
@@ -37,11 +46,14 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.warun.accounting.camera.ReceiptCaptureResult
 import com.warun.accounting.camera.ReceiptImageStore
 import com.warun.accounting.ocr.parser.ReceiptCandidateConfidence
 import com.warun.accounting.ocr.parser.ReceiptCandidateEvidence
+import com.warun.accounting.ui.image.ZoomableReceiptImage
 import com.warun.accounting.ui.viewmodel.ExpenseInput
 import java.text.NumberFormat
 import java.io.File
@@ -247,6 +259,7 @@ private fun ReceiptCapturePreview(
     imageStore: ReceiptImageStore
 ) {
     key(capture.captureId) {
+        var isExpanded by remember(capture.captureId) { mutableStateOf(false) }
         val previewState by produceState<ReceiptPreviewState>(
             initialValue = ReceiptPreviewState.Loading,
             key1 = capture.captureId,
@@ -269,27 +282,132 @@ private fun ReceiptCapturePreview(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error
             )
-            is ReceiptPreviewState.Loaded -> Image(
-                bitmap = state.bitmap,
-                contentDescription = "撮影したレシート",
-                contentScale = ContentScale.Fit,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 320.dp)
-                    .clip(MaterialTheme.shapes.small)
-            )
+            is ReceiptPreviewState.Loaded -> {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Image(
+                        bitmap = state.bitmap,
+                        contentDescription = "撮影したレシート。タップして拡大",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 320.dp)
+                            .clip(MaterialTheme.shapes.small)
+                            .clickable { isExpanded = true }
+                    )
+                    Text(
+                        "タップして拡大",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (isExpanded) {
+                    PendingReceiptImageDialog(
+                        capture = capture,
+                        imageStore = imageStore,
+                        onDismiss = { isExpanded = false }
+                    )
+                }
+            }
         }
     }
 }
 
-private fun decodeReceiptPreview(file: File): ImageBitmap? {
+@Composable
+private fun PendingReceiptImageDialog(
+    capture: ReceiptCaptureResult,
+    imageStore: ReceiptImageStore,
+    onDismiss: () -> Unit
+) {
+    val imageState by produceState<ReceiptPreviewState>(
+        initialValue = ReceiptPreviewState.Loading,
+        key1 = capture.captureId,
+        key2 = capture.localUri
+    ) {
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                decodeReceiptPreview(
+                    file = imageStore.fileFor(capture.captureId),
+                    maxDimension = ReceiptExpandedPreviewMaxDimension
+                )
+            }.getOrNull()?.let(ReceiptPreviewState::Loaded)
+                ?: ReceiptPreviewState.Unavailable
+        }
+    }
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(12.dp),
+            shape = MaterialTheme.shapes.large,
+            color = MaterialTheme.colorScheme.surface
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    IconButton(onClick = onDismiss) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "拡大表示を閉じる"
+                        )
+                    }
+                    Column {
+                        Text("OCR確認画像", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "ピンチで拡大し、拡大中は1本指で移動できます",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+                when (val state = imageState) {
+                    ReceiptPreviewState.Loading -> Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator()
+                    }
+                    ReceiptPreviewState.Unavailable -> Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            "画像を表示できません",
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                    is ReceiptPreviewState.Loaded -> ZoomableReceiptImage(
+                        bitmap = state.bitmap,
+                        imageKey = capture.captureId,
+                        contentDescription = "拡大表示したOCR確認画像",
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun decodeReceiptPreview(
+    file: File,
+    maxDimension: Int = ReceiptPreviewMaxDimension
+): ImageBitmap? {
     if (!file.isFile || file.length() <= 0L) return null
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     BitmapFactory.decodeFile(file.absolutePath, bounds)
     if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
 
     var sampleSize = 1
-    while (maxOf(bounds.outWidth, bounds.outHeight) / sampleSize > ReceiptPreviewMaxDimension) {
+    while (maxOf(bounds.outWidth, bounds.outHeight) / sampleSize > maxDimension) {
         sampleSize *= 2
     }
     return BitmapFactory.decodeFile(
@@ -305,6 +423,7 @@ private sealed interface ReceiptPreviewState {
 }
 
 private const val ReceiptPreviewMaxDimension = 1_600
+private const val ReceiptExpandedPreviewMaxDimension = 2_048
 
 @Composable
 private fun EditableCandidate(

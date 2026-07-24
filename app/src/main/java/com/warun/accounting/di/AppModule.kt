@@ -7,6 +7,8 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.warun.accounting.data.AccountingRepository
 import com.warun.accounting.data.OfflineAccountingRepository
+import com.warun.accounting.camera.ReceiptImageImportGateway
+import com.warun.accounting.camera.ReceiptPendingImageImporter
 import com.warun.accounting.data.local.WarunDao
 import com.warun.accounting.data.local.WarunDatabase
 import com.warun.accounting.evidence.EvidenceFileStore
@@ -350,6 +352,12 @@ abstract class RepositoryModule {
     abstract fun bindReceiptOcrGateway(
         gateway: MlKitReceiptOcrGateway
     ): ReceiptOcrGateway
+
+    @Binds
+    @Singleton
+    abstract fun bindReceiptImageImportGateway(
+        importer: ReceiptPendingImageImporter
+    ): ReceiptImageImportGateway
 }
 
 @Module

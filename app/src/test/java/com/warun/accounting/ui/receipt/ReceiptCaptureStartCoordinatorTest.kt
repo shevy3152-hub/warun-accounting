@@ -136,6 +136,81 @@ class ReceiptCaptureStartCoordinatorTest {
         assertFalse(opened)
     }
 
+    @Test
+    fun importedCaptureIsAdoptedBeforeOldPendingIsDeleted() {
+        val pendingDirectory = temporaryFolder.newFolder("pending-import-adoption")
+        val store = ReceiptImageStore(pendingDirectory)
+        val coordinator = ReceiptCaptureStartCoordinator(store)
+        val oldCapture = capture("old-capture")
+        val importedCapture = capture("imported-capture")
+        store.prepareFile(oldCapture.captureId).writeBytes(byteArrayOf(1))
+        store.prepareFile(importedCapture.captureId).writeBytes(byteArrayOf(2))
+        val events = mutableListOf<String>()
+
+        val result = coordinator.adoptImportedCapture(
+            importedCapture = importedCapture,
+            capturesToDiscard = listOf(oldCapture),
+            clearOcrSessionState = { events += "clear-ocr" },
+            adoptCapture = {
+                assertTrue(store.fileFor(oldCapture.captureId).exists())
+                events += "adopt-${it.captureId}"
+            },
+            clearDiscardedOwnership = {
+                events += "clear-owner-${it.single()}"
+            }
+        )
+
+        assertEquals(
+            listOf(
+                "clear-ocr",
+                "adopt-imported-capture",
+                "clear-owner-old-capture"
+            ),
+            events
+        )
+        assertTrue(result.allDiscarded)
+        assertFalse(store.fileFor(oldCapture.captureId).exists())
+        assertTrue(store.fileFor(importedCapture.captureId).exists())
+    }
+
+    @Test
+    fun importedCaptureDoesNotDeleteJournalProtectedPreviousCapture() {
+        val pendingDirectory = temporaryFolder.newFolder("pending-protected-import")
+        val journal = EvidenceFinalizationJournal(temporaryFolder.newFolder("journal-protected-import"))
+        val store = ReceiptImageStore(
+            pendingDirectory = pendingDirectory,
+            deletionPolicyProvider = PendingImageDeletionPolicyProvider {
+                journal.pendingImageDeletionPolicy()
+            }
+        )
+        val protectedCapture = capture("protected-old")
+        val importedCapture = capture("new-import")
+        store.prepareFile(protectedCapture.captureId).writeBytes(byteArrayOf(1))
+        store.prepareFile(importedCapture.captureId).writeBytes(byteArrayOf(2))
+        journal.prepare(
+            captureId = protectedCapture.captureId,
+            expenseDraftId = "expense-owner",
+            expenseRecordId = "expense-owner",
+            expenseFingerprint = "0".repeat(64)
+        )
+        var adopted = false
+        var clearedOwnership = false
+
+        val result = ReceiptCaptureStartCoordinator(store).adoptImportedCapture(
+            importedCapture = importedCapture,
+            capturesToDiscard = listOf(protectedCapture),
+            clearOcrSessionState = {},
+            adoptCapture = { adopted = true },
+            clearDiscardedOwnership = { clearedOwnership = it.isNotEmpty() }
+        )
+
+        assertTrue(adopted)
+        assertFalse(clearedOwnership)
+        assertEquals(setOf(protectedCapture.captureId), result.retainedCaptureIds)
+        assertTrue(store.fileFor(protectedCapture.captureId).exists())
+        assertTrue(store.fileFor(importedCapture.captureId).exists())
+    }
+
     private fun capture(id: String) = ReceiptCaptureResult(
         captureId = id,
         localUri = "file:/pending/receipt_$id.jpg",

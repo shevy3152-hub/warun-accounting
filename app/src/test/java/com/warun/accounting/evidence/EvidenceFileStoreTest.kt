@@ -2,6 +2,7 @@ package com.warun.accounting.evidence
 
 import com.warun.accounting.camera.ReceiptImageStore
 import java.io.File
+import java.security.MessageDigest
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -33,6 +34,19 @@ class EvidenceFileStoreTest {
         val recreatedStore = EvidenceFileStore(fixture.pendingDirectory, fixture.storedDirectory)
         assertEquals(reference, recreatedStore.resolve("capture-1"))
         assertEquals(listOf(reference), recreatedStore.listReferences())
+    }
+
+    @Test
+    fun promotionHashIsCalculatedFromCanonicalPendingJpeg() {
+        val fixture = fixture()
+        val externalSourceBytes = byteArrayOf(1, 2, 3, 4)
+        val canonicalJpeg = jpegBytes(9, 8, 7)
+        fixture.writePending("normalized-import", canonicalJpeg)
+
+        val reference = fixture.store.promotePendingImage("normalized-import")
+
+        assertEquals(sha256(canonicalJpeg), reference.sha256)
+        assertFalse(reference.sha256 == sha256(externalSourceBytes))
     }
 
     @Test
@@ -171,6 +185,11 @@ class EvidenceFileStoreTest {
         add(0xFF.toByte())
         add(0xD9.toByte())
     }.toByteArray()
+
+    private fun sha256(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(bytes)
+            .joinToString("") { byte -> "%02x".format(byte) }
 
     private data class Fixture(
         val pendingDirectory: File,

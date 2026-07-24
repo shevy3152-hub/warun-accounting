@@ -142,6 +142,44 @@ class ReceiptImageStoreTest {
         assertTrue(image.exists())
     }
 
+    @Test
+    fun importedImagePublishesWithoutReplacingExistingPending() {
+        val directory = temporaryFolder.newFolder("pending-import")
+        val store = ReceiptImageStore(directory)
+        val files = store.prepareImportFiles("imported")
+        files.normalizedFile.writeBytes(byteArrayOf(1, 2, 3))
+
+        val published = store.publishImportedJpeg("imported", files.normalizedFile)
+
+        assertEquals(store.fileFor("imported").canonicalFile, published.canonicalFile)
+        assertEquals(listOf<Byte>(1, 2, 3), published.readBytes().toList())
+        val secondFiles = store.prepareImportFiles("different")
+        secondFiles.normalizedFile.writeBytes(byteArrayOf(9))
+        store.prepareFile("different").writeBytes(byteArrayOf(7))
+        assertTrue(
+            runCatching {
+                store.publishImportedJpeg("different", secondFiles.normalizedFile)
+            }.isFailure
+        )
+        assertEquals(listOf<Byte>(7), store.fileFor("different").readBytes().toList())
+    }
+
+    @Test
+    fun orphanImportCleanupDoesNotTouchPendingReceiptFiles() {
+        val directory = temporaryFolder.newFolder("pending-import-cleanup")
+        val store = ReceiptImageStore(directory)
+        val pending = store.prepareFile("keep").apply { writeText("pending") }
+        val sourceTemp = File(directory, "import_orphan.source.tmp").apply { writeText("source") }
+        val normalizedTemp = File(directory, "import_orphan.tmp").apply { writeText("normalized") }
+        val unrelated = File(directory, "import-not-valid.tmp").apply { writeText("unrelated") }
+
+        assertEquals(2, store.cleanupOrphanedImportFiles())
+        assertFalse(sourceTemp.exists())
+        assertFalse(normalizedTemp.exists())
+        assertTrue(pending.exists())
+        assertTrue(unrelated.exists())
+    }
+
     private fun expense(id: String) = ExpenseRecord(
         id = id,
         expenseDate = "2026-07-23",
