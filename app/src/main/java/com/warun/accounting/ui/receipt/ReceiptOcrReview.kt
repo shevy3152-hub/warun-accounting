@@ -3,6 +3,7 @@ package com.warun.accounting.ui.receipt
 import com.warun.accounting.camera.ReceiptCaptureResult
 import com.warun.accounting.ocr.parser.ReceiptCandidateConfidence
 import com.warun.accounting.ocr.parser.ReceiptParseResult
+import com.warun.accounting.ui.viewmodel.ExpenseInput
 import java.text.Normalizer
 import java.time.DateTimeException
 import java.time.LocalDate
@@ -51,6 +52,26 @@ data class ReceiptOcrReviewState(
             totalAmountError == null &&
             supplierConfirmed
 
+    fun canApplyWithExisting(existing: ExpenseInput?): Boolean {
+        if (existing == null) return canApply
+        val supplierReady = if (existing.supplierName.isNotBlank()) {
+            true
+        } else {
+            supplierError == null && supplierConfirmed
+        }
+        val dateReady = if (existing.expenseDate.isNotBlank()) {
+            ReceiptOcrReviewValidator.normalizeDate(existing.expenseDate) != null
+        } else {
+            purchaseDateError == null
+        }
+        val amountReady = if (existing.amount.isNotBlank()) {
+            ReceiptOcrReviewValidator.normalizeAmount(existing.amount) != null
+        } else {
+            totalAmountError == null
+        }
+        return supplierReady && dateReady && amountReady
+    }
+
     companion object {
         fun from(parseResult: ReceiptParseResult): ReceiptOcrReviewState {
             val store = parseResult.bestStore
@@ -74,6 +95,78 @@ data class ReceiptOcrApplyResult(
     val expenseDate: String,
     val amount: String
 )
+
+enum class ReceiptOcrMergeAction {
+    FillFromOcr,
+    KeepCurrent,
+    Match
+}
+
+data class ReceiptOcrFieldMerge(
+    val label: String,
+    val currentValue: String,
+    val ocrValue: String,
+    val action: ReceiptOcrMergeAction
+)
+
+data class ReceiptOcrMergePlan(
+    val mergedExpense: ExpenseInput,
+    val fields: List<ReceiptOcrFieldMerge>
+) {
+    fun displayLines(): List<String> = fields.map { field ->
+        val detail = when (field.action) {
+            ReceiptOcrMergeAction.FillFromOcr ->
+                "OCR値を反映：${field.ocrValue}"
+            ReceiptOcrMergeAction.Match ->
+                "現在値を維持（OCR結果と一致）：${field.currentValue}"
+            ReceiptOcrMergeAction.KeepCurrent -> when {
+                field.currentValue.isBlank() -> "空欄を維持（OCR候補なし）"
+                field.ocrValue.isBlank() -> "現在値を維持：${field.currentValue}（OCR候補なし）"
+                else -> "現在値を維持：${field.currentValue}（OCR候補：${field.ocrValue}）"
+            }
+        }
+        "${field.label}：$detail"
+    }
+}
+
+fun planReceiptOcrMerge(
+    current: ExpenseInput,
+    result: ReceiptOcrApplyResult
+): ReceiptOcrMergePlan {
+    fun field(
+        label: String,
+        currentValue: String,
+        ocrValue: String,
+        equivalent: (String, String) -> Boolean = { first, second -> first.trim() == second.trim() }
+    ): ReceiptOcrFieldMerge {
+        val action = when {
+            currentValue.isBlank() && ocrValue.isNotBlank() -> ReceiptOcrMergeAction.FillFromOcr
+            currentValue.isNotBlank() && ocrValue.isNotBlank() && equivalent(currentValue, ocrValue) ->
+                ReceiptOcrMergeAction.Match
+            else -> ReceiptOcrMergeAction.KeepCurrent
+        }
+        return ReceiptOcrFieldMerge(label, currentValue, ocrValue, action)
+    }
+
+    val supplier = field("支払先", current.supplierName, result.supplierName)
+    val date = field("支出日", current.expenseDate, result.expenseDate) { first, second ->
+        ReceiptOcrReviewValidator.normalizeDate(first) == ReceiptOcrReviewValidator.normalizeDate(second)
+    }
+    val amount = field("金額", current.amount, result.amount) { first, second ->
+        ReceiptOcrReviewValidator.normalizeAmount(first) == ReceiptOcrReviewValidator.normalizeAmount(second)
+    }
+    val fields = listOf(supplier, date, amount)
+    fun ReceiptOcrFieldMerge.mergedValue(): String =
+        if (action == ReceiptOcrMergeAction.FillFromOcr) ocrValue else currentValue
+    return ReceiptOcrMergePlan(
+        mergedExpense = current.copy(
+            supplierName = supplier.mergedValue(),
+            expenseDate = date.mergedValue(),
+            amount = amount.mergedValue()
+        ),
+        fields = fields
+    )
+}
 
 object ReceiptOcrReviewValidator {
     fun normalizeAmount(value: String): Long? {

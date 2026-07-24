@@ -20,6 +20,9 @@ data class EvidenceFileReference(
 
 interface EvidenceFilePromoter {
     fun promotePendingImage(evidenceId: String): EvidenceFileReference
+
+    fun inspectPendingImage(evidenceId: String): EvidenceFileReference =
+        throw UnsupportedOperationException("Pending evidence inspection is not supported")
 }
 
 class EvidenceFileStore(
@@ -93,6 +96,23 @@ class EvidenceFileStore(
             tempFile.delete()
             throw EvidenceFileStoreException("証憑画像を正式保存できませんでした", error)
         }
+    }
+
+    @Synchronized
+    override fun inspectPendingImage(evidenceId: String): EvidenceFileReference {
+        validateId(evidenceId)
+        val storedFile = fileFor(evidenceId)
+        if (storedFile.exists()) return referenceFor(storedFile, evidenceId)
+
+        val pendingFile = pendingFileFor(evidenceId)
+        validateReadableFile(pendingFile, "pending画像")
+        return EvidenceFileReference(
+            evidenceId = evidenceId,
+            localUri = storedFile.toURI().toString(),
+            byteSize = pendingFile.length(),
+            sha256 = sha256(pendingFile),
+            storedAt = pendingFile.lastModified()
+        )
     }
 
     fun resolve(evidenceId: String): EvidenceFileReference? {

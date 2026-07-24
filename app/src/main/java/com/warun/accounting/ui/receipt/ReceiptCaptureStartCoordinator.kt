@@ -16,6 +16,7 @@ class ReceiptCaptureStartCoordinator(
             .filter { it.isNotBlank() }
             .distinct()
 
+        if (captureIds.any { !pendingImageStore.canDelete(it) }) return false
         if (captureIds.any { !pendingImageStore.delete(it) }) return false
 
         clearSessionState()

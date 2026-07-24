@@ -26,6 +26,24 @@ interface WarunDao {
     @Query("SELECT * FROM expense_records ORDER BY expenseDate DESC, createdAt DESC")
     fun observeExpenseRecords(): Flow<List<ExpenseRecord>>
 
+    @Query(
+        """
+        SELECT link.expenseId AS expenseId,
+               evidence.id AS evidenceId,
+               evidence.captureId AS captureId,
+               evidence.storedUri AS storedUri,
+               evidence.byteSize AS byteSize,
+               evidence.sha256 AS sha256,
+               evidence.createdAt AS createdAt,
+               evidence.storedAt AS storedAt
+        FROM expense_evidence_links AS link
+        INNER JOIN evidence_records AS evidence ON evidence.id = link.evidenceId
+        WHERE evidence.state = 'stored' AND evidence.storedAt IS NOT NULL
+        ORDER BY link.linkedAt ASC
+        """
+    )
+    fun observeStoredExpenseEvidence(): Flow<List<ExpenseEvidenceRecord>>
+
     @Query("SELECT * FROM expense_records WHERE expenseDate = :expenseDate AND category = :category ORDER BY createdAt DESC")
     fun observeExpenseRecordsByDateAndCategory(expenseDate: String, category: String): Flow<List<ExpenseRecord>>
 
@@ -50,13 +68,136 @@ interface WarunDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertReceipt(receipt: ReceiptRecord)
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Upsert
     suspend fun insertExpenseRecord(expense: ExpenseRecord)
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertEvidenceRecord(evidence: EvidenceRecord): Long
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertExpenseEvidenceLink(link: ExpenseEvidenceLinkRecord): Long
+
+    @Query("SELECT * FROM evidence_records WHERE id = :evidenceId")
+    suspend fun getEvidenceRecord(evidenceId: String): EvidenceRecord?
+
+    @Query("SELECT * FROM expense_records WHERE id = :expenseId")
+    suspend fun getExpenseRecord(expenseId: String): ExpenseRecord?
+
+    @Query("SELECT expenseId FROM expense_evidence_links WHERE evidenceId = :evidenceId")
+    suspend fun getExpenseIdForEvidence(evidenceId: String): String?
+
+    @Query(
+        """
+        SELECT EXISTS(
+            SELECT 1
+            FROM evidence_records AS evidence
+            INNER JOIN expense_evidence_links AS link ON link.evidenceId = evidence.id
+            WHERE evidence.id = :evidenceId
+              AND evidence.captureId = :captureId
+              AND link.expenseId = :expenseId
+        )
+        """
+    )
+    suspend fun hasExpenseEvidenceLink(
+        expenseId: String,
+        evidenceId: String,
+        captureId: String
+    ): Boolean
+
+    @Query(
+        """
+        UPDATE evidence_records
+        SET state = 'stored', storedAt = :storedAt, updatedAt = :updatedAt
+        WHERE id = :evidenceId
+          AND captureId = :captureId
+          AND storedUri = :storedUri
+          AND byteSize = :byteSize
+          AND sha256 = :sha256
+          AND state IN ('pending', 'stored')
+        """
+    )
+    suspend fun markEvidenceStored(
+        evidenceId: String,
+        captureId: String,
+        storedUri: String,
+        byteSize: Long,
+        sha256: String,
+        storedAt: Long,
+        updatedAt: Long
+    ): Int
 
     @Transaction
     suspend fun saveDailyReportWithExpense(report: DailyReport, expense: ExpenseRecord?) {
         insertDailyReport(report)
         expense?.let { insertExpenseRecord(it) }
+    }
+
+    @Transaction
+    suspend fun saveExpenseWithEvidence(
+        expense: ExpenseRecord,
+        evidence: EvidenceRecord,
+        link: ExpenseEvidenceLinkRecord
+    ) {
+        require(link.expenseId == expense.id && link.evidenceId == evidence.id)
+        insertExpenseRecord(expense)
+        ensureEvidence(evidence)
+        ensureEvidenceLink(link)
+    }
+
+    @Transaction
+    suspend fun saveDailyReportWithExpenseAndEvidence(
+        report: DailyReport,
+        expense: ExpenseRecord,
+        evidence: EvidenceRecord,
+        link: ExpenseEvidenceLinkRecord
+    ) {
+        insertDailyReport(report)
+        saveExpenseWithEvidence(expense, evidence, link)
+    }
+
+    @Transaction
+    suspend fun finalizeExpenseEvidence(
+        expenseId: String,
+        storedEvidence: EvidenceRecord,
+        link: ExpenseEvidenceLinkRecord
+    ) {
+        check(getExpenseRecord(expenseId) != null) { "Evidence owner expense does not exist" }
+        require(link.expenseId == expenseId && link.evidenceId == storedEvidence.id)
+        ensureEvidence(storedEvidence)
+        ensureEvidenceLink(link)
+        val updated = markEvidenceStored(
+            evidenceId = storedEvidence.id,
+            captureId = storedEvidence.captureId,
+            storedUri = storedEvidence.storedUri,
+            byteSize = storedEvidence.byteSize,
+            sha256 = storedEvidence.sha256,
+            storedAt = requireNotNull(storedEvidence.storedAt),
+            updatedAt = storedEvidence.updatedAt
+        )
+        check(updated == 1) { "Evidence metadata does not match the stored file" }
+    }
+
+    private suspend fun ensureEvidence(evidence: EvidenceRecord) {
+        insertEvidenceRecord(evidence)
+        val existing = getEvidenceRecord(evidence.id)
+            ?: error("Evidence metadata could not be persisted")
+        check(
+            existing.captureId == evidence.captureId &&
+                existing.storedUri == evidence.storedUri &&
+                existing.byteSize == evidence.byteSize &&
+                existing.sha256 == evidence.sha256
+        ) { "Evidence ID is already used by different content" }
+    }
+
+    private suspend fun ensureEvidenceLink(link: ExpenseEvidenceLinkRecord) {
+        val owner = getExpenseIdForEvidence(link.evidenceId)
+        check(owner == null || owner == link.expenseId) {
+            "Evidence is already linked to another expense"
+        }
+        insertExpenseEvidenceLink(link)
+        check(getExpenseIdForEvidence(link.evidenceId) == link.expenseId) {
+            "Evidence link could not be persisted"
+        }
     }
 
     @Transaction

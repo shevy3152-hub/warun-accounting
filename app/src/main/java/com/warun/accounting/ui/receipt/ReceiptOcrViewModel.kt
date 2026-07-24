@@ -11,6 +11,7 @@ import com.warun.accounting.future.ReceiptOcrRequest
 import com.warun.accounting.ocr.ReceiptOcrException
 import com.warun.accounting.ocr.parser.ReceiptParseResult
 import com.warun.accounting.ocr.parser.ReceiptParser
+import com.warun.accounting.ui.viewmodel.ExpenseInput
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.Job
@@ -127,15 +128,15 @@ class ReceiptOcrViewModel @Inject constructor(
 
     fun confirmTotalAmount() = updateReview { it.copy(totalAmountConfirmed = true) }
 
-    fun createApplyResult(): ReceiptOcrApplyResult? {
+    fun createApplyResult(existingExpense: ExpenseInput? = null): ReceiptOcrApplyResult? {
         val success = _uiState.value as? ReceiptOcrUiState.Success ?: return null
         val review = success.review
-        if (!review.canApply) return null
+        if (!review.canApplyWithExisting(existingExpense)) return null
         return ReceiptOcrApplyResult(
             capture = success.capture,
             supplierName = review.supplierName.trim(),
-            expenseDate = review.normalizedPurchaseDate ?: return null,
-            amount = review.normalizedTotalAmount?.toString() ?: return null
+            expenseDate = review.normalizedPurchaseDate.orEmpty(),
+            amount = review.normalizedTotalAmount?.toString().orEmpty()
         )
     }
 

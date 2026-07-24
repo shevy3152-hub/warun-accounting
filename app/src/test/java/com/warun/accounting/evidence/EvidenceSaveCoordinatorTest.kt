@@ -23,6 +23,132 @@ class EvidenceSaveCoordinatorTest {
     val temporaryFolder = TemporaryFolder()
 
     @Test
+    fun persistentIndividualSaveProvidesVerifiedMetadataBeforePromotionAndFinalizesLink() = runTest {
+        val fixture = fixture()
+        fixture.writePending("capture-persistent-individual")
+        val expense = expense("expense-persistent-individual")
+        var inspected: EvidenceFileReference? = null
+        var finalized: EvidenceFileReference? = null
+
+        fixture.coordinator.saveExpenseAndLinkEvidence(
+            expense = expense,
+            expenseDraftId = expense.id,
+            pendingCapture = capture("capture-persistent-individual"),
+            findSavedExpense = { null },
+            hasPersistedEvidenceLink = { _, _, _ -> true },
+            saveAccounting = { reference ->
+                inspected = requireNotNull(reference)
+                assertFalse(fixture.storedFile(reference.evidenceId).exists())
+                assertTrue(fixture.pendingFile(reference.evidenceId).exists())
+            },
+            onPromoted = { entry, reference ->
+                assertEquals(expense.id, entry.expenseRecordId)
+                finalized = reference
+                assertTrue(fixture.storedFile(reference.evidenceId).exists())
+            }
+        )
+
+        assertEquals(inspected?.sha256, finalized?.sha256)
+        assertEquals(inspected?.localUri, finalized?.localUri)
+        assertFalse(fixture.pendingFile("capture-persistent-individual").exists())
+        assertNull(fixture.journal.find("capture-persistent-individual"))
+    }
+
+    @Test
+    fun persistentDailySaveDoesNotPromoteWhenAccountingTransactionFails() = runTest {
+        val fixture = fixture()
+        fixture.writePending("capture-persistent-daily-failure")
+        val expense = expense("expense-persistent-daily-failure")
+        var promoted = false
+
+        val result = runCatching {
+            fixture.coordinator.saveDailyReportWithExpenseAndLinkEvidence(
+                expense = expense,
+                expenseDraftId = expense.id,
+                pendingCapture = capture("capture-persistent-daily-failure"),
+                findSavedExpense = { null },
+                hasPersistedEvidenceLink = { _, _, _ -> true },
+                saveAccounting = { error("transaction failure") },
+                onPromoted = { _, _ -> promoted = true }
+            )
+        }
+
+        assertTrue(result.isFailure)
+        assertFalse(promoted)
+        assertTrue(fixture.pendingFile("capture-persistent-daily-failure").exists())
+        assertFalse(fixture.storedFile("capture-persistent-daily-failure").exists())
+    }
+
+    @Test
+    fun metadataFinalizationFailureCanResumeWithoutDuplicateFile() = runTest {
+        val fixture = fixture()
+        fixture.writePending("capture-metadata-retry")
+        val expense = expense("expense-metadata-retry")
+        var finalizationCalls = 0
+
+        val first = runCatching {
+            fixture.coordinator.saveExpenseAndLinkEvidence(
+                expense = expense,
+                expenseDraftId = expense.id,
+                pendingCapture = capture("capture-metadata-retry"),
+                findSavedExpense = { expense },
+                hasPersistedEvidenceLink = { _, _, _ -> true },
+                saveAccounting = { _ -> },
+                onPromoted = { _, _ ->
+                    finalizationCalls++
+                    error("metadata transaction failure")
+                }
+            )
+        }
+        assertTrue(first.exceptionOrNull() is EvidenceFinalizationAfterAccountingSaveException)
+        assertEquals(1, fixture.formalFiles().size)
+        assertNotNull(fixture.journal.find("capture-metadata-retry"))
+
+        val recovery = fixture.coordinator.recoverPendingFinalizations(
+            savedExpenses = listOf(expense),
+            onPromoted = { _, _ -> finalizationCalls++ }
+        )
+
+        assertEquals(listOf("capture-metadata-retry"), recovery.completedCaptureIds)
+        assertEquals(2, finalizationCalls)
+        assertEquals(1, fixture.formalFiles().size)
+        assertNull(fixture.journal.find("capture-metadata-retry"))
+    }
+
+    @Test
+    fun storedEvidenceWithRemainingJournalCompletesIdempotentlyAfterRestart() = runTest {
+        val fixture = fixture()
+        fixture.writePending("capture-journal-delete-window")
+        val expense = expense("expense-journal-delete-window")
+        fixture.journal.prepare(
+            captureId = "capture-journal-delete-window",
+            expenseDraftId = expense.id,
+            expenseRecordId = expense.id,
+            expenseFingerprint = expenseFingerprint(expense)
+        )
+        fixture.journal.markAccountingSaved(
+            captureId = "capture-journal-delete-window",
+            expenseRecordId = expense.id,
+            expenseFingerprint = expenseFingerprint(expense)
+        )
+        val storedReference = fixture.store.promotePendingImage("capture-journal-delete-window")
+        var persistedReference: EvidenceFileReference? = null
+
+        val recovery = fixture.coordinator.recoverPendingFinalizations(
+            savedExpenses = listOf(expense),
+            onPromoted = { entry, reference ->
+                assertEquals(expense.id, entry.expenseRecordId)
+                persistedReference = reference
+            }
+        )
+
+        assertEquals(listOf("capture-journal-delete-window"), recovery.completedCaptureIds)
+        assertEquals(storedReference.sha256, persistedReference?.sha256)
+        assertEquals(1, fixture.formalFiles().size)
+        assertNull(fixture.journal.find("capture-journal-delete-window"))
+    }
+
+    @Test
     fun repositoryFailureDoesNotPromoteAndKeepsPreparedJournalAndPending() = runTest {
         val fixture = fixture(promoter = RecordingPromoter())
         fixture.writePending("capture-repository-failure")
@@ -154,6 +280,89 @@ class EvidenceSaveCoordinatorTest {
     }
 
     @Test
+    fun matchingExpenseFingerprintWithoutEvidenceLinkIsNotTreatedAsSaved() = runTest {
+        val fixture = fixture(promoter = RecordingPromoter())
+        val expense = expense("expense-fingerprint-only")
+        fixture.writePending("capture-fingerprint-only")
+        fixture.journal.prepare(
+            captureId = "capture-fingerprint-only",
+            expenseDraftId = expense.id,
+            expenseRecordId = expense.id,
+            expenseFingerprint = expenseFingerprint(expense)
+        )
+
+        val recovery = fixture.coordinator.recoverPendingFinalizations(
+            savedExpenses = listOf(expense),
+            hasPersistedEvidenceLink = { _, _, _ -> false }
+        )
+
+        assertTrue(recovery.completedCaptureIds.isEmpty())
+        assertTrue(recovery.failures.isEmpty())
+        assertEquals(0, fixture.recordingPromoter().calls)
+        assertEquals(
+            EvidenceFinalizationState.Prepared,
+            fixture.journal.find("capture-fingerprint-only")?.state
+        )
+        assertTrue(fixture.pendingFile("capture-fingerprint-only").exists())
+    }
+
+    @Test
+    fun preparedRecoveryContinuesOnlyForMatchingEvidenceAndExpenseLink() = runTest {
+        val fixture = fixture(promoter = RecordingPromoter())
+        val expense = expense("existing-expense-with-link")
+        fixture.writePending("capture-linked")
+        fixture.journal.prepare(
+            captureId = "capture-linked",
+            expenseDraftId = expense.id,
+            expenseRecordId = expense.id,
+            expenseFingerprint = expenseFingerprint(expense)
+        )
+        var checkedArguments: List<String>? = null
+
+        val recovery = fixture.coordinator.recoverPendingFinalizations(
+            savedExpenses = listOf(expense),
+            hasPersistedEvidenceLink = { expenseId, evidenceId, captureId ->
+                checkedArguments = listOf(expenseId, evidenceId, captureId)
+                expenseId == expense.id && evidenceId == "capture-linked" && captureId == "capture-linked"
+            }
+        )
+
+        assertEquals(listOf(expense.id, "capture-linked", "capture-linked"), checkedArguments)
+        assertEquals(listOf("capture-linked"), recovery.completedCaptureIds)
+        assertEquals(1, fixture.recordingPromoter().calls)
+        assertNull(fixture.journal.find("capture-linked"))
+    }
+
+    @Test
+    fun accountingSavedJournalWithoutMatchingEvidenceLinkIsReportedAndRetained() = runTest {
+        val fixture = fixture(promoter = RecordingPromoter())
+        val expense = expense("expense-accounting-saved-no-link")
+        fixture.writePending("capture-accounting-saved-no-link")
+        fixture.journal.prepare(
+            captureId = "capture-accounting-saved-no-link",
+            expenseDraftId = expense.id,
+            expenseRecordId = expense.id,
+            expenseFingerprint = expenseFingerprint(expense)
+        )
+        fixture.journal.markAccountingSaved(
+            captureId = "capture-accounting-saved-no-link",
+            expenseRecordId = expense.id,
+            expenseFingerprint = expenseFingerprint(expense)
+        )
+
+        val recovery = fixture.coordinator.recoverPendingFinalizations(
+            savedExpenses = listOf(expense),
+            hasPersistedEvidenceLink = { _, _, _ -> false }
+        )
+
+        assertTrue(recovery.completedCaptureIds.isEmpty())
+        assertEquals(1, recovery.failures.size)
+        assertTrue(recovery.failures.single().error is EvidenceJournalConflictException)
+        assertNotNull(fixture.journal.find("capture-accounting-saved-no-link"))
+        assertTrue(fixture.pendingFile("capture-accounting-saved-no-link").exists())
+    }
+
+    @Test
     fun finalizationFailureRetainsInputPendingAndJournalThenRecoverySucceeds() = runTest {
         val promoter = RecordingPromoter(failuresRemaining = 1)
         val fixture = fixture(promoter)
@@ -172,7 +381,8 @@ class EvidenceSaveCoordinatorTest {
         val capture = capture("capture-retry-after-failure")
         assertTrue(
             inputState.applyReceiptOcr(
-                ReceiptOcrApplyResult(capture, input.supplierName, input.expenseDate, input.amount)
+                ReceiptOcrApplyResult(capture, input.supplierName, input.expenseDate, input.amount),
+                expectedCaptureId = capture.captureId
             )
         )
         val expense = expense(input.id)
@@ -262,6 +472,7 @@ class EvidenceSaveCoordinatorTest {
         assertFalse(fixture.storedFile("capture-corrupt-journal").exists())
         assertFalse(fixture.journal.journalFileFor("capture-corrupt-journal").exists())
         assertEquals(1, fixture.journal.quarantinedFiles().size)
+        assertEquals(setOf("capture-corrupt-journal"), recovery.quarantinedCaptureIds)
 
         var repositoryCalls = 0
         val retry = runCatching {
@@ -332,6 +543,16 @@ class EvidenceSaveCoordinatorTest {
 
         assertEquals(1, fixture.formalFiles().size)
         assertNull(fixture.journal.find("capture-complete"))
+    }
+
+    @Test
+    fun legacyUnlinkedProductionSaveApisAreNotExposed() {
+        val publicMethodNames = EvidenceSaveCoordinator::class.java.methods.map { it.name }.toSet()
+
+        assertFalse("saveExpense" in publicMethodNames)
+        assertFalse("saveDailyReportWithExpense" in publicMethodNames)
+        assertTrue("saveExpenseAndLinkEvidence" in publicMethodNames)
+        assertTrue("saveDailyReportWithExpenseAndLinkEvidence" in publicMethodNames)
     }
 
     private fun fixture(promoter: EvidenceFilePromoter? = null): Fixture {
@@ -439,5 +660,55 @@ class EvidenceSaveCoordinatorTest {
                 storedAt = 1L
             )
         }
+
+        override fun inspectPendingImage(evidenceId: String): EvidenceFileReference =
+            EvidenceFileReference(
+                evidenceId = evidenceId,
+                localUri = "file:/stored/evidence_$evidenceId.jpg",
+                byteSize = 1L,
+                sha256 = "0".repeat(64),
+                storedAt = 1L
+            )
     }
 }
+
+private suspend fun EvidenceSaveCoordinator.saveExpense(
+    expense: ExpenseRecord,
+    expenseDraftId: String,
+    pendingCapture: ReceiptCaptureResult?,
+    findSavedExpense: suspend (String) -> ExpenseRecord?,
+    saveAccounting: suspend () -> Unit
+) = saveExpenseAndLinkEvidence(
+    expense = expense,
+    expenseDraftId = expenseDraftId,
+    pendingCapture = pendingCapture,
+    findSavedExpense = findSavedExpense,
+    hasPersistedEvidenceLink = { _, _, _ -> true },
+    saveAccounting = { saveAccounting() },
+    onPromoted = { _, _ -> }
+)
+
+private suspend fun EvidenceSaveCoordinator.saveDailyReportWithExpense(
+    expense: ExpenseRecord?,
+    expenseDraftId: String?,
+    pendingCapture: ReceiptCaptureResult?,
+    findSavedExpense: suspend (String) -> ExpenseRecord?,
+    saveAccounting: suspend () -> Unit
+) = saveDailyReportWithExpenseAndLinkEvidence(
+    expense = expense,
+    expenseDraftId = expenseDraftId,
+    pendingCapture = pendingCapture,
+    findSavedExpense = findSavedExpense,
+    hasPersistedEvidenceLink = { _, _, _ -> true },
+    saveAccounting = { saveAccounting() },
+    onPromoted = { _, _ -> }
+)
+
+private suspend fun EvidenceSaveCoordinator.recoverPendingFinalizations(
+    savedExpenses: List<ExpenseRecord>,
+    onPromoted: suspend (EvidenceFinalizationEntry, EvidenceFileReference) -> Unit = { _, _ -> }
+): EvidenceRecoveryResult = recoverPendingFinalizations(
+    savedExpenses = savedExpenses,
+    hasPersistedEvidenceLink = { _, _, _ -> true },
+    onPromoted = onPromoted
+)

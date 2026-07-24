@@ -9,12 +9,20 @@ import com.warun.accounting.data.local.AppSettings
 import com.warun.accounting.data.local.DailyReport
 import com.warun.accounting.data.local.DailyReportStatus
 import com.warun.accounting.data.local.ExpenseRecord
+import com.warun.accounting.data.local.EvidenceRecord
+import com.warun.accounting.data.local.EvidenceRecordState
+import com.warun.accounting.data.local.ExpenseEvidenceLinkRecord
 import com.warun.accounting.data.local.ExpenseSourceType
 import com.warun.accounting.data.local.MonthlySubmission
 import com.warun.accounting.data.local.MonthlySubmissionStatus
 import com.warun.accounting.data.local.ReceiptRecord
 import com.warun.accounting.data.local.SupplierCandidateRecord
 import com.warun.accounting.evidence.EvidenceSaveCoordinator
+import com.warun.accounting.evidence.EvidenceFileReference
+import com.warun.accounting.evidence.EvidenceFinalizationEntry
+import com.warun.accounting.evidence.EvidenceRecoveryNotice
+import com.warun.accounting.evidence.EvidenceRecoveryNoticeController
+import com.warun.accounting.evidence.noticeIssueKeys
 import com.warun.accounting.ui.model.DashboardUiState
 import com.warun.accounting.ui.util.todayString
 import com.warun.accounting.util.isSupportedPaymentMethod
@@ -24,6 +32,8 @@ import java.util.UUID
 import javax.inject.Inject
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
@@ -32,7 +42,8 @@ import kotlinx.coroutines.launch
 @HiltViewModel
 class DashboardViewModel @Inject constructor(
     private val repository: AccountingRepository,
-    private val evidenceSaveCoordinator: EvidenceSaveCoordinator
+    private val evidenceSaveCoordinator: EvidenceSaveCoordinator,
+    private val evidenceRecoveryNoticeController: EvidenceRecoveryNoticeController
 ) : ViewModel() {
     companion object {
         private const val LogTag = "DashboardViewModel"
@@ -63,12 +74,14 @@ class DashboardViewModel @Inject constructor(
 
     val uiState: StateFlow<DashboardUiState> = combine(
         baseUiStateParts,
-        repository.observeSupplierCandidates()
-    ) { parts, supplierCandidates ->
+        repository.observeSupplierCandidates(),
+        repository.observeStoredExpenseEvidence()
+    ) { parts, supplierCandidates, expenseEvidence ->
         DashboardUiState(
             reports = parts.reports,
             receipts = parts.receipts,
             expenses = parts.expenses,
+            expenseEvidence = expenseEvidence,
             monthlySubmissions = parts.submissions,
             supplierCandidates = supplierCandidates,
             appSettings = parts.settings
@@ -79,20 +92,48 @@ class DashboardViewModel @Inject constructor(
         initialValue = DashboardUiState()
     )
 
+    private val _evidenceRecoveryNotice = MutableStateFlow(EvidenceRecoveryNotice())
+    val evidenceRecoveryNotice: StateFlow<EvidenceRecoveryNotice> =
+        _evidenceRecoveryNotice.asStateFlow()
+
     init {
         viewModelScope.launch {
             runCatching {
                 evidenceSaveCoordinator.recoverPendingFinalizations(
-                    repository.observeExpenseRecords().first()
+                    savedExpenses = repository.observeExpenseRecords().first(),
+                    hasPersistedEvidenceLink = repository::hasExpenseEvidenceLink,
+                    onPromoted = ::persistPromotedEvidence
                 )
             }.onSuccess { recovery ->
                 recovery.failures.forEach { failure ->
                     Log.e(LogTag, "Failed to recover evidence ${failure.captureId}", failure.error)
                 }
+                recovery.quarantinedCaptureIds.forEach { captureId ->
+                    Log.e(LogTag, "Quarantined corrupt evidence journal for captureId=$captureId")
+                }
+                if (recovery.unidentifiedQuarantinedCount > 0) {
+                    Log.e(
+                        LogTag,
+                        "Quarantined corrupt evidence journals with unknown owner: " +
+                            recovery.unidentifiedQuarantinedCount
+                    )
+                }
+                _evidenceRecoveryNotice.value = evidenceRecoveryNoticeController.evaluate(
+                    recovery.noticeIssueKeys()
+                )
             }.onFailure { error ->
                 Log.e(LogTag, "Failed to load evidence finalization journal", error)
+                _evidenceRecoveryNotice.value = evidenceRecoveryNoticeController.evaluate(
+                    listOf("journal-load:${error::class.java.name}:${error.message.orEmpty()}")
+                )
             }
         }
+    }
+
+    fun dismissEvidenceRecoveryNotice() {
+        _evidenceRecoveryNotice.value = evidenceRecoveryNoticeController.acknowledge(
+            _evidenceRecoveryNotice.value
+        )
     }
 
     fun saveDailyReport(input: DailyReportInput, onResult: (Result<Unit>) -> Unit = {}) {
@@ -116,14 +157,31 @@ class DashboardViewModel @Inject constructor(
                 val now = System.currentTimeMillis()
                 val report = input.toDailyReport(now)
                 val expense = expenseInput?.toExpenseRecord(now)
-                evidenceSaveCoordinator.saveDailyReportWithExpense(
+                evidenceSaveCoordinator.saveDailyReportWithExpenseAndLinkEvidence(
                     expense = expense,
                     expenseDraftId = expenseInput?.id,
                     pendingCapture = pendingCapture,
                     findSavedExpense = ::findSavedExpense,
-                    saveAccounting = {
-                        repository.saveDailyReportWithExpense(report = report, expense = expense)
-                    }
+                    hasPersistedEvidenceLink = repository::hasExpenseEvidenceLink,
+                    saveAccounting = { inspectedEvidence ->
+                        if (inspectedEvidence == null) {
+                            repository.saveDailyReportWithExpense(report = report, expense = expense)
+                        } else {
+                            val linkedExpense = requireNotNull(expense)
+                            repository.saveDailyReportWithExpenseAndEvidence(
+                                report = report,
+                                expense = linkedExpense,
+                                evidence = inspectedEvidence.toEvidenceRecord(
+                                    state = EvidenceRecordState.Pending,
+                                    createdAt = pendingCapture?.capturedAt ?: now,
+                                    storedAt = null,
+                                    updatedAt = now
+                                ),
+                                link = inspectedEvidence.toExpenseLink(linkedExpense.id, now)
+                            )
+                        }
+                    },
+                    onPromoted = ::persistPromotedEvidence
                 )
             }
             result.onFailure { Log.e(LogTag, "Failed to save daily report transaction", it) }
@@ -166,12 +224,30 @@ class DashboardViewModel @Inject constructor(
         viewModelScope.launch {
             val result = runCatching {
                 val expense = input.toExpenseRecord(System.currentTimeMillis())
-                evidenceSaveCoordinator.saveExpense(
+                evidenceSaveCoordinator.saveExpenseAndLinkEvidence(
                     expense = expense,
                     expenseDraftId = input.id,
                     pendingCapture = pendingCapture,
                     findSavedExpense = ::findSavedExpense,
-                    saveAccounting = { repository.saveExpenseRecord(expense) }
+                    hasPersistedEvidenceLink = repository::hasExpenseEvidenceLink,
+                    saveAccounting = { inspectedEvidence ->
+                        if (inspectedEvidence == null) {
+                            repository.saveExpenseRecord(expense)
+                        } else {
+                            val now = System.currentTimeMillis()
+                            repository.saveExpenseWithEvidence(
+                                expense = expense,
+                                evidence = inspectedEvidence.toEvidenceRecord(
+                                    state = EvidenceRecordState.Pending,
+                                    createdAt = pendingCapture?.capturedAt ?: now,
+                                    storedAt = null,
+                                    updatedAt = now
+                                ),
+                                link = inspectedEvidence.toExpenseLink(expense.id, now)
+                            )
+                        }
+                    },
+                    onPromoted = ::persistPromotedEvidence
                 )
             }
             result.onFailure { Log.e(LogTag, "Failed to save expense", it) }
@@ -181,6 +257,47 @@ class DashboardViewModel @Inject constructor(
 
     private suspend fun findSavedExpense(expenseId: String): ExpenseRecord? =
         repository.observeExpenseRecords().first().firstOrNull { it.id == expenseId }
+
+    private suspend fun persistPromotedEvidence(
+        entry: EvidenceFinalizationEntry,
+        reference: EvidenceFileReference
+    ) {
+        val now = System.currentTimeMillis()
+        repository.finalizeExpenseEvidence(
+            expenseId = entry.expenseRecordId,
+            evidence = reference.toEvidenceRecord(
+                state = EvidenceRecordState.Stored,
+                createdAt = entry.createdAt,
+                storedAt = reference.storedAt,
+                updatedAt = now
+            ),
+            link = reference.toExpenseLink(entry.expenseRecordId, entry.createdAt)
+        )
+    }
+
+    private fun EvidenceFileReference.toEvidenceRecord(
+        state: String,
+        createdAt: Long,
+        storedAt: Long?,
+        updatedAt: Long
+    ) = EvidenceRecord(
+        id = evidenceId,
+        captureId = evidenceId,
+        storedUri = localUri,
+        byteSize = byteSize,
+        sha256 = sha256,
+        state = state,
+        createdAt = createdAt,
+        storedAt = storedAt,
+        updatedAt = updatedAt
+    )
+
+    private fun EvidenceFileReference.toExpenseLink(expenseId: String, linkedAt: Long) =
+        ExpenseEvidenceLinkRecord(
+            expenseId = expenseId,
+            evidenceId = evidenceId,
+            linkedAt = linkedAt
+        )
 
     fun addSupplierCandidate(category: String, name: String, paymentMethod: String) {
         val trimmedName = name.trim()

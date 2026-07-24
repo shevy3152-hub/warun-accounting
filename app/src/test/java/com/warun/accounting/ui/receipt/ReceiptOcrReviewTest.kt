@@ -7,6 +7,7 @@ import com.warun.accounting.ocr.parser.ReceiptDateTimeCandidate
 import com.warun.accounting.ocr.parser.ReceiptLine
 import com.warun.accounting.ocr.parser.ReceiptParseResult
 import com.warun.accounting.ocr.parser.ReceiptStoreCandidate
+import com.warun.accounting.ui.viewmodel.ExpenseInput
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -72,6 +73,43 @@ class ReceiptOcrReviewTest {
 
         assertFalse(state.canApply)
         assertTrue(state.copy(supplierConfirmed = true).canApply)
+    }
+
+    @Test
+    fun missingOcrDateCanApplyWhenExistingFormHasValidDate() {
+        val state = ReceiptOcrReviewState(
+            supplierName = "バロー",
+            purchaseDate = "",
+            totalAmount = "1540",
+            supplierConfirmed = true,
+            purchaseDateConfirmed = false,
+            totalAmountConfirmed = true
+        )
+        val existing = ExpenseInput(
+            id = "expense-id",
+            expenseDate = "2026-07-23",
+            category = "food_purchase",
+            supplierName = "",
+            amount = ""
+        )
+
+        assertFalse(state.canApply)
+        assertTrue(state.canApplyWithExisting(existing))
+    }
+
+    @Test
+    fun missingOcrFieldCannotApplyWhenMatchingExistingFieldIsAlsoEmpty() {
+        val state = ReceiptOcrReviewState(
+            supplierName = "バロー",
+            purchaseDate = "2026-07-20",
+            totalAmount = "",
+            supplierConfirmed = true,
+            purchaseDateConfirmed = true,
+            totalAmountConfirmed = false
+        )
+        val existing = ExpenseInput(id = "expense-id", expenseDate = "2026-07-23", amount = "")
+
+        assertFalse(state.canApplyWithExisting(existing))
     }
 
     private fun parseResult(confidence: ReceiptCandidateConfidence): ReceiptParseResult {

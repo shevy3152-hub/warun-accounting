@@ -106,10 +106,10 @@ class InputStateViewModelTest {
         val state = InputStateViewModel(SavedStateHandle())
         state.draftExpenseInputState.value = ExpenseInput(
             id = "expense-id",
-            expenseDate = "2026-07-20",
+            expenseDate = "",
             category = "food_purchase",
-            supplierName = "入力中の店",
-            amount = "1234",
+            supplierName = "",
+            amount = "",
             paymentMethod = "クレジット",
             memo = "カメラ入力保持テスト",
             receiptId = "existing-receipt"
@@ -118,7 +118,8 @@ class InputStateViewModelTest {
 
         assertTrue(
             state.applyReceiptOcr(
-                ReceiptOcrApplyResult(capture, "バロー（岐南店）", "2026-07-21", "1540")
+                ReceiptOcrApplyResult(capture, "バロー（岐南店）", "2026-07-21", "1540"),
+                expectedCaptureId = capture.captureId
             )
         )
 
@@ -144,26 +145,26 @@ class InputStateViewModelTest {
         val capture = ReceiptCaptureResult("capture-once", "file:/pending/capture-once.jpg", 456L)
         val first = ReceiptOcrApplyResult(capture, "最初の店", "2026-07-21", "1540")
 
-        assertTrue(state.applyReceiptOcr(first))
-        assertFalse(state.applyReceiptOcr(first.copy(supplierName = "二重反映")))
+        assertTrue(state.applyReceiptOcr(first, capture.captureId))
+        assertFalse(state.applyReceiptOcr(first.copy(supplierName = "二重反映"), capture.captureId))
         assertEquals("最初の店", state.draftExpenseInputState.value?.supplierName)
 
         val restored = InputStateViewModel(handle)
         assertEquals(capture, restored.pendingExpenseCaptureState.value)
         assertEquals(capture, restored.pendingCaptureFor("expense-id"))
-        assertFalse(restored.applyReceiptOcr(first.copy(supplierName = "再生成後の二重反映")))
+        assertFalse(restored.applyReceiptOcr(first.copy(supplierName = "再生成後の二重反映"), capture.captureId))
         assertEquals("最初の店", restored.draftExpenseInputState.value?.supplierName)
     }
 
     @Test
-    fun secondCaptureReplacesOnlyOcrFieldsAndDoesNotRetainMissingPreviousValue() {
+    fun secondCaptureDoesNotOverwriteFieldsFilledByFirstCapture() {
         val state = InputStateViewModel(SavedStateHandle())
         state.draftExpenseInputState.value = ExpenseInput(
             id = "shared-expense-id",
-            expenseDate = "2026-07-20",
+            expenseDate = "",
             category = "food_purchase",
-            supplierName = "手入力店舗",
-            amount = "1234",
+            supplierName = "",
+            amount = "",
             paymentMethod = "クレジット",
             memo = "保持するメモ"
         )
@@ -172,19 +173,21 @@ class InputStateViewModelTest {
 
         assertTrue(
             state.applyReceiptOcr(
-                ReceiptOcrApplyResult(firstCapture, "一回目商店", "2026-07-21", "1540")
+                ReceiptOcrApplyResult(firstCapture, "一回目商店", "2026-07-21", "1540"),
+                expectedCaptureId = firstCapture.captureId
             )
         )
         assertTrue(
             state.applyReceiptOcr(
-                ReceiptOcrApplyResult(secondCapture, "", "2026-07-22", "980")
+                ReceiptOcrApplyResult(secondCapture, "", "2026-07-22", "980"),
+                expectedCaptureId = secondCapture.captureId
             )
         )
 
         val applied = state.draftExpenseInputState.value!!
-        assertEquals("", applied.supplierName)
-        assertEquals("2026-07-22", applied.expenseDate)
-        assertEquals("980", applied.amount)
+        assertEquals("一回目商店", applied.supplierName)
+        assertEquals("2026-07-21", applied.expenseDate)
+        assertEquals("1540", applied.amount)
         assertEquals("food_purchase", applied.category)
         assertEquals("クレジット", applied.paymentMethod)
         assertEquals("保持するメモ", applied.memo)
@@ -199,7 +202,7 @@ class InputStateViewModelTest {
         val capture = ReceiptCaptureResult("capture-stored", "file:/pending/capture-stored.jpg", 789L)
         val result = ReceiptOcrApplyResult(capture, "店舗", "2026-07-22", "1540")
 
-        assertTrue(state.applyReceiptOcr(result))
+        assertTrue(state.applyReceiptOcr(result, capture.captureId))
         assertFalse(state.markPendingEvidenceStored("another-expense", capture.captureId))
         assertFalse(state.markPendingEvidenceStored("expense-id", "another-capture"))
         assertEquals(capture, state.pendingCaptureFor("expense-id"))
@@ -210,7 +213,7 @@ class InputStateViewModelTest {
 
         val restored = InputStateViewModel(handle)
         assertNull(restored.pendingExpenseCaptureState.value)
-        assertTrue(restored.applyReceiptOcr(result))
+        assertTrue(restored.applyReceiptOcr(result, capture.captureId))
     }
 
     @Test
@@ -230,7 +233,8 @@ class InputStateViewModelTest {
         val capture = ReceiptCaptureResult("capture-old", "file:/pending/old.jpg", 10L)
         assertTrue(
             state.applyReceiptOcr(
-                ReceiptOcrApplyResult(capture, "OCR店舗", "2026-07-21", "1540")
+                ReceiptOcrApplyResult(capture, "OCR店舗", "2026-07-21", "1540"),
+                expectedCaptureId = capture.captureId
             )
         )
         val appliedDraft = state.draftExpenseInputState.value
@@ -254,8 +258,151 @@ class InputStateViewModelTest {
         state.draftExpenseInputState.value = ExpenseInput(amount = "100")
         val capture = ReceiptCaptureResult("capture-no-owner", "file:/pending/capture-no-owner.jpg", 1L)
 
-        assertFalse(state.applyReceiptOcr(ReceiptOcrApplyResult(capture, "店舗", "2026-07-22", "100")))
+        assertFalse(
+            state.applyReceiptOcr(
+                ReceiptOcrApplyResult(capture, "店舗", "2026-07-22", "100"),
+                expectedCaptureId = capture.captureId
+            )
+        )
         assertNull(state.pendingExpenseCaptureState.value)
+    }
+
+    @Test
+    fun ocrResultForDifferentCaptureIsRejectedWithoutChangingDraftOrOwnership() {
+        val state = InputStateViewModel(SavedStateHandle())
+        val original = ExpenseInput(
+            id = "expense-id",
+            expenseDate = "2026-07-20",
+            category = "food_purchase",
+            supplierName = "入力中の店舗",
+            amount = "1234",
+            paymentMethod = "クレジット",
+            memo = "保持するメモ"
+        )
+        state.draftExpenseInputState.value = original
+        val capture = ReceiptCaptureResult("stale-capture", "file:/pending/stale.jpg", 3L)
+
+        assertFalse(
+            state.applyReceiptOcr(
+                ReceiptOcrApplyResult(capture, "誤った店舗", "2026-07-21", "1540"),
+                expectedCaptureId = "current-capture"
+            )
+        )
+
+        assertEquals(original, state.draftExpenseInputState.value)
+        assertNull(state.pendingExpenseCaptureState.value)
+        assertNull(state.pendingCaptureFor(original.id))
+    }
+
+    @Test
+    fun emptyOcrFieldsDoNotOverwriteExistingFormValues() {
+        val state = InputStateViewModel(SavedStateHandle())
+        val original = ExpenseInput(
+            id = "expense-id",
+            expenseDate = "2026-07-20",
+            category = "food_purchase",
+            supplierName = "入力中の店舗",
+            amount = "1234",
+            paymentMethod = "クレジット",
+            memo = "保持するメモ"
+        )
+        state.draftExpenseInputState.value = original
+        val capture = ReceiptCaptureResult("capture-empty", "file:/pending/empty.jpg", 4L)
+
+        assertTrue(
+            state.applyReceiptOcr(
+                ReceiptOcrApplyResult(capture, "", "", ""),
+                expectedCaptureId = capture.captureId
+            )
+        )
+
+        assertEquals(original, state.draftExpenseInputState.value)
+        assertEquals(capture, state.pendingCaptureFor(original.id))
+    }
+
+    @Test
+    fun enteredSupplierIsKeptWhileEmptyDateAndAmountAreFilled() {
+        val state = InputStateViewModel(SavedStateHandle())
+        state.draftExpenseInputState.value = ExpenseInput(
+            id = "expense-id",
+            expenseDate = "",
+            category = "food_purchase",
+            supplierName = "手入力店舗",
+            amount = "",
+            paymentMethod = "クレジット",
+            memo = "保持メモ"
+        )
+        val capture = ReceiptCaptureResult("capture-supplier", "file:/pending/supplier.jpg", 5L)
+
+        assertTrue(
+            state.applyReceiptOcr(
+                ReceiptOcrApplyResult(capture, "OCR店舗", "2026-07-20", "1540"),
+                expectedCaptureId = capture.captureId
+            )
+        )
+
+        val applied = state.draftExpenseInputState.value!!
+        assertEquals("手入力店舗", applied.supplierName)
+        assertEquals("2026-07-20", applied.expenseDate)
+        assertEquals("1540", applied.amount)
+        assertEquals("food_purchase", applied.category)
+        assertEquals("クレジット", applied.paymentMethod)
+        assertEquals("保持メモ", applied.memo)
+    }
+
+    @Test
+    fun enteredAmountIsKeptWhileEmptySupplierAndDateAreFilled() {
+        val state = InputStateViewModel(SavedStateHandle())
+        state.draftExpenseInputState.value = ExpenseInput(
+            id = "expense-id",
+            expenseDate = "",
+            category = "food_purchase",
+            supplierName = "",
+            amount = "999",
+            paymentMethod = "電子マネー",
+            memo = "保持メモ"
+        )
+        val capture = ReceiptCaptureResult("capture-amount", "file:/pending/amount.jpg", 6L)
+
+        assertTrue(
+            state.applyReceiptOcr(
+                ReceiptOcrApplyResult(capture, "OCR店舗", "2026-07-20", "1540"),
+                expectedCaptureId = capture.captureId
+            )
+        )
+
+        val applied = state.draftExpenseInputState.value!!
+        assertEquals("OCR店舗", applied.supplierName)
+        assertEquals("2026-07-20", applied.expenseDate)
+        assertEquals("999", applied.amount)
+        assertEquals("電子マネー", applied.paymentMethod)
+        assertEquals("保持メモ", applied.memo)
+    }
+
+    @Test
+    fun differingOcrValuesDoNotOverwriteFullyEnteredForm() {
+        val state = InputStateViewModel(SavedStateHandle())
+        val original = ExpenseInput(
+            id = "expense-id",
+            expenseDate = "2026-07-23",
+            category = "food_purchase",
+            supplierName = "手入力店舗",
+            amount = "999",
+            paymentMethod = "クレジット",
+            memo = "保持メモ"
+        )
+        state.draftExpenseInputState.value = original
+        val capture = ReceiptCaptureResult("capture-conflict", "file:/pending/conflict.jpg", 7L)
+
+        assertTrue(
+            state.applyReceiptOcr(
+                ReceiptOcrApplyResult(capture, "OCR店舗", "2026-07-20", "1540"),
+                expectedCaptureId = capture.captureId
+            )
+        )
+
+        assertEquals(original, state.draftExpenseInputState.value)
+        assertEquals(capture, state.pendingCaptureFor(original.id))
     }
 
     @Test

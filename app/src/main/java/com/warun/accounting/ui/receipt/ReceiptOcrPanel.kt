@@ -43,8 +43,8 @@ import com.warun.accounting.camera.ReceiptImageStore
 import com.warun.accounting.ocr.parser.ReceiptCandidateConfidence
 import com.warun.accounting.ocr.parser.ReceiptCandidateEvidence
 import com.warun.accounting.ui.viewmodel.ExpenseInput
-import java.io.File
 import java.text.NumberFormat
+import java.io.File
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -57,12 +57,12 @@ fun ReceiptOcrPanel(
     knownStoreNames: List<String> = emptyList(),
     existingExpense: ExpenseInput? = null,
     existingPendingCapture: ReceiptCaptureResult? = null,
-    onApplyToExpense: ((ReceiptOcrApplyResult) -> Boolean)? = null,
+    onApplyToExpense: ((ReceiptOcrApplyResult, String) -> Boolean)? = null,
     viewModel: ReceiptOcrViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
     val imageStore = remember(context) {
-        ReceiptImageStore(File(context.filesDir, "receipt-images/pending"))
+        journalProtectedReceiptImageStore(context)
     }
     val uiState by viewModel.uiState.collectAsState()
     val effectiveCapture = capturedReceipt ?: uiState.captureOrNull
@@ -105,6 +105,7 @@ fun ReceiptOcrPanel(
                 is ReceiptOcrUiState.Success -> {
                     val parseResult = state.parseResult
                     val review = state.review
+                    val applyResult = viewModel.createApplyResult(existingExpense)
                     Text("抽出候補を確認・編集", style = MaterialTheme.typography.labelLarge)
                     EditableCandidate(
                         label = "支払先／店舗名",
@@ -156,22 +157,26 @@ fun ReceiptOcrPanel(
                         confirmLabel = "この合計金額候補を確認",
                         keyboardType = KeyboardType.Number
                     )
-                    existingExpense?.let { expense ->
-                        OverwriteNotice(expense, review)
+                    if (existingExpense != null && applyResult != null) {
+                        ReceiptMergeNotice(planReceiptOcrMerge(existingExpense, applyResult))
                     }
                     if (onApplyToExpense != null) {
                         Button(
                             onClick = {
-                                val result = viewModel.createApplyResult()
-                                if (result != null && onApplyToExpense(result)) {
-                                    existingPendingCapture
-                                        ?.takeIf { it.captureId != result.capture.captureId }
-                                        ?.let { imageStore.delete(it.captureId) }
-                                    viewModel.clear()
-                                    onCaptureCleared()
-                                }
+                                applyCurrentReceiptOcr(
+                                    result = applyResult,
+                                    expectedCaptureId = effectiveCapture.captureId,
+                                    applyToExpense = onApplyToExpense,
+                                    onConsumed = {
+                                        existingPendingCapture
+                                            ?.takeIf { it.captureId != applyResult?.capture?.captureId }
+                                            ?.let { imageStore.delete(it.captureId) }
+                                        viewModel.clear()
+                                        onCaptureCleared()
+                                    }
+                                )
                             },
-                            enabled = review.canApply,
+                            enabled = review.canApplyWithExisting(existingExpense),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Text("支出入力へ反映")
@@ -222,6 +227,18 @@ fun ReceiptOcrPanel(
             }
         }
     }
+}
+
+internal fun applyCurrentReceiptOcr(
+    result: ReceiptOcrApplyResult?,
+    expectedCaptureId: String,
+    applyToExpense: (ReceiptOcrApplyResult, String) -> Boolean,
+    onConsumed: () -> Unit
+): Boolean {
+    val currentResult = result?.takeIf { it.capture.captureId == expectedCaptureId } ?: return false
+    if (!applyToExpense(currentResult, expectedCaptureId)) return false
+    onConsumed()
+    return true
 }
 
 @Composable
@@ -350,26 +367,12 @@ private fun EditableCandidate(
 }
 
 @Composable
-private fun OverwriteNotice(existing: ExpenseInput, review: ReceiptOcrReviewState) {
-    val changes = buildList {
-        if (existing.supplierName.isNotBlank() && existing.supplierName.trim() != review.supplierName.trim()) {
-            add("支払先「${existing.supplierName}」→「${review.supplierName.ifBlank { "空欄" }}」")
-        }
-        val nextDate = review.normalizedPurchaseDate
-        if (existing.expenseDate.isNotBlank() && nextDate != null && existing.expenseDate != nextDate) {
-            add("支出日 ${existing.expenseDate} → $nextDate")
-        }
-        val currentAmount = ReceiptOcrReviewValidator.normalizeAmount(existing.amount)
-        val nextAmount = review.normalizedTotalAmount
-        if (currentAmount != null && nextAmount != null && currentAmount != nextAmount) {
-            add("金額 ${NumberFormat.getNumberInstance(Locale.JAPAN).format(currentAmount)}円 → ${NumberFormat.getNumberInstance(Locale.JAPAN).format(nextAmount)}円")
-        }
-    }
-    if (changes.isNotEmpty()) {
-        Surface(color = MaterialTheme.colorScheme.tertiaryContainer, modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("現在の入力を上書きします", style = MaterialTheme.typography.labelLarge)
-                changes.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
+private fun ReceiptMergeNotice(plan: ReceiptOcrMergePlan) {
+    Surface(color = MaterialTheme.colorScheme.tertiaryContainer, modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("支出入力への反映内容", style = MaterialTheme.typography.labelLarge)
+            plan.displayLines().forEach { line ->
+                Text(line, style = MaterialTheme.typography.bodySmall)
             }
         }
     }

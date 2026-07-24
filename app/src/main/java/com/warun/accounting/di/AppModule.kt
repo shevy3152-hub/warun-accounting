@@ -12,6 +12,8 @@ import com.warun.accounting.data.local.WarunDatabase
 import com.warun.accounting.evidence.EvidenceFileStore
 import com.warun.accounting.evidence.EvidenceFilePromoter
 import com.warun.accounting.evidence.EvidenceFinalizationJournal
+import com.warun.accounting.evidence.EvidenceRecoveryNoticeController
+import com.warun.accounting.evidence.SharedPreferencesEvidenceRecoveryAcknowledgementStore
 import com.warun.accounting.future.ReceiptOcrGateway
 import com.warun.accounting.ocr.MlKitReceiptOcrGateway
 import dagger.Binds
@@ -85,6 +87,48 @@ object DatabaseModule {
             )
             db.execSQL(
                 "UPDATE daily_reports SET hasActualClosingCash = 1 WHERE actualClosingCash <> 0"
+            )
+        }
+    }
+
+    internal val MIGRATION_10_11 = object : Migration(10, 11) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS evidence_records (
+                    id TEXT NOT NULL,
+                    captureId TEXT NOT NULL,
+                    storedUri TEXT NOT NULL,
+                    byteSize INTEGER NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    createdAt INTEGER NOT NULL,
+                    storedAt INTEGER,
+                    updatedAt INTEGER NOT NULL,
+                    PRIMARY KEY(id)
+                )
+                """.trimIndent()
+            )
+            db.execSQL(
+                "CREATE UNIQUE INDEX IF NOT EXISTS index_evidence_records_captureId ON evidence_records(captureId)"
+            )
+            db.execSQL(
+                "CREATE UNIQUE INDEX IF NOT EXISTS index_evidence_records_storedUri ON evidence_records(storedUri)"
+            )
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS expense_evidence_links (
+                    expenseId TEXT NOT NULL,
+                    evidenceId TEXT NOT NULL,
+                    linkedAt INTEGER NOT NULL,
+                    PRIMARY KEY(expenseId, evidenceId),
+                    FOREIGN KEY(expenseId) REFERENCES expense_records(id) ON UPDATE NO ACTION ON DELETE CASCADE,
+                    FOREIGN KEY(evidenceId) REFERENCES evidence_records(id) ON UPDATE NO ACTION ON DELETE NO ACTION
+                )
+                """.trimIndent()
+            )
+            db.execSQL(
+                "CREATE UNIQUE INDEX IF NOT EXISTS index_expense_evidence_links_evidenceId ON expense_evidence_links(evidenceId)"
             )
         }
     }
@@ -278,7 +322,13 @@ object DatabaseModule {
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): WarunDatabase {
         return Room.databaseBuilder(context, WarunDatabase::class.java, DatabaseName)
-            .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
+            .addMigrations(
+                MIGRATION_6_7,
+                MIGRATION_7_8,
+                MIGRATION_8_9,
+                MIGRATION_9_10,
+                MIGRATION_10_11
+            )
             .build()
     }
 
@@ -323,5 +373,15 @@ object EvidenceStorageModule {
         @ApplicationContext context: Context
     ): EvidenceFinalizationJournal = EvidenceFinalizationJournal(
         journalDirectory = File(context.filesDir, "accounting-evidence/finalization-journal")
+    )
+
+    @Provides
+    @Singleton
+    fun provideEvidenceRecoveryNoticeController(
+        @ApplicationContext context: Context
+    ): EvidenceRecoveryNoticeController = EvidenceRecoveryNoticeController(
+        SharedPreferencesEvidenceRecoveryAcknowledgementStore(
+            context.getSharedPreferences("evidence-recovery-notices", Context.MODE_PRIVATE)
+        )
     )
 }

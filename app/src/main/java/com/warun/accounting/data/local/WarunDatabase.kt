@@ -8,11 +8,13 @@ import androidx.room.RoomDatabase
         DailyReport::class,
         ReceiptRecord::class,
         ExpenseRecord::class,
+        EvidenceRecord::class,
+        ExpenseEvidenceLinkRecord::class,
         SupplierCandidateRecord::class,
         MonthlySubmission::class,
         AppSettings::class
     ],
-    version = 10,
+    version = 11,
     exportSchema = true
 )
 abstract class WarunDatabase : RoomDatabase() {

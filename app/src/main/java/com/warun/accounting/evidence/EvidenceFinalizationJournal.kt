@@ -1,5 +1,6 @@
 package com.warun.accounting.evidence
 
+import com.warun.accounting.camera.PendingImageDeletionPolicy
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.file.AtomicMoveNotSupportedException
@@ -22,6 +23,12 @@ data class EvidenceFinalizationEntry(
     val state: EvidenceFinalizationState,
     val createdAt: Long,
     val updatedAt: Long
+)
+
+data class EvidenceJournalLoadResult(
+    val entries: List<EvidenceFinalizationEntry>,
+    val quarantinedCaptureIds: Set<String>,
+    val unidentifiedQuarantinedCount: Int
 )
 
 class EvidenceFinalizationJournal(
@@ -138,13 +145,19 @@ class EvidenceFinalizationJournal(
     }
 
     @Synchronized
-    fun loadAll(): List<EvidenceFinalizationEntry> {
-        if (!journalDirectory.exists()) return emptyList()
+    fun loadAll(): List<EvidenceFinalizationEntry> = loadAllWithDiagnostics().entries
+
+    @Synchronized
+    fun loadAllWithDiagnostics(): EvidenceJournalLoadResult {
+        if (!journalDirectory.exists()) {
+            return EvidenceJournalLoadResult(emptyList(), emptySet(), 0)
+        }
         if (!journalDirectory.isDirectory) {
             throw EvidenceJournalException("正式化ジャーナルの保存先がディレクトリではありません")
         }
-        return journalDirectory.listFiles()
-            .orEmpty()
+        val files = journalDirectory.listFiles()
+            ?: throw EvidenceJournalException("正式化ジャーナルの一覧を読み込めません")
+        val entries = files
             .asSequence()
             .filter { it.isFile && it.name.startsWith(JournalPrefix) && it.name.endsWith(JournalSuffix) }
             .mapNotNull { file ->
@@ -159,6 +172,12 @@ class EvidenceFinalizationJournal(
             }
             .sortedBy { it.createdAt }
             .toList()
+        val quarantined = quarantineDiagnostics()
+        return EvidenceJournalLoadResult(
+            entries = entries,
+            quarantinedCaptureIds = quarantined.first,
+            unidentifiedQuarantinedCount = quarantined.second
+        )
     }
 
     fun journalFileFor(captureId: String): File {
@@ -169,6 +188,79 @@ class EvidenceFinalizationJournal(
     fun quarantinedFiles(): List<File> = quarantineDirectory().listFiles()
         .orEmpty()
         .filter { it.isFile && it.name.endsWith(QuarantineSuffix) }
+
+    private fun quarantineDiagnostics(): Pair<Set<String>, Int> {
+        val directory = quarantineDirectory()
+        if (!directory.exists()) return emptySet<String>() to 0
+        if (!directory.isDirectory) return emptySet<String>() to 1
+        val files = directory.listFiles() ?: return emptySet<String>() to 1
+        val captureIds = mutableSetOf<String>()
+        var unidentified = 0
+        files.filter { it.isFile && it.name.endsWith(QuarantineSuffix) }.forEach { file ->
+            val captureId = file.name.removePrefix(JournalPrefix).substringBefore('.')
+            if (captureId.matches(ValidCaptureId) && captureId != "unknown") {
+                captureIds += captureId
+            } else {
+                unidentified += 1
+            }
+        }
+        return captureIds to unidentified
+    }
+
+    @Synchronized
+    fun pendingImageDeletionPolicy(): PendingImageDeletionPolicy {
+        if (!journalDirectory.exists()) return PendingImageDeletionPolicy()
+        if (!journalDirectory.isDirectory) {
+            return PendingImageDeletionPolicy(allowDeletion = false)
+        }
+        val journalFiles = journalDirectory.listFiles()
+            ?: return PendingImageDeletionPolicy(allowDeletion = false)
+        val protected = mutableSetOf<String>()
+        var hasUnknownOwner = false
+
+        journalFiles.filter(File::isFile).forEach { file ->
+            when {
+                file.name.startsWith(JournalPrefix) && file.name.endsWith(JournalSuffix) -> {
+                    val captureId = file.name.removePrefix(JournalPrefix).removeSuffix(JournalSuffix)
+                    if (captureId.matches(ValidCaptureId)) protected += captureId else hasUnknownOwner = true
+                }
+                file.name.startsWith(".$JournalPrefix") && file.name.endsWith(TempSuffix) -> {
+                    val captureId = file.name
+                        .removePrefix(".$JournalPrefix")
+                        .substringBefore(JournalSuffix)
+                    if (captureId.matches(ValidCaptureId)) protected += captureId else hasUnknownOwner = true
+                }
+            }
+        }
+
+        val quarantine = quarantineDirectory()
+        if (quarantine.exists()) {
+            if (!quarantine.isDirectory) {
+                hasUnknownOwner = true
+            } else {
+                val quarantined = quarantine.listFiles()
+                if (quarantined == null) {
+                    hasUnknownOwner = true
+                } else {
+                    quarantined.filter { it.isFile && it.name.endsWith(QuarantineSuffix) }
+                        .forEach { file ->
+                            val captureId = file.name
+                                .removePrefix(JournalPrefix)
+                                .substringBefore('.')
+                            if (captureId.matches(ValidCaptureId) && captureId != "unknown") {
+                                protected += captureId
+                            } else {
+                                hasUnknownOwner = true
+                            }
+                        }
+                }
+            }
+        }
+        return PendingImageDeletionPolicy(
+            protectedCaptureIds = protected,
+            allowDeletion = !hasUnknownOwner
+        )
+    }
 
     private fun writeAtomically(entry: EvidenceFinalizationEntry) {
         ensureJournalDirectory()

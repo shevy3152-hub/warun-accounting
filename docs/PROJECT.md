@@ -43,7 +43,7 @@
 | 言語・UI | Kotlin 2.0.21、Jetpack Compose、Material 3 |
 | Android | AGP 8.7.3、compileSdk/targetSdk 35、minSdk 26、Java/JVM 17 |
 | DI・状態 | Hilt 2.52、ViewModel、Coroutines/Flow、SavedStateHandle |
-| DB | Room 2.6.1、KSP、`warun-accounting.db`、schema version 10 |
+| DB | Room 2.6.1、KSP、`warun-accounting.db`、schema version 11 |
 | カメラ | CameraX 1.5.3 |
 | OCR | ML Kit Japanese Text Recognition 16.0.1 |
 
@@ -146,6 +146,8 @@ Activity、Context、View、PreviewView、LifecycleOwnerはViewModelへ保持し
 
 `ReceiptImageStore`はアプリ内部の `receipt-images/pending` を管理します。pending画像は一時ファイルであり、正式証憑ではありません。
 
+支出保存時はPhase 4Aのジャーナルと`EvidenceFileStore`がpending JPEGを正式領域へ昇格させ、`EvidenceRecord`へ保存先、サイズ、SHA-256、状態を記録します。`ExpenseEvidenceLinkRecord`がExpenseRecordとEvidenceを関連付けます。
+
 ### ML KitとOCR処理
 
 `MlKitReceiptOcrGateway`がpending JPEGを `InputImage`として読み込み、日本語モデルでrawTextを取得します。
@@ -212,10 +214,12 @@ ReceiptParser
   ↓
 ExpenseRecord
   ↓
-正式証憑保存・関連付け（予定）
+正式Evidence保存
+  ↓
+ExpenseEvidenceLinkRecordによる関連付け
 ```
 
-OCR反映時に保持されるのはcapture参照であり、画像は正式領域へ移動せず、ExpenseRecordの `receiptId`にも自動設定されません。「支出入力へ反映」はExpenseRecord保存でも証憑保存でもありません。
+OCR反映時点で保持されるのはcapture参照だけです。「支出入力へ反映」はExpenseRecord保存でも証憑保存でもありません。ユーザーが支出を保存した後に正式化と永続リンクを行い、`receiptId`は変更しません。
 
 ## 現在実装済み
 
@@ -234,17 +238,20 @@ OCR反映時に保持されるのはcapture参照であり、画像は正式領�
 - ReceiptParserによる店舗名、購入日時、合計金額の候補抽出。
 - OCR候補の確認・編集、代替候補、根拠、confidence、rawText表示。
 - 支払先、支出日、金額だけのExpenseInput反映と二重反映防止。
+- pending JPEGの失敗安全な正式化、SHA-256検証、ジャーナルによる再起動復旧。
+- `EvidenceRecord`と`ExpenseEvidenceLinkRecord`によるExpenseRecordとの永続リンク。
+- 保存済み支出からのレシート件数表示、画像表示、ピンチ拡大・移動。
 - 今日・今月の売上、支出、差額、現金関連値、客単価等の基本表示。
-- Room version 10とschema 6〜10のMigration経路。
+- Room version 11とschema 6〜11のMigration経路。
 - JVMテストとAndroidテストによる計算、状態保持、OCR、Parser、Transaction、Migrationの検証基盤。
 
 ## 未実装
 
 詳細と優先順位は `docs/ROADMAP.md` を参照してください。現在の主な未実装範囲は次のとおりです。
 
-- pending画像の正式証憑領域への安全な移動・再読込。
-- 正式証憑の共通モデル、保持期間、安全な削除、複数ページ対応。
-- OCR画像、ReceiptRecord、ExpenseRecordの正式な関連付け。
+- 正式Evidenceの保持期間、安全な削除、差し替え、複数ページ対応。
+- 1支出へ複数画像を追加するUIとReceiptRecordへのEvidence関連付け。
+- Phase 4Aで過去に保存された孤立画像の自動関連付け。
 - OCR経路からのReceiptRecord保存とExpenseRecord自動保存。
 - OCRによるカテゴリ・支払方法の自動判定。
 - 原価率、固定費回収率、損益分岐、目標残額等の統一計算基盤。
@@ -300,7 +307,7 @@ OCR反映時に保持されるのはcapture参照であり、画像は正式領�
 
 ### 正式証憑管理
 
-pending画像を失敗安全に正式化し、再起動後も参照できるようにします。その後、レシート、領収書、通帳、請求書、その他資料を扱える共通証憑モデルとExpenseRecordとの関連付けを検討します。モデル名とRoom変更は未確定です。
+pending画像の正式化、`EvidenceRecord`、ExpenseRecordとのリンク、再起動後のレシート再表示までは実装済みです。今後は削除・差し替え、複数画像追加、領収書・通帳・請求書等の種別と複数ページ構造を設計します。
 
 ### 経営ダッシュボード
 

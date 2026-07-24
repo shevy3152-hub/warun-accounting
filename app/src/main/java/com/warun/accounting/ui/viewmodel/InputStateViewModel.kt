@@ -8,6 +8,7 @@ import com.warun.accounting.camera.ReceiptCaptureResult
 import com.warun.accounting.data.local.DailyReportStatus
 import com.warun.accounting.data.local.ExpenseSourceType
 import com.warun.accounting.ui.receipt.ReceiptOcrApplyResult
+import com.warun.accounting.ui.receipt.planReceiptOcrMerge
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.util.UUID
 import javax.inject.Inject
@@ -98,17 +99,14 @@ class InputStateViewModel @Inject constructor(
         return next
     }
 
-    fun applyReceiptOcr(result: ReceiptOcrApplyResult): Boolean {
+    fun applyReceiptOcr(result: ReceiptOcrApplyResult, expectedCaptureId: String): Boolean {
         val current = draftExpenseInputState.value ?: return false
         if (current.id.isBlank()) return false
+        if (result.capture.captureId != expectedCaptureId) return false
         if (savedStateHandle.get<String>(AppliedOcrCaptureIdKey) == result.capture.captureId) {
             return false
         }
-        draftExpenseInputState.value = current.copy(
-            supplierName = result.supplierName,
-            expenseDate = result.expenseDate,
-            amount = result.amount
-        )
+        draftExpenseInputState.value = planReceiptOcrMerge(current, result).mergedExpense
         pendingExpenseCaptureState.value = result.capture
         savedStateHandle[PendingExpenseCaptureOwnerKey] = current.id
         savedStateHandle[AppliedOcrCaptureIdKey] = result.capture.captureId

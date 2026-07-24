@@ -91,12 +91,12 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.warun.accounting.camera.ReceiptCaptureResult
-import com.warun.accounting.camera.ReceiptImageStore
 import com.warun.accounting.data.local.AppSettings
 import com.warun.accounting.data.local.DailyReport
 import com.warun.accounting.data.local.DailyReportStatus
 import com.warun.accounting.data.local.ExpenseCategory
 import com.warun.accounting.data.local.ExpenseRecord
+import com.warun.accounting.data.local.ExpenseEvidenceRecord
 import com.warun.accounting.data.local.ExpenseSourceType
 import com.warun.accounting.data.local.MonthlySubmissionStatus
 import com.warun.accounting.data.local.ReceiptRecord
@@ -106,9 +106,13 @@ import com.warun.accounting.ui.receipt.ReceiptCameraScreen
 import com.warun.accounting.ui.receipt.ReceiptCaptureStartCoordinator
 import com.warun.accounting.ui.receipt.ReceiptCaptureResultKey
 import com.warun.accounting.ui.receipt.ReceiptOcrPanel
+import com.warun.accounting.ui.evidence.EvidenceImageDialog
 import com.warun.accounting.ui.receipt.ReceiptOcrViewModel
+import com.warun.accounting.ui.receipt.ReceiptOcrMergeAction
 import com.warun.accounting.ui.receipt.captureOrNull
 import com.warun.accounting.ui.receipt.consumeReceiptCaptureResult
+import com.warun.accounting.ui.receipt.journalProtectedReceiptImageStore
+import com.warun.accounting.ui.receipt.planReceiptOcrMerge
 import com.warun.accounting.ui.receipt.toSavedValue
 import com.warun.accounting.ui.util.toYen
 import com.warun.accounting.util.calculateCashBalance
@@ -126,7 +130,6 @@ import com.warun.accounting.evidence.EvidenceFinalizationAfterAccountingSaveExce
 import com.warun.accounting.ui.viewmodel.ExpenseInput
 import com.warun.accounting.ui.viewmodel.InputStateViewModel
 import com.warun.accounting.ui.viewmodel.ReceiptInput
-import java.io.File
 import java.time.LocalDate
 import java.time.YearMonth
 import java.util.UUID
@@ -336,6 +339,7 @@ fun WarunApp(
     viewModel: DashboardViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val evidenceRecoveryNotice by viewModel.evidenceRecoveryNotice.collectAsStateWithLifecycle()
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route ?: AppDestination.Home.route
@@ -427,6 +431,23 @@ fun WarunApp(
             dismissButton = {}
         )
     }
+    if (evidenceRecoveryNotice.shouldNotify) {
+        AlertDialog(
+            onDismissRequest = viewModel::dismissEvidenceRecoveryNotice,
+            title = { Text("レシート画像の復旧を確認してください") },
+            text = {
+                Text(
+                    "一部のレシート画像を復旧できませんでした。支出データは保持されています。" +
+                        "未解決の項目は${evidenceRecoveryNotice.issueCount}件です。"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = viewModel::dismissEvidenceRecoveryNotice) {
+                    Text("確認")
+                }
+            }
+        )
+    }
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
@@ -444,6 +465,7 @@ fun WarunApp(
             ) { padding ->
                 AppNavHost(
                     uiState = uiState,
+                    evidenceRecoveryIssueCount = evidenceRecoveryNotice.issueCount,
                     viewModel = viewModel,
                     navController = navController,
                     contentPadding = padding,
@@ -464,6 +486,7 @@ fun WarunApp(
                 )
                 AppNavHost(
                     uiState = uiState,
+                    evidenceRecoveryIssueCount = evidenceRecoveryNotice.issueCount,
                     viewModel = viewModel,
                     navController = navController,
                     contentPadding = PaddingValues(0.dp),
@@ -482,6 +505,7 @@ fun WarunApp(
 @Composable
 private fun AppNavHost(
     uiState: DashboardUiState,
+    evidenceRecoveryIssueCount: Int,
     viewModel: DashboardViewModel,
     navController: NavHostController,
     contentPadding: PaddingValues,
@@ -500,7 +524,11 @@ private fun AppNavHost(
             .padding(contentPadding)
     ) {
         composable(AppDestination.Home.route) {
-            HomeScreen(uiState = uiState, onNavigate = onNavigateSingleTop)
+            HomeScreen(
+                uiState = uiState,
+                evidenceRecoveryIssueCount = evidenceRecoveryIssueCount,
+                onNavigate = onNavigateSingleTop
+            )
         }
         composable(AppDestination.ReportEntry.route) { backStackEntry ->
             val inputStateViewModel: InputStateViewModel = hiltViewModel(backStackEntry)
@@ -746,10 +774,34 @@ private fun SummaryLine(label: String, value: String, color: Color) {
 @Composable
 private fun HomeScreen(
     uiState: DashboardUiState,
+    evidenceRecoveryIssueCount: Int,
     onNavigate: (String) -> Unit
 ) {
     ScreenColumn {
         ScreenTitle("ホーム", "今日と今月の状況をすぐ確認できます。")
+        if (evidenceRecoveryIssueCount > 0) {
+            Surface(
+                color = MaterialTheme.colorScheme.errorContainer,
+                shape = MaterialTheme.shapes.medium,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        "レシート画像の復旧に未解決項目があります",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                    Text(
+                        "一部のレシート画像を復旧できませんでした。支出データは保持されています。未解決: ${evidenceRecoveryIssueCount}件",
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                }
+            }
+        }
         HomePrimaryActions(onNavigate)
         HomeStatusGrid(uiState)
         HomeMonthlyTasks(uiState, onNavigate)
@@ -1154,7 +1206,7 @@ private fun ReportEntryScreen(
     val context = LocalContext.current
     val captureStartCoordinator = remember(context) {
         ReceiptCaptureStartCoordinator(
-            ReceiptImageStore(File(context.filesDir, "receipt-images/pending"))
+            journalProtectedReceiptImageStore(context)
         )
     }
 
@@ -1410,12 +1462,14 @@ private fun ReportEntryScreen(
             knownStoreNames = receiptParserStoreNames(uiState.supplierCandidates),
             existingExpense = draftExpenseInput,
             existingPendingCapture = pendingExpenseCapture,
-            onApplyToExpense = { result ->
-                val applied = inputStateViewModel.applyReceiptOcr(result)
+            onApplyToExpense = { result, expectedCaptureId ->
+                val mergeSummary = draftExpenseInput?.let { summarizeReceiptOcrMerge(it, result) }
+                val applied = inputStateViewModel.applyReceiptOcr(result, expectedCaptureId)
                 if (applied) {
                     saveFeedback = SaveFeedback(
                         title = "支出入力へ反映しました",
-                        body = "支払先・支出日・金額を反映しました。内容を確認して編集できます。",
+                        body = mergeSummary?.toFeedbackText()
+                            ?: "OCR候補を支出入力へ反映しました。内容を確認して編集できます。",
                         isError = false
                     )
                 }
@@ -1456,6 +1510,7 @@ private fun ReportEntryScreen(
             paymentVisibility = paymentVisibility,
             totals = totals,
             expenses = reportExpenses,
+            expenseEvidence = uiState.expenseEvidence,
             previewExpenses = liveReportExpenses,
             draftExpenseInput = draftExpenseInput,
             ocrApplyCaptureId = pendingExpenseCapture?.captureId,
@@ -1486,6 +1541,7 @@ private fun DailyReportForm(
     paymentVisibility: PaymentVisibility,
     totals: DailyReportTotals,
     expenses: List<ExpenseRecord>,
+    expenseEvidence: List<ExpenseEvidenceRecord>,
     previewExpenses: List<ExpenseRecord>,
     draftExpenseInput: ExpenseInput?,
     ocrApplyCaptureId: String?,
@@ -1523,6 +1579,7 @@ private fun DailyReportForm(
             ExpenseCard(
                 input = input,
                 expenses = expenses,
+                expenseEvidence = expenseEvidence,
                 previewExpenses = previewExpenses,
                 draftExpenseInput = draftExpenseInput,
                 ocrApplyCaptureId = ocrApplyCaptureId,
@@ -1806,6 +1863,7 @@ private fun SalesCard(
 private fun ExpenseCard(
     input: DailyReportInput,
     expenses: List<ExpenseRecord>,
+    expenseEvidence: List<ExpenseEvidenceRecord>,
     previewExpenses: List<ExpenseRecord>,
     draftExpenseInput: ExpenseInput?,
     ocrApplyCaptureId: String?,
@@ -1852,6 +1910,7 @@ private fun ExpenseCard(
                         reportDate = input.reportDate,
                         category = category,
                         expenses = expenses.filter { it.category == category },
+                        expenseEvidence = expenseEvidence,
                         onClose = { selectedCategory = null },
                         onSaveExpense = onSaveExpense,
                         onDeleteExpense = onDeleteExpense,
@@ -1888,6 +1947,7 @@ private fun ExpenseCard(
                         reportDate = input.reportDate,
                         category = ConsumablesCategory,
                         expenses = expenses.filter { it.category == ConsumablesCategory },
+                        expenseEvidence = expenseEvidence,
                         supplierCandidates = supplierCandidates,
                         onClose = { selectedCategory = null },
                         onSaveExpense = onSaveExpense,
@@ -1930,6 +1990,7 @@ private fun ExpenseCard(
                         reportDate = input.reportDate,
                         category = VehicleTransportCategory,
                         expenses = expenses.filter { it.category == VehicleTransportCategory },
+                        expenseEvidence = expenseEvidence,
                         supplierCandidates = supplierCandidates,
                         onClose = { selectedCategory = null },
                         onSaveExpense = onSaveExpense,
@@ -1954,6 +2015,7 @@ private fun ExpenseCard(
                         reportDate = input.reportDate,
                         category = OtherExpenseCategory,
                         expenses = expenses.filter { it.category == OtherExpenseCategory },
+                        expenseEvidence = expenseEvidence,
                         onClose = { selectedCategory = null },
                         onSaveExpense = onSaveExpense,
                         onDeleteExpense = onDeleteExpense,
@@ -2001,6 +2063,7 @@ private fun ExpenseDetailPanel(
     reportDate: String,
     category: String,
     expenses: List<ExpenseRecord>,
+    expenseEvidence: List<ExpenseEvidenceRecord>,
     onClose: () -> Unit,
     onSaveExpense: (ExpenseInput, (Result<Unit>) -> Unit) -> Unit,
     onDeleteExpense: (ExpenseRecord) -> Unit,
@@ -2019,6 +2082,7 @@ private fun ExpenseDetailPanel(
     var showForm by remember(reportDate, category) { mutableStateOf(true) }
     var formResetKey by remember(reportDate, category) { mutableStateOf(0) }
     var saveFailureMessage by remember(reportDate, category) { mutableStateOf<String?>(null) }
+    var selectedEvidence by remember { mutableStateOf<ExpenseEvidenceRecord?>(null) }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -2039,6 +2103,8 @@ private fun ExpenseDetailPanel(
             expenses.sortedByDescending { it.createdAt }.forEach { expense ->
                 ExpenseRecordRow(
                     expense = expense,
+                    evidence = expenseEvidence.filter { it.expenseId == expense.id },
+                    onOpenEvidence = { selectedEvidence = it },
                     onEdit = {
                         editingExpense = expense
                         showForm = true
@@ -2115,9 +2181,17 @@ private fun ExpenseDetailPanel(
             onDismiss = { saveFailureMessage = null }
         )
     }
+    selectedEvidence?.let { evidence ->
+        EvidenceImageDialog(
+            evidence = evidence,
+            onDismiss = { selectedEvidence = null }
+        )
+    }
 }@Composable
 private fun ExpenseRecordRow(
     expense: ExpenseRecord,
+    evidence: List<ExpenseEvidenceRecord>,
+    onOpenEvidence: (ExpenseEvidenceRecord) -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -2125,6 +2199,14 @@ private fun ExpenseRecordRow(
         Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(10.dp)) {
             Text(expense.supplierName.orEmpty().ifBlank { "支払先未入力" }, fontWeight = FontWeight.Bold)
             Text("${expense.amount.toYen()} / ${expense.paymentMethod.orEmpty().ifBlank { "支払方法未入力" }}")
+            if (evidence.isNotEmpty()) {
+                Text("保存済みレシート ${evidence.size}件", color = MaterialTheme.colorScheme.primary)
+                evidence.forEachIndexed { index, item ->
+                    OutlinedButton(onClick = { onOpenEvidence(item) }) {
+                        Text(if (evidence.size == 1) "レシート画像を開く" else "レシート画像 ${index + 1}を開く")
+                    }
+                }
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = onEdit) { Text("編集") }
                 OutlinedButton(onClick = onDelete) { Text("削除") }
@@ -2193,10 +2275,15 @@ private fun ExpenseRecordForm(
         sourceType = restoredInput?.sourceType ?: editingExpense?.sourceType ?: ExpenseSourceType.Manual,
         createdAt = restoredInput?.createdAt ?: editingExpense?.createdAt
     )
+    val shouldRetainDraft = shouldRetainExpenseDraft(
+        formDirty = formDirty,
+        restoredDraftId = restoredInput?.id,
+        currentExpenseId = currentExpenseInput.id
+    )
 
-    LaunchedEffect(formDirty, currentExpenseInput) {
-        onDirtyChanged(formDirty)
-        onDraftExpenseChanged(currentExpenseInput.takeIf { formDirty })
+    LaunchedEffect(shouldRetainDraft, currentExpenseInput) {
+        onDirtyChanged(shouldRetainDraft)
+        onDraftExpenseChanged(currentExpenseInput.takeIf { shouldRetainDraft })
     }
     candidateToHide?.let { candidate ->
         AlertDialog(
@@ -2331,6 +2418,37 @@ private fun ExpenseRecordForm(
         }
     }
 }
+
+internal fun shouldRetainExpenseDraft(
+    formDirty: Boolean,
+    restoredDraftId: String?,
+    currentExpenseId: String
+): Boolean = formDirty || restoredDraftId == currentExpenseId
+
+internal data class ReceiptOcrMergeSummary(
+    val filledFields: List<String>,
+    val keptFields: List<String>,
+    val matchingFields: List<String>
+) {
+    fun toFeedbackText(): String {
+        val filled = filledFields.ifEmpty { listOf("なし") }.joinToString("・")
+        val kept = keptFields.ifEmpty { listOf("なし") }.joinToString("・")
+        val matching = matchingFields.ifEmpty { listOf("なし") }.joinToString("・")
+        return "OCRで補完: $filled。現在入力を維持: $kept。一致: $matching。カテゴリ・支払方法・メモは変更していません。"
+    }
+}
+
+internal fun summarizeReceiptOcrMerge(
+    current: ExpenseInput,
+    result: com.warun.accounting.ui.receipt.ReceiptOcrApplyResult
+): ReceiptOcrMergeSummary {
+    val fields = planReceiptOcrMerge(current, result).fields
+    return ReceiptOcrMergeSummary(
+        filledFields = fields.filter { it.action == ReceiptOcrMergeAction.FillFromOcr }.map { it.label },
+        keptFields = fields.filter { it.action == ReceiptOcrMergeAction.KeepCurrent }.map { it.label },
+        matchingFields = fields.filter { it.action == ReceiptOcrMergeAction.Match }.map { it.label }
+    )
+}
 @Composable
 private fun CashManagementCard(
     input: DailyReportInput,
@@ -2394,7 +2512,7 @@ private fun ReceiptScreen(
     val context = LocalContext.current
     val captureStartCoordinator = remember(context) {
         ReceiptCaptureStartCoordinator(
-            ReceiptImageStore(File(context.filesDir, "receipt-images/pending"))
+            journalProtectedReceiptImageStore(context)
         )
     }
 

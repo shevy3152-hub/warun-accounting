@@ -54,8 +54,6 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.warun.accounting.camera.ReceiptCameraController
 import com.warun.accounting.camera.ReceiptCaptureResult
-import com.warun.accounting.camera.ReceiptImageStore
-import java.io.File
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -71,7 +69,7 @@ fun ReceiptCameraScreen(
     val activity = remember(context) { context.findActivity() }
     val requestHistory = remember(context) { SharedPreferencesCameraPermissionRequestHistory(context) }
     val imageStore = remember(context) {
-        ReceiptImageStore(File(context.filesDir, "receipt-images/pending"))
+        journalProtectedReceiptImageStore(context)
     }
     val controller = remember(context) { ReceiptCameraController(context.applicationContext) }
     val uiState by cameraViewModel.uiState.collectAsState()

@@ -105,6 +105,66 @@ data class ExpenseRecord(
     val updatedAt: Long
 )
 
+object EvidenceRecordState {
+    const val Pending = "pending"
+    const val Stored = "stored"
+}
+
+@Entity(
+    tableName = "evidence_records",
+    indices = [
+        Index(value = ["captureId"], unique = true),
+        Index(value = ["storedUri"], unique = true)
+    ]
+)
+data class EvidenceRecord(
+    @PrimaryKey val id: String,
+    val captureId: String,
+    val storedUri: String,
+    val byteSize: Long,
+    val sha256: String,
+    val state: String,
+    val createdAt: Long,
+    val storedAt: Long?,
+    val updatedAt: Long
+)
+
+@Entity(
+    tableName = "expense_evidence_links",
+    primaryKeys = ["expenseId", "evidenceId"],
+    foreignKeys = [
+        ForeignKey(
+            entity = ExpenseRecord::class,
+            parentColumns = ["id"],
+            childColumns = ["expenseId"],
+            onDelete = ForeignKey.CASCADE
+        ),
+        ForeignKey(
+            entity = EvidenceRecord::class,
+            parentColumns = ["id"],
+            childColumns = ["evidenceId"],
+            onDelete = ForeignKey.NO_ACTION
+        )
+    ],
+    indices = [Index(value = ["evidenceId"], unique = true)]
+)
+data class ExpenseEvidenceLinkRecord(
+    val expenseId: String,
+    val evidenceId: String,
+    val linkedAt: Long
+)
+
+data class ExpenseEvidenceRecord(
+    val expenseId: String,
+    val evidenceId: String,
+    val captureId: String,
+    val storedUri: String,
+    val byteSize: Long,
+    val sha256: String,
+    val createdAt: Long,
+    val storedAt: Long
+)
+
 @Entity(
     tableName = "supplier_candidates",
     indices = [Index(value = ["category", "name"], unique = true)]

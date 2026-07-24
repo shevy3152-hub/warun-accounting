@@ -2,6 +2,8 @@ package com.warun.accounting.ui.receipt
 
 import com.warun.accounting.camera.ReceiptCaptureResult
 import com.warun.accounting.camera.ReceiptImageStore
+import com.warun.accounting.camera.PendingImageDeletionPolicyProvider
+import com.warun.accounting.evidence.EvidenceFinalizationJournal
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -97,6 +99,39 @@ class ReceiptCaptureStartCoordinatorTest {
             )
         )
 
+        assertFalse(cleared)
+        assertFalse(opened)
+    }
+
+    @Test
+    fun journalOwnedCaptureCannotBeDeletedByRetake() {
+        val pendingDirectory = temporaryFolder.newFolder("pending-journal-owned")
+        val journal = EvidenceFinalizationJournal(temporaryFolder.newFolder("journal-owned"))
+        val store = ReceiptImageStore(
+            pendingDirectory = pendingDirectory,
+            deletionPolicyProvider = PendingImageDeletionPolicyProvider {
+                journal.pendingImageDeletionPolicy()
+            }
+        )
+        val owned = capture("journal-owned")
+        store.prepareFile(owned.captureId).writeBytes(byteArrayOf(1))
+        journal.prepare(
+            captureId = owned.captureId,
+            expenseDraftId = "expense-owner",
+            expenseRecordId = "expense-owner",
+            expenseFingerprint = "0".repeat(64)
+        )
+        var cleared = false
+        var opened = false
+
+        assertFalse(
+            ReceiptCaptureStartCoordinator(store).startNewCapture(
+                capturesToDiscard = listOf(owned),
+                clearSessionState = { cleared = true },
+                openCamera = { opened = true }
+            )
+        )
+        assertTrue(store.fileFor(owned.captureId).exists())
         assertFalse(cleared)
         assertFalse(opened)
     }

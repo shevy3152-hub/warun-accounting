@@ -8,6 +8,7 @@ import com.warun.accounting.future.ReceiptOcrGateway
 import com.warun.accounting.future.ReceiptOcrRequest
 import com.warun.accounting.ocr.ReceiptOcrRecognitionException
 import com.warun.accounting.ocr.parser.ReceiptParser
+import com.warun.accounting.ui.viewmodel.ExpenseInput
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -219,6 +220,29 @@ class ReceiptOcrViewModelTest {
         val result = viewModel.createApplyResult()!!
         assertEquals("代替店舗", result.supplierName)
         assertEquals("2026-07-21", result.expenseDate)
+        assertEquals("1540", result.amount)
+        assertEquals(capture, result.capture)
+    }
+
+    @Test
+    fun existingValidDateAllowsPartialOcrResultWhenDateWasNotDetected() = runTest(dispatcher) {
+        val gateway = FakeGateway { draft("バロー\n合計 1,540円") }
+        val viewModel = viewModel(gateway = gateway)
+        viewModel.runOcr(capture)
+        runCurrent()
+        viewModel.confirmTotalAmount()
+        val existing = ExpenseInput(
+            id = "expense-id",
+            expenseDate = "2026-07-23",
+            category = "food_purchase",
+            supplierName = "",
+            amount = ""
+        )
+
+        val result = viewModel.createApplyResult(existing)!!
+
+        assertEquals("バロー", result.supplierName)
+        assertEquals("", result.expenseDate)
         assertEquals("1540", result.amount)
         assertEquals(capture, result.capture)
     }

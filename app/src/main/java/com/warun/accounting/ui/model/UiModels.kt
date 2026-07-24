@@ -5,6 +5,7 @@ import com.warun.accounting.data.local.DailyReport
 import com.warun.accounting.data.local.DailyReportStatus
 import com.warun.accounting.data.local.ExpenseCategory
 import com.warun.accounting.data.local.ExpenseRecord
+import com.warun.accounting.data.local.ExpenseEvidenceRecord
 import com.warun.accounting.data.local.MonthlySubmission
 import com.warun.accounting.data.local.MonthlySubmissionStatus
 import com.warun.accounting.data.local.ReceiptRecord
@@ -21,6 +22,7 @@ data class DashboardUiState(
     val reports: List<DailyReport> = emptyList(),
     val receipts: List<ReceiptRecord> = emptyList(),
     val expenses: List<ExpenseRecord> = emptyList(),
+    val expenseEvidence: List<ExpenseEvidenceRecord> = emptyList(),
     val monthlySubmissions: List<MonthlySubmission> = emptyList(),
     val supplierCandidates: List<SupplierCandidateRecord> = emptyList(),
     val appSettings: AppSettings? = null

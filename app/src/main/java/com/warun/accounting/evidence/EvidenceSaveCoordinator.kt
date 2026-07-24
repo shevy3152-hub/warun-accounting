@@ -17,7 +17,9 @@ data class EvidenceRecoveryFailure(
 
 data class EvidenceRecoveryResult(
     val completedCaptureIds: List<String>,
-    val failures: List<EvidenceRecoveryFailure>
+    val failures: List<EvidenceRecoveryFailure>,
+    val quarantinedCaptureIds: Set<String> = emptySet(),
+    val unidentifiedQuarantinedCount: Int = 0
 )
 
 @Singleton
@@ -27,53 +29,82 @@ class EvidenceSaveCoordinator @Inject constructor(
 ) {
     private val operationMutex = Mutex()
 
-    suspend fun saveExpense(
+    suspend fun saveExpenseAndLinkEvidence(
         expense: ExpenseRecord,
         expenseDraftId: String,
         pendingCapture: ReceiptCaptureResult?,
         findSavedExpense: suspend (String) -> ExpenseRecord?,
-        saveAccounting: suspend () -> Unit
+        hasPersistedEvidenceLink: suspend (String, String, String) -> Boolean,
+        saveAccounting: suspend (EvidenceFileReference?) -> Unit,
+        onPromoted: suspend (EvidenceFinalizationEntry, EvidenceFileReference) -> Unit
     ) = saveWithEvidence(
         expense = expense,
         expenseDraftId = expenseDraftId,
         pendingCapture = pendingCapture,
         findSavedExpense = findSavedExpense,
-        saveAccounting = saveAccounting
+        hasPersistedEvidenceLink = hasPersistedEvidenceLink,
+        saveAccounting = saveAccounting,
+        onPromoted = onPromoted
     )
 
-    suspend fun saveDailyReportWithExpense(
+    suspend fun saveDailyReportWithExpenseAndLinkEvidence(
         expense: ExpenseRecord?,
         expenseDraftId: String?,
         pendingCapture: ReceiptCaptureResult?,
         findSavedExpense: suspend (String) -> ExpenseRecord?,
-        saveAccounting: suspend () -> Unit
+        hasPersistedEvidenceLink: suspend (String, String, String) -> Boolean,
+        saveAccounting: suspend (EvidenceFileReference?) -> Unit,
+        onPromoted: suspend (EvidenceFinalizationEntry, EvidenceFileReference) -> Unit
     ) {
         if (pendingCapture == null) {
-            saveAccounting()
+            saveAccounting(null)
             return
         }
         val record = expense ?: throw EvidenceJournalException("証憑画像に対応する支出がありません")
         val draftId = expenseDraftId ?: throw EvidenceJournalException("証憑画像の支出下書きIDがありません")
-        saveWithEvidence(record, draftId, pendingCapture, findSavedExpense, saveAccounting)
+        saveWithEvidence(
+            expense = record,
+            expenseDraftId = draftId,
+            pendingCapture = pendingCapture,
+            findSavedExpense = findSavedExpense,
+            hasPersistedEvidenceLink = hasPersistedEvidenceLink,
+            saveAccounting = saveAccounting,
+            onPromoted = onPromoted
+        )
     }
 
     suspend fun recoverPendingFinalizations(
-        savedExpenses: List<ExpenseRecord>
+        savedExpenses: List<ExpenseRecord>,
+        hasPersistedEvidenceLink: suspend (String, String, String) -> Boolean,
+        onPromoted: suspend (EvidenceFinalizationEntry, EvidenceFileReference) -> Unit = { _, _ -> }
     ): EvidenceRecoveryResult = withContext(Dispatchers.IO) {
         operationMutex.withLock {
             val savedById = savedExpenses.associateBy { it.id }
             val completed = mutableListOf<String>()
             val failures = mutableListOf<EvidenceRecoveryFailure>()
-            journal.loadAll().forEach { entry ->
+            val loadResult = journal.loadAllWithDiagnostics()
+            loadResult.entries.forEach { entry ->
                 try {
-                    if (recoverEntryIfAccountingSaved(entry, savedById[entry.expenseRecordId])) {
+                    if (
+                        recoverEntryIfAccountingSaved(
+                            entry = entry,
+                            savedExpense = savedById[entry.expenseRecordId],
+                            hasPersistedEvidenceLink = hasPersistedEvidenceLink,
+                            onPromoted = onPromoted
+                        )
+                    ) {
                         completed += entry.captureId
                     }
                 } catch (error: Exception) {
                     failures += EvidenceRecoveryFailure(entry.captureId, error)
                 }
             }
-            EvidenceRecoveryResult(completed, failures)
+            EvidenceRecoveryResult(
+                completedCaptureIds = completed,
+                failures = failures,
+                quarantinedCaptureIds = loadResult.quarantinedCaptureIds,
+                unidentifiedQuarantinedCount = loadResult.unidentifiedQuarantinedCount
+            )
         }
     }
 
@@ -82,11 +113,13 @@ class EvidenceSaveCoordinator @Inject constructor(
         expenseDraftId: String,
         pendingCapture: ReceiptCaptureResult?,
         findSavedExpense: suspend (String) -> ExpenseRecord?,
-        saveAccounting: suspend () -> Unit
+        hasPersistedEvidenceLink: suspend (String, String, String) -> Boolean,
+        saveAccounting: suspend (EvidenceFileReference?) -> Unit,
+        onPromoted: suspend (EvidenceFinalizationEntry, EvidenceFileReference) -> Unit
     ) = withContext(Dispatchers.IO) {
         operationMutex.withLock {
             if (pendingCapture == null) {
-                saveAccounting()
+                saveAccounting(null)
                 return@withLock
             }
             if (expenseDraftId.isBlank() || expense.id != expenseDraftId) {
@@ -97,7 +130,9 @@ class EvidenceSaveCoordinator @Inject constructor(
                 captureId = pendingCapture.captureId,
                 expenseDraftId = expenseDraftId,
                 expenseRecordId = expense.id,
-                findSavedExpense = findSavedExpense
+                findSavedExpense = findSavedExpense,
+                hasPersistedEvidenceLink = hasPersistedEvidenceLink,
+                onPromoted = onPromoted
             )
             journal.prepare(
                 captureId = pendingCapture.captureId,
@@ -106,9 +141,17 @@ class EvidenceSaveCoordinator @Inject constructor(
                 expenseFingerprint = fingerprint
             )
 
-            saveAccounting()
+            val inspectedEvidence = promoter.inspectPendingImage(pendingCapture.captureId)
+            saveAccounting(inspectedEvidence)
 
             try {
+                check(
+                    hasPersistedEvidenceLink(
+                        expense.id,
+                        inspectedEvidence.evidenceId,
+                        pendingCapture.captureId
+                    )
+                ) { "保存済み支出と証憑リンクを確認できません" }
                 journal.markAccountingSaved(
                     captureId = pendingCapture.captureId,
                     expenseRecordId = expense.id,
@@ -116,7 +159,8 @@ class EvidenceSaveCoordinator @Inject constructor(
                 )
                 finalizeEntry(
                     journal.find(pendingCapture.captureId)
-                        ?: throw EvidenceJournalException("保存済み正式化ジャーナルが見つかりません")
+                        ?: throw EvidenceJournalException("保存済み正式化ジャーナルが見つかりません"),
+                    onPromoted
                 )
             } catch (error: Exception) {
                 throw EvidenceFinalizationAfterAccountingSaveException(error)
@@ -128,7 +172,9 @@ class EvidenceSaveCoordinator @Inject constructor(
         captureId: String,
         expenseDraftId: String,
         expenseRecordId: String,
-        findSavedExpense: suspend (String) -> ExpenseRecord?
+        findSavedExpense: suspend (String) -> ExpenseRecord?,
+        hasPersistedEvidenceLink: suspend (String, String, String) -> Boolean,
+        onPromoted: suspend (EvidenceFinalizationEntry, EvidenceFileReference) -> Unit
     ) {
         val existing = journal.find(captureId) ?: return
         if (
@@ -137,13 +183,31 @@ class EvidenceSaveCoordinator @Inject constructor(
         ) {
             throw EvidenceJournalConflictException("captureIdを別の支出へ適用できません")
         }
-        recoverEntryIfAccountingSaved(existing, findSavedExpense(existing.expenseRecordId))
+        recoverEntryIfAccountingSaved(
+            entry = existing,
+            savedExpense = findSavedExpense(existing.expenseRecordId),
+            hasPersistedEvidenceLink = hasPersistedEvidenceLink,
+            onPromoted = onPromoted
+        )
     }
 
-    private fun recoverEntryIfAccountingSaved(
+    private suspend fun recoverEntryIfAccountingSaved(
         entry: EvidenceFinalizationEntry,
-        savedExpense: ExpenseRecord?
+        savedExpense: ExpenseRecord?,
+        hasPersistedEvidenceLink: suspend (String, String, String) -> Boolean,
+        onPromoted: suspend (EvidenceFinalizationEntry, EvidenceFileReference) -> Unit
     ): Boolean {
+        val linkExists = hasPersistedEvidenceLink(
+            entry.expenseRecordId,
+            entry.captureId,
+            entry.captureId
+        )
+        if (!linkExists) {
+            if (entry.state == EvidenceFinalizationState.AccountingSaved) {
+                throw EvidenceJournalConflictException("保存済み支出と証憑リンクが一致しません")
+            }
+            return false
+        }
         val accountingSaved = entry.state == EvidenceFinalizationState.AccountingSaved ||
             savedExpense?.let(::expenseFingerprint) == entry.expenseFingerprint
         if (!accountingSaved) return false
@@ -156,12 +220,16 @@ class EvidenceSaveCoordinator @Inject constructor(
                 expenseFingerprint = entry.expenseFingerprint
             )
         }
-        finalizeEntry(savedEntry)
+        finalizeEntry(savedEntry, onPromoted)
         return true
     }
 
-    private fun finalizeEntry(entry: EvidenceFinalizationEntry) {
-        promoter.promotePendingImage(entry.captureId)
+    private suspend fun finalizeEntry(
+        entry: EvidenceFinalizationEntry,
+        onPromoted: suspend (EvidenceFinalizationEntry, EvidenceFileReference) -> Unit
+    ) {
+        val reference = promoter.promotePendingImage(entry.captureId)
+        onPromoted(entry, reference)
         journal.complete(entry.captureId, entry.expenseRecordId)
     }
 }
@@ -195,6 +263,6 @@ private fun StringBuilder.appendField(name: String, value: String) {
 class EvidenceFinalizationAfterAccountingSaveException(
     cause: Throwable
 ) : IllegalStateException(
-    "会計データは保存されましたが、証憑画像を正式保存できませんでした。入力とpending画像は保持されています。もう一度保存してください。",
+    "会計データは保存されましたが、証憑画像の正式保存を完了できませんでした。入力と再試行情報は保持されています。もう一度保存してください。",
     cause
 )

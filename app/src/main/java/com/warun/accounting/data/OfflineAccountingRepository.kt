@@ -3,6 +3,9 @@ package com.warun.accounting.data
 import com.warun.accounting.data.local.AppSettings
 import com.warun.accounting.data.local.DailyReport
 import com.warun.accounting.data.local.ExpenseRecord
+import com.warun.accounting.data.local.EvidenceRecord
+import com.warun.accounting.data.local.ExpenseEvidenceLinkRecord
+import com.warun.accounting.data.local.ExpenseEvidenceRecord
 import com.warun.accounting.data.local.MonthlySubmission
 import com.warun.accounting.data.local.ReceiptRecord
 import com.warun.accounting.data.local.SupplierCandidateRecord
@@ -18,6 +21,9 @@ class OfflineAccountingRepository @Inject constructor(
     override fun observeReceipts(): Flow<List<ReceiptRecord>> = dao.observeReceipts()
 
     override fun observeExpenseRecords(): Flow<List<ExpenseRecord>> = dao.observeExpenseRecords()
+
+    override fun observeStoredExpenseEvidence(): Flow<List<ExpenseEvidenceRecord>> =
+        dao.observeStoredExpenseEvidence()
 
     override fun observeExpenseRecordsByDateAndCategory(expenseDate: String, category: String): Flow<List<ExpenseRecord>> =
         dao.observeExpenseRecordsByDateAndCategory(expenseDate, category)
@@ -45,6 +51,31 @@ class OfflineAccountingRepository @Inject constructor(
         dao.saveReceiptWithExpense(receipt, expense)
 
     override suspend fun saveExpenseRecord(expense: ExpenseRecord) = dao.insertExpenseRecord(expense)
+
+    override suspend fun saveExpenseWithEvidence(
+        expense: ExpenseRecord,
+        evidence: EvidenceRecord,
+        link: ExpenseEvidenceLinkRecord
+    ) = dao.saveExpenseWithEvidence(expense, evidence, link)
+
+    override suspend fun saveDailyReportWithExpenseAndEvidence(
+        report: DailyReport,
+        expense: ExpenseRecord,
+        evidence: EvidenceRecord,
+        link: ExpenseEvidenceLinkRecord
+    ) = dao.saveDailyReportWithExpenseAndEvidence(report, expense, evidence, link)
+
+    override suspend fun finalizeExpenseEvidence(
+        expenseId: String,
+        evidence: EvidenceRecord,
+        link: ExpenseEvidenceLinkRecord
+    ) = dao.finalizeExpenseEvidence(expenseId, evidence, link)
+
+    override suspend fun hasExpenseEvidenceLink(
+        expenseId: String,
+        evidenceId: String,
+        captureId: String
+    ): Boolean = dao.hasExpenseEvidenceLink(expenseId, evidenceId, captureId)
 
     override suspend fun deleteExpenseRecord(expense: ExpenseRecord) = dao.deleteExpenseRecord(expense)
 
