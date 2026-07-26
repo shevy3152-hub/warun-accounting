@@ -111,6 +111,7 @@ import com.warun.accounting.ui.model.breakEvenStatusMessage
 import com.warun.accounting.ui.model.buildBusinessAnalysisSummary
 import com.warun.accounting.ui.model.DashboardUiState
 import com.warun.accounting.ui.model.MaxRecentSupplierCandidates
+import com.warun.accounting.ui.model.canDeleteOwnedPendingCapture
 import com.warun.accounting.ui.model.formatBusinessRate
 import com.warun.accounting.ui.model.normalizeSupplierCandidateName
 import com.warun.accounting.ui.model.shouldPersistSupplierCandidateAfterExpenseSave
@@ -1272,6 +1273,7 @@ private fun ReportEntryScreen(
             journalProtectedReceiptImageStore(context)
         )
     }
+    val pendingImageStore = remember(context) { journalProtectedReceiptImageStore(context) }
     val photoPickerLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia()
     ) { uri ->
@@ -1520,7 +1522,27 @@ private fun ReportEntryScreen(
         navigationGuard?.saveDraftAndContinue = { afterSuccess -> saveCurrentReport(DailyReportStatus.Draft, afterSuccess) }
         navigationGuard?.saveCompletedAndContinue = { afterSuccess -> saveCurrentReport(DailyReportStatus.Completed, afterSuccess) }
         navigationGuard?.discardChanges = {
-            inputStateViewModel.discardReportChanges()
+            val pendingBeforeDiscard = inputStateViewModel.pendingCaptureOwnedByCurrentDraft()
+            val pendingOwnerExpenseId = draftExpenseInput?.id
+            val journalAllowsDeletion = pendingBeforeDiscard?.let { capture ->
+                runCatching { pendingImageStore.canDelete(capture.captureId) }.getOrDefault(false)
+            } ?: false
+            val evidenceReferencesCapture = pendingBeforeDiscard?.let { capture ->
+                uiState.expenseEvidence.any { evidence -> evidence.captureId == capture.captureId }
+            } ?: false
+            val discardedCapture = inputStateViewModel.discardReportChanges()
+            if (
+                canDeleteOwnedPendingCapture(
+                    discardedCapture = discardedCapture,
+                    currentCaptureId = pendingBeforeDiscard?.captureId,
+                    currentSessionExpenseId = pendingOwnerExpenseId,
+                    pendingOwnerExpenseId = pendingOwnerExpenseId,
+                    evidenceReferencesCapture = evidenceReferencesCapture,
+                    journalAllowsDeletion = journalAllowsDeletion
+                )
+            ) {
+                discardedCapture?.let { pendingImageStore.delete(it.captureId) }
+            }
         }
     }
     DisposableEffect(navigationGuard) {

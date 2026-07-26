@@ -467,4 +467,56 @@ class InputStateViewModelTest {
         assertNull(restored.pendingCaptureFor("legacy-expense-id"))
         assertNull(restored.pendingCaptureFor("another-expense-id"))
     }
+
+    @Test
+    fun discardingReportChangesReturnsAndClearsCurrentDraftCapture() {
+        val state = InputStateViewModel(SavedStateHandle())
+        state.draftExpenseInputState.value = ExpenseInput(
+            id = "owned-expense",
+            expenseDate = "2026-07-20",
+            category = "food_purchase",
+            amount = "",
+            paymentMethod = "現金"
+        )
+        val capture = ReceiptCaptureResult("owned-capture", "file:/pending/owned.jpg", 1L)
+        assertTrue(
+            state.applyReceiptOcr(
+                ReceiptOcrApplyResult(capture, "店舗", "2026-07-20", "100"),
+                expectedCaptureId = capture.captureId
+            )
+        )
+
+        assertEquals(capture, state.discardReportChanges())
+        assertNull(state.pendingCaptureOwnedByCurrentDraft())
+    }
+
+    @Test
+    fun discardingReportChangesDoesNotClearCaptureOwnedByAnotherDraft() {
+        val handle = SavedStateHandle()
+        val state = InputStateViewModel(handle)
+        state.draftExpenseInputState.value = ExpenseInput(
+            id = "owner-a",
+            expenseDate = "2026-07-20",
+            category = "food_purchase",
+            amount = "",
+            paymentMethod = "現金"
+        )
+        val capture = ReceiptCaptureResult("capture-a", "file:/pending/a.jpg", 1L)
+        assertTrue(
+            state.applyReceiptOcr(
+                ReceiptOcrApplyResult(capture, "店舗", "2026-07-20", "100"),
+                expectedCaptureId = capture.captureId
+            )
+        )
+        state.draftExpenseInputState.value = ExpenseInput(
+            id = "owner-b",
+            expenseDate = "2026-07-20",
+            category = "food_purchase",
+            amount = "100",
+            paymentMethod = "現金"
+        )
+
+        assertNull(state.discardReportChanges())
+        assertEquals(capture, state.pendingCaptureFor("owner-a"))
+    }
 }

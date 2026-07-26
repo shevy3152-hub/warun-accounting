@@ -86,11 +86,24 @@ class InputStateViewModel @Inject constructor(
         draftExpenseInputState.value = null
     }
 
-    fun discardReportChanges() {
+    fun pendingCaptureOwnedByCurrentDraft(): ReceiptCaptureResult? {
+        val currentDraftId = draftExpenseInputState.value?.id?.takeIf { it.isNotBlank() }
+            ?: return null
+        return pendingExpenseCaptureState.value?.takeIf {
+            savedStateHandle.get<String>(PendingExpenseCaptureOwnerKey) == currentDraftId
+        }
+    }
+
+    fun discardReportChanges(): ReceiptCaptureResult? {
+        val ownedPendingCapture = pendingCaptureOwnedByCurrentDraft()
         reportInputState.value = cleanReportInputState.value
         expenseFormDirtyState.value = false
         utilityFieldsEditedState.value = false
         draftExpenseInputState.value = null
+        if (ownedPendingCapture != null) {
+            clearPendingExpenseCapture()
+        }
+        return ownedPendingCapture
     }
 
     fun completeReceiptSave(): ReceiptInput {
