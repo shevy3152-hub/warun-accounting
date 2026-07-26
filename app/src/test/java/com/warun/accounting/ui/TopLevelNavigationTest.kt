@@ -24,6 +24,11 @@ class TopLevelNavigationTest {
     }
 
     @Test
+    fun prepaidManagementUsesDedicatedTopLevelRoute() {
+        assertEquals("prepaid", topLevelRouteForLabel("プリペイド管理"))
+    }
+
+    @Test
     fun reportDetailAndDatedEntryRemainSeparateRoutes() {
         assertEquals("report_detail/2026-07-24", ReportRoutes.detail("2026-07-24"))
         assertEquals("report_entry/2026-07-24", ReportRoutes.entry("2026-07-24"))

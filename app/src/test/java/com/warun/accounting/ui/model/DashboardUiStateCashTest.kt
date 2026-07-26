@@ -8,6 +8,10 @@ import com.warun.accounting.data.local.ExpenseSourceType
 import com.warun.accounting.util.PaymentMethodCash
 import com.warun.accounting.util.PaymentMethodCredit
 import com.warun.accounting.ui.util.todayString
+import com.warun.accounting.data.local.PrepaidAccountId
+import com.warun.accounting.data.local.PrepaidChargeSource
+import com.warun.accounting.data.local.PrepaidTransactionRecord
+import com.warun.accounting.data.local.PrepaidTransactionType
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -69,6 +73,42 @@ class DashboardUiStateCashTest {
 
         assertEquals(7_500, state.todayCashFlow)
     }
+
+    @Test
+    fun cashChargeIsSeparatedFromExpenseAndReducesCashFlow() {
+        val today = todayString()
+        val state = DashboardUiState(
+            reports = listOf(report(cashSales = 10_000).copy(reportDate = today)),
+            expenses = listOf(
+                expense("cash", 2_000, PaymentMethodCash).copy(expenseDate = today)
+            ),
+            prepaidTransactions = listOf(
+                prepaid("cash-charge", today, 3_000, PrepaidChargeSource.Cash),
+                prepaid("credit-charge", today, 5_000, PrepaidChargeSource.CreditCard)
+            )
+        )
+
+        assertEquals(2_000L, state.todayCashExpenses)
+        assertEquals(3_000L, state.todayCashCharges)
+        assertEquals(5_000L, state.todayCashOutflow)
+        assertEquals(5_000L, state.todayCashFlow)
+        assertEquals(2_000L, state.todayExpensesTotal)
+    }
+
+    private fun prepaid(id: String, date: String, amount: Long, source: String) =
+        PrepaidTransactionRecord(
+            id = id,
+            accountId = PrepaidAccountId.Majica,
+            transactionDate = date,
+            transactionType = PrepaidTransactionType.Charge,
+            balanceDelta = amount,
+            expenseId = null,
+            chargeSource = source,
+            reversalOfTransactionId = null,
+            operationKey = "operation-$id",
+            memo = "",
+            createdAt = 1
+        )
 
     private fun report(cashSales: Long) = DailyReport(
         id = "report",

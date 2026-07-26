@@ -5,6 +5,10 @@ import com.warun.accounting.data.local.DailyReportStatus
 import com.warun.accounting.data.local.ExpenseCategory
 import com.warun.accounting.data.local.ExpenseRecord
 import com.warun.accounting.data.local.ExpenseSourceType
+import com.warun.accounting.data.local.PrepaidAccountId
+import com.warun.accounting.data.local.PrepaidChargeSource
+import com.warun.accounting.data.local.PrepaidTransactionRecord
+import com.warun.accounting.data.local.PrepaidTransactionType
 import java.time.LocalDate
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -65,6 +69,39 @@ class BalanceBusinessAnalysisTest {
 
         assertEquals(10_000L, summary.expenseTotal)
         assertEquals(10_000L, summary.businessAnalysis.estimatedCost)
+    }
+
+    @Test
+    fun prepaidCashChargeChangesCashOnlyAndNotBusinessAnalysis() {
+        val date = "2026-07-24"
+        val summary = buildBalanceSummary(
+            reports = listOf(report(date, sales = 50_000, rent = 10_000)),
+            expenses = listOf(
+                expense("food", date, ExpenseCategory.FoodPurchase, 20_000)
+            ),
+            period = BalancePeriod(LocalDate.parse(date), LocalDate.parse(date)),
+            prepaidTransactions = listOf(
+                PrepaidTransactionRecord(
+                    id = "charge",
+                    accountId = PrepaidAccountId.Majica,
+                    transactionDate = date,
+                    transactionType = PrepaidTransactionType.Charge,
+                    balanceDelta = 5_000,
+                    expenseId = null,
+                    chargeSource = PrepaidChargeSource.Cash,
+                    reversalOfTransactionId = null,
+                    operationKey = "operation-charge",
+                    memo = "",
+                    createdAt = 1
+                )
+            )
+        )
+
+        assertEquals(30_000L, summary.expenseTotal)
+        assertEquals(20_000L, summary.businessAnalysis.estimatedCost)
+        assertEquals(30_000L, summary.businessAnalysis.estimatedGrossProfit)
+        assertEquals(5_000L, summary.cashCharge)
+        assertEquals(35_000L, summary.cashFlow)
     }
 
     private fun report(

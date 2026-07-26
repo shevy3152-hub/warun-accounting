@@ -32,6 +32,14 @@ interface PrepaidTransactionDao {
     @Query(
         """
         SELECT * FROM prepaid_transactions
+        ORDER BY transactionDate DESC, createdAt DESC, id DESC
+        """
+    )
+    fun observeAll(): Flow<List<PrepaidTransactionRecord>>
+
+    @Query(
+        """
+        SELECT * FROM prepaid_transactions
         WHERE accountId = :accountId
         ORDER BY transactionDate DESC, createdAt DESC, id DESC
         """

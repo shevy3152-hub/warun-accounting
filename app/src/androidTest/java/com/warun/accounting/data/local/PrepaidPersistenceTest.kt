@@ -5,6 +5,9 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.warun.accounting.data.prepaid.OfflinePrepaidRepository
+import com.warun.accounting.data.prepaid.PrepaidAdjustmentInput
+import com.warun.accounting.data.prepaid.PrepaidChargeInput
+import com.warun.accounting.data.prepaid.PrepaidReversalInput
 import com.warun.accounting.data.prepaid.PrepaidValidationException
 import com.warun.accounting.data.prepaid.PrepaidValidationFailure
 import com.warun.accounting.di.DatabaseModule
@@ -187,12 +190,7 @@ class PrepaidPersistenceTest {
 
     @Test
     fun repositoryValidationUsesCurrentDatabaseOwnershipAndBalance() = runBlocking {
-        val repository = OfflinePrepaidRepository(
-            accountDao = database.prepaidAccountDao(),
-            transactionDao = database.prepaidTransactionDao(),
-            linkDao = database.expensePrepaidLinkDao(),
-            warunDao = database.warunDao()
-        )
+        val repository = repository()
         assertValidationFailure(PrepaidValidationFailure.AccountNotFound) {
             repository.getBalance("missing-account")
         }
@@ -243,6 +241,88 @@ class PrepaidPersistenceTest {
             repository.validateLinkForInsert(link, PrepaidAccountId.AuPayPrepaid)
         }
     }
+
+    @Test
+    fun businessWritesAreTransactionalIdempotentAndKeepImmutableHistory() = runBlocking {
+        val repository = repository()
+        val charge = PrepaidChargeInput(
+            accountId = PrepaidAccountId.Majica,
+            transactionDate = "2026-07-27",
+            amount = 10_000,
+            chargeSource = PrepaidChargeSource.Cash,
+            memo = "TEST_C2_MAJICA_CASH",
+            operationKey = "charge-operation"
+        )
+
+        val first = repository.createCharge(charge)
+        val retry = repository.createCharge(charge)
+        assertEquals(false, first.wasAlreadyApplied)
+        assertEquals(true, retry.wasAlreadyApplied)
+        assertEquals(first.transaction.id, retry.transaction.id)
+        assertEquals(1, database.prepaidTransactionDao().observeAll().first().size)
+        assertValidationFailure(PrepaidValidationFailure.DuplicateOperationKey) {
+            repository.createCharge(charge.copy(amount = 20_000))
+        }
+
+        val adjustment = repository.createAdjustment(
+            PrepaidAdjustmentInput(
+                accountId = PrepaidAccountId.Majica,
+                transactionDate = "2026-07-27",
+                balanceDelta = -300,
+                memo = "TEST_C2_ADJUST_MINUS",
+                operationKey = "adjust-operation"
+            )
+        )
+        assertEquals(9_700L, adjustment.balance)
+
+        val reversal = repository.reverseTransaction(
+            PrepaidReversalInput(
+                accountId = PrepaidAccountId.Majica,
+                targetTransactionId = adjustment.transaction.id,
+                transactionDate = "2026-07-27",
+                memo = "取消",
+                operationKey = "reverse-operation"
+            )
+        )
+        assertEquals(10_000L, reversal.balance)
+        assertValidationFailure(PrepaidValidationFailure.DuplicateReversal) {
+            repository.reverseTransaction(
+                PrepaidReversalInput(
+                    accountId = PrepaidAccountId.Majica,
+                    targetTransactionId = adjustment.transaction.id,
+                    transactionDate = "2026-07-27",
+                    memo = "再取消",
+                    operationKey = "reverse-operation-2"
+                )
+            )
+        }
+    }
+
+    @Test
+    fun failedNegativeAdjustmentLeavesNoPartialTransaction() = runBlocking {
+        val repository = repository()
+        assertValidationFailure(PrepaidValidationFailure.InsufficientBalance) {
+            repository.createAdjustment(
+                PrepaidAdjustmentInput(
+                    accountId = PrepaidAccountId.Majica,
+                    transactionDate = "2026-07-27",
+                    balanceDelta = -1,
+                    memo = "残高不足",
+                    operationKey = "failed-adjustment"
+                )
+            )
+        }
+
+        assertEquals(0, database.prepaidTransactionDao().observeAll().first().size)
+    }
+
+    private fun repository() = OfflinePrepaidRepository(
+        database = database,
+        accountDao = database.prepaidAccountDao(),
+        transactionDao = database.prepaidTransactionDao(),
+        linkDao = database.expensePrepaidLinkDao(),
+        warunDao = database.warunDao()
+    )
 
     private fun transaction(
         id: String,

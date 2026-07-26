@@ -294,6 +294,71 @@ class PrepaidLedgerRulesTest {
     }
 
     @Test
+    fun adjustmentAndReversalCannotMakeBalanceNegative() {
+        assertFailure(PrepaidValidationFailure.InsufficientBalance) {
+            PrepaidLedgerRules.validateTransaction(
+                account = majica,
+                transaction = transaction(
+                    type = PrepaidTransactionType.Adjustment,
+                    delta = -501L
+                ),
+                currentBalance = 500L
+            )
+        }
+        val charge = transaction(
+            id = "charge",
+            type = PrepaidTransactionType.Charge,
+            delta = 1_000L,
+            chargeSource = PrepaidChargeSource.Cash
+        )
+        assertFailure(PrepaidValidationFailure.InsufficientBalance) {
+            PrepaidLedgerRules.validateTransaction(
+                account = majica,
+                transaction = transaction(
+                    id = "reversal",
+                    type = PrepaidTransactionType.Reversal,
+                    delta = -1_000L,
+                    reversalOf = charge.id
+                ),
+                reversalTarget = charge,
+                currentBalance = 700L
+            )
+        }
+    }
+
+    @Test
+    fun currentBalanceOverflowIsRejectedBeforeInsert() {
+        assertFailure(PrepaidValidationFailure.ArithmeticOverflow) {
+            PrepaidLedgerRules.validateTransaction(
+                account = majica,
+                transaction = transaction(
+                    type = PrepaidTransactionType.Charge,
+                    delta = 1L,
+                    chargeSource = PrepaidChargeSource.Cash
+                ),
+                currentBalance = Long.MAX_VALUE
+            )
+        }
+    }
+
+    @Test
+    fun operationRetryMustMatchTheOriginalBusinessContent() {
+        val original = transaction(
+            id = "original",
+            type = PrepaidTransactionType.Charge,
+            delta = 10_000L,
+            chargeSource = PrepaidChargeSource.Cash
+        )
+        val retry = original.copy(id = "retry", createdAt = 99L)
+
+        assertEquals(true, samePrepaidBusinessOperation(original, retry))
+        assertEquals(
+            false,
+            samePrepaidBusinessOperation(original, retry.copy(balanceDelta = 20_000L))
+        )
+    }
+
+    @Test
     fun linksOnlyMatchingPurchaseOnce() {
         val purchase = transaction(
             id = "purchase",

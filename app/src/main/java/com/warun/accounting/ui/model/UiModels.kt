@@ -10,6 +10,8 @@ import com.warun.accounting.data.local.MonthlySubmission
 import com.warun.accounting.data.local.MonthlySubmissionStatus
 import com.warun.accounting.data.local.ReceiptRecord
 import com.warun.accounting.data.local.SupplierCandidateRecord
+import com.warun.accounting.data.local.PrepaidTransactionRecord
+import com.warun.accounting.data.prepaid.netCashChargeAmount
 import com.warun.accounting.ui.util.currentMonthString
 import com.warun.accounting.ui.util.todayString
 import com.warun.accounting.util.calculateCashBalance
@@ -26,7 +28,8 @@ data class DashboardUiState(
     val expenseEvidence: List<ExpenseEvidenceRecord> = emptyList(),
     val monthlySubmissions: List<MonthlySubmission> = emptyList(),
     val supplierCandidates: List<SupplierCandidateRecord> = emptyList(),
-    val appSettings: AppSettings? = null
+    val appSettings: AppSettings? = null,
+    val prepaidTransactions: List<PrepaidTransactionRecord> = emptyList()
 ) {
     private val today = todayString()
     private val currentMonth = currentMonthString()
@@ -76,9 +79,11 @@ data class DashboardUiState(
     val accountsReceivableSales: Long = reports.sumOf { it.accountsReceivableSales }
     val otherSales: Long = reports.sumOf { it.otherSales }
     val cashExpenses: Long = reports.sumOf { it.cashExpenseTotal() } + cashExpensesWithoutReportsTotal(reports, expenses)
+    val cashCharges: Long = netCashChargeAmount(prepaidTransactions)
+    val cashOutflow: Long = cashExpenses + cashCharges
     val latestReport: DailyReport? = reports.maxByOrNull { it.reportDate }
     val closingCash: Long = latestReport?.takeIf { it.hasActualClosingCash }?.actualClosingCash
-        ?: calculateCashBalance(latestReport?.openingCash ?: 0L, cashSales, cashExpenses)
+        ?: calculateCashBalance(latestReport?.openingCash ?: 0L, cashSales, cashOutflow)
 
     val todaySales: Long = todayReports.sumOf { it.salesTotal() }
     private val todayExpensesWithoutReports: Long = expensesWithoutReportsTotal(todayReports, expenses.filter { it.expenseDate == today })
@@ -86,10 +91,12 @@ data class DashboardUiState(
     val todayBalance: Long = todaySales - todayExpensesTotal
     val todayCashSales: Long = todayReports.sumOf { it.cashSales }
     val todayCashExpenses: Long = todayReports.sumOf { it.cashExpenseTotal() } + cashExpensesWithoutReportsTotal(todayReports, expenses.filter { it.expenseDate == today })
-    val todayCashFlow: Long = calculateCashFlow(todayCashSales, todayCashExpenses)
+    val todayCashCharges: Long = netCashChargeAmount(prepaidTransactions) { it == today }
+    val todayCashOutflow: Long = todayCashExpenses + todayCashCharges
+    val todayCashFlow: Long = calculateCashFlow(todayCashSales, todayCashOutflow)
     private val todayLatestReport: DailyReport? = todayReports.maxByOrNull { it.reportDate }
     private val todayTheoreticalClosingCash: Long =
-        calculateCashBalance(todayLatestReport?.openingCash ?: 0L, todayCashSales, todayCashExpenses)
+        calculateCashBalance(todayLatestReport?.openingCash ?: 0L, todayCashSales, todayCashOutflow)
     val todayClosingCash: Long = todayLatestReport?.takeIf { it.hasActualClosingCash }?.actualClosingCash
         ?: todayTheoreticalClosingCash
     val todayCashDifference: Long = todayClosingCash - todayTheoreticalClosingCash

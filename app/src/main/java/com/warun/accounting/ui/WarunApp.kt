@@ -35,6 +35,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Assessment
+import androidx.compose.material.icons.outlined.AccountBalanceWallet
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ErrorOutline
@@ -105,6 +106,8 @@ import com.warun.accounting.data.local.ExpenseSourceType
 import com.warun.accounting.data.local.MonthlySubmissionStatus
 import com.warun.accounting.data.local.ReceiptRecord
 import com.warun.accounting.data.local.SupplierCandidateRecord
+import com.warun.accounting.data.local.PrepaidTransactionRecord
+import com.warun.accounting.data.prepaid.netCashChargeAmount
 import com.warun.accounting.ui.input.DateInputTextField
 import com.warun.accounting.ui.model.BusinessAnalysisSummary
 import com.warun.accounting.ui.model.breakEvenStatusMessage
@@ -131,6 +134,8 @@ import com.warun.accounting.ui.receipt.consumeReceiptCaptureResult
 import com.warun.accounting.ui.receipt.journalProtectedReceiptImageStore
 import com.warun.accounting.ui.receipt.planReceiptOcrMerge
 import com.warun.accounting.ui.receipt.toSavedValue
+import com.warun.accounting.ui.prepaid.PrepaidManagementScreen
+import com.warun.accounting.ui.prepaid.PrepaidNavigationGuard
 import com.warun.accounting.ui.util.toYen
 import com.warun.accounting.util.calculateCashBalance
 import com.warun.accounting.util.calculateCashFlow
@@ -148,6 +153,7 @@ import com.warun.accounting.evidence.EvidenceFinalizationAfterAccountingSaveExce
 import com.warun.accounting.ui.viewmodel.ExpenseInput
 import com.warun.accounting.ui.viewmodel.InputStateViewModel
 import com.warun.accounting.ui.viewmodel.ReceiptInput
+import com.warun.accounting.ui.viewmodel.PrepaidViewModel
 import java.time.LocalDate
 import java.time.YearMonth
 import java.util.UUID
@@ -164,6 +170,7 @@ private sealed class AppDestination(
     data object ReportEntry : AppDestination("report_entry", "日報入力", Icons.Outlined.EditNote)
     data object Receipt : AppDestination("receipt", "レシート", Icons.Outlined.ReceiptLong)
     data object Balance : AppDestination("balance", "収支確認", Icons.Outlined.Assessment)
+    data object Prepaid : AppDestination("prepaid", "プリペイド管理", Icons.Outlined.AccountBalanceWallet)
     data object MonthlyOrganization : AppDestination("monthly_organization", "月別整理", Icons.Outlined.ListAlt)
     data object ReportList : AppDestination("report_list", "日報一覧", Icons.Outlined.ListAlt)
     data object Submit : AppDestination("submit", "税理士へ提出", Icons.Outlined.Download)
@@ -175,6 +182,7 @@ private val destinations = listOf(
     AppDestination.ReportEntry,
     AppDestination.Receipt,
     AppDestination.Balance,
+    AppDestination.Prepaid,
     AppDestination.MonthlyOrganization,
     AppDestination.ReportList,
     AppDestination.Submit,
@@ -394,6 +402,7 @@ fun WarunApp(
     val currentRoute = backStackEntry?.destination?.route ?: AppDestination.Home.route
     var liveSidebarSummary by remember { mutableStateOf<SidebarSummaryOverride?>(null) }
     val reportEntryNavigationGuard = remember { ReportEntryNavigationGuard() }
+    val prepaidNavigationGuard = remember { PrepaidNavigationGuard() }
     var pendingNavigationAction by remember { mutableStateOf<(() -> Unit)?>(null) }
 
     LaunchedEffect(Unit) {
@@ -410,6 +419,8 @@ fun WarunApp(
 
     fun requestGuardedNavigation(action: () -> Unit) {
         if (reportEntryNavigationGuard.isActive && reportEntryNavigationGuard.hasUnsavedChanges) {
+            pendingNavigationAction = action
+        } else if (prepaidNavigationGuard.isActive && prepaidNavigationGuard.hasUnsavedChanges) {
             pendingNavigationAction = action
         } else {
             action()
@@ -432,7 +443,33 @@ fun WarunApp(
     }
 
 
-    pendingNavigationAction?.let { action ->
+    if (
+        pendingNavigationAction != null &&
+        prepaidNavigationGuard.isActive &&
+        prepaidNavigationGuard.hasUnsavedChanges
+    ) {
+        val action = requireNotNull(pendingNavigationAction)
+        AlertDialog(
+            onDismissRequest = { pendingNavigationAction = null },
+            title = { Text("未保存の内容があります") },
+            text = { Text("プリペイド入力を破棄して移動しますか。") },
+            confirmButton = {
+                OutlinedButton(
+                    onClick = {
+                        prepaidNavigationGuard.discardChanges?.invoke()
+                        runPendingNavigation(action)
+                    }
+                ) {
+                    Text("保存せずに続行")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingNavigationAction = null }) {
+                    Text("戻る")
+                }
+            }
+        )
+    } else pendingNavigationAction?.let { action ->
         val isSaving = reportEntryNavigationGuard.isSaving
         AlertDialog(
             onDismissRequest = {
@@ -528,6 +565,7 @@ fun WarunApp(
                     onNavigate = guardedNavigate,
                     onPopBackStack = guardedPopBackStack,
                     reportEntryNavigationGuard = reportEntryNavigationGuard,
+                    prepaidNavigationGuard = prepaidNavigationGuard,
                     onReportEntrySummaryChange = { liveSidebarSummary = it }
                 )
             }
@@ -550,6 +588,7 @@ fun WarunApp(
                     onNavigate = guardedNavigate,
                     onPopBackStack = guardedPopBackStack,
                     reportEntryNavigationGuard = reportEntryNavigationGuard,
+                    prepaidNavigationGuard = prepaidNavigationGuard,
                     onReportEntrySummaryChange = { liveSidebarSummary = it }
                 )
             }
@@ -569,6 +608,7 @@ private fun AppNavHost(
     onNavigate: (String) -> Unit,
     onPopBackStack: () -> Unit,
     reportEntryNavigationGuard: ReportEntryNavigationGuard,
+    prepaidNavigationGuard: PrepaidNavigationGuard,
     onReportEntrySummaryChange: (SidebarSummaryOverride?) -> Unit = {}
 ) {
     NavHost(
@@ -635,6 +675,14 @@ private fun AppNavHost(
         }
         composable(AppDestination.Balance.route) {
             BalanceScreen(uiState = uiState)
+        }
+        composable(AppDestination.Prepaid.route) { backStackEntry ->
+            val prepaidViewModel: PrepaidViewModel = hiltViewModel(backStackEntry)
+            PrepaidManagementScreen(
+                viewModel = prepaidViewModel,
+                navigationGuard = prepaidNavigationGuard,
+                onRequestBack = onPopBackStack
+            )
         }
         composable(AppDestination.MonthlyOrganization.route) {
             MonthlyOrganizationScreen(
@@ -911,6 +959,9 @@ private fun HomeStatusGrid(uiState: DashboardUiState) {
             SummaryCard("今日の売上", uiState.todaySales.toYen(), modifier = cardModifier)
             SummaryCard("今日の支出", uiState.todayExpensesTotal.toYen(), modifier = cardModifier)
             SummaryCard("今日の差額", uiState.todayBalance.toYen(), modifier = cardModifier)
+            SummaryCard("現金支出", uiState.todayCashExpenses.toYen(), modifier = cardModifier)
+            SummaryCard("現金チャージ", uiState.todayCashCharges.toYen(), modifier = cardModifier)
+            SummaryCard("現金流出合計", uiState.todayCashOutflow.toYen(), modifier = cardModifier)
             SummaryCard("本日の現金収支", uiState.todayCashFlow.toYen(), modifier = cardModifier)
             SummaryCard("現金差額", uiState.todayCashDifference.toYen(), modifier = cardModifier)
             SummaryCard("未確認レシート件数", "${uiState.unconfirmedReceiptCount}件", modifier = cardModifier)
@@ -1396,7 +1447,11 @@ private fun ReportEntryScreen(
     val reportExpenses = uiState.expenses.filter { it.expenseDate == reportInput.reportDate }
     val liveReportExpenses = reportExpenses.withDraftExpensePreview(draftExpenseInput?.takeIf { it.expenseDate == reportInput.reportDate })
     val enteredReportDates = remember(uiState.reports) { uiState.reports.map { it.reportDate }.toSet() }
-    val totals = reportInput.calculateTotals(paymentVisibility, liveReportExpenses)
+    val totals = reportInput.calculateTotals(
+        paymentVisibility,
+        liveReportExpenses,
+        uiState.prepaidTransactions
+    )
     val hasUnsavedChanges = reportInput != cleanReportInput || expenseFormDirty || utilityFieldsEdited
     val expenseSaveDecision = reportExpenseSaveDecision(
         reportDate = reportInput.reportDate,
@@ -2776,6 +2831,8 @@ private fun CashManagementCard(
         }
         TotalRow("現金売上", totals.cashSales.toYen())
         TotalRow("現金支出", totals.cashExpense.toYen())
+        TotalRow("現金チャージ", totals.cashCharge.toYen())
+        TotalRow("現金流出合計", totals.cashOutflow.toYen())
         TotalRow("現金収支", totals.cashFlow.toYen())
         TotalRow("理論上の終了時現金", totals.theoreticalClosingCash.toYen())
         TotalRow("現金差額", totals.cashDifference.toYen())
@@ -2971,8 +3028,18 @@ private fun BalanceScreen(uiState: DashboardUiState) {
     val period = remember(periodMode, customStartDate, customEndDate, today) {
         selectedBalancePeriod(periodMode, customStartDate, customEndDate, today)
     }
-    val summary = remember(uiState.reports, uiState.expenses, period) {
-        buildBalanceSummary(uiState.reports, uiState.expenses, period)
+    val summary = remember(
+        uiState.reports,
+        uiState.expenses,
+        uiState.prepaidTransactions,
+        period
+    ) {
+        buildBalanceSummary(
+            uiState.reports,
+            uiState.expenses,
+            period,
+            uiState.prepaidTransactions
+        )
     }
 
     ScreenColumn {
@@ -3070,6 +3137,8 @@ private fun BalanceSummaryCards(summary: BalanceSummary) {
             SummaryCard("差額", summary.balance.toYen(), modifier = cardModifier)
             SummaryCard("現金売上", summary.cashSales.toYen(), modifier = cardModifier)
             SummaryCard("現金支出", summary.cashExpense.toYen(), modifier = cardModifier)
+            SummaryCard("現金チャージ", summary.cashCharge.toYen(), modifier = cardModifier)
+            SummaryCard("現金流出合計", summary.cashOutflow.toYen(), modifier = cardModifier)
             SummaryCard("現金収支", summary.cashFlow.toYen(), modifier = cardModifier)
             SummaryCard("理論上の現金残高", summary.theoreticalCashBalance.toYen(), modifier = cardModifier)
             SummaryCard("実際の現金残高", summary.actualCashBalance.toYen(), modifier = cardModifier)
@@ -3152,7 +3221,7 @@ private fun DailyBalanceList(rows: List<DailyBalanceRow>) {
             rows.forEach { row ->
                 TotalRow(row.reportDate, row.balance.toYen())
                 Text(
-                    text = "売上 ${row.salesTotal.toYen()} / 支出 ${row.expenseTotal.toYen()} / 現金差額 ${row.cashDifference.toYen()}",
+                    text = "売上 ${row.salesTotal.toYen()} / 支出 ${row.expenseTotal.toYen()} / 現金チャージ ${row.cashCharge.toYen()} / 現金差額 ${row.cashDifference.toYen()}",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -3212,8 +3281,18 @@ private fun ReportListScreen(
     onOpenDate: (String) -> Unit
 ) {
     var selectedMonth by remember { mutableStateOf(YearMonth.now()) }
-    val rows = remember(uiState.reports, uiState.expenses, selectedMonth) {
-        buildMonthlyReportRows(uiState.reports, uiState.expenses, selectedMonth)
+    val rows = remember(
+        uiState.reports,
+        uiState.expenses,
+        uiState.prepaidTransactions,
+        selectedMonth
+    ) {
+        buildMonthlyReportRows(
+            uiState.reports,
+            uiState.expenses,
+            uiState.prepaidTransactions,
+            selectedMonth
+        )
     }
 
     ScreenColumn {
@@ -3344,8 +3423,13 @@ private fun ReportDetailScreen(
     val dayExpenses = remember(uiState.expenses, reportDate) {
         uiState.expenses.filter { it.expenseDate == reportDate }
     }
-    val row = remember(dayReports, dayExpenses, reportDate) {
-        buildDailyBalanceRow(reportDate, dayReports, dayExpenses)
+    val row = remember(dayReports, dayExpenses, uiState.prepaidTransactions, reportDate) {
+        buildDailyBalanceRow(
+            reportDate,
+            dayReports,
+            dayExpenses,
+            uiState.prepaidTransactions
+        )
     }
     val registeredEvidence = remember(dayExpenses, uiState.expenseEvidence) {
         evidenceForExpenses(dayExpenses, uiState.expenseEvidence)
@@ -3371,6 +3455,8 @@ private fun ReportDetailScreen(
             TotalRow("差額", row.balance.toYen())
             TotalRow("現金売上", row.cashSales.toYen())
             TotalRow("現金支出", row.cashExpense.toYen())
+            TotalRow("現金チャージ", row.cashCharge.toYen())
+            TotalRow("現金流出合計", row.cashOutflow.toYen())
             TotalRow("現金収支", row.cashFlow.toYen())
             TotalRow("現金差額", row.cashDifference.toYen())
             if (dayReports.isEmpty()) {
@@ -3606,6 +3692,8 @@ private fun CashSection(uiState: DashboardUiState) {
             MiniAmountCard("開始残高", uiState.latestReport?.openingCash ?: 0L)
             MiniAmountCard("現金売上", uiState.cashSales)
             MiniAmountCard("現金支出", uiState.cashExpenses)
+            MiniAmountCard("現金チャージ", uiState.cashCharges)
+            MiniAmountCard("現金流出合計", uiState.cashOutflow)
         }
         TotalRow("終了残高", uiState.closingCash.toYen())
     }
@@ -3875,6 +3963,8 @@ internal data class BalanceSummary(
     val balance: Long,
     val cashSales: Long,
     val cashExpense: Long,
+    val cashCharge: Long,
+    val cashOutflow: Long,
     val cashFlow: Long,
     val theoreticalCashBalance: Long,
     val actualCashBalance: Long,
@@ -3892,6 +3982,8 @@ internal data class DailyBalanceRow(
     val balance: Long,
     val cashSales: Long,
     val cashExpense: Long,
+    val cashCharge: Long,
+    val cashOutflow: Long,
     val cashFlow: Long,
     val cashDifference: Long
 )
@@ -3933,6 +4025,8 @@ private data class DailyReportTotals(
     val expenseTotal: Long,
     val todayBalance: Long,
     val cashExpense: Long,
+    val cashCharge: Long,
+    val cashOutflow: Long,
     val cashFlow: Long,
     val theoreticalClosingCash: Long,
     val actualClosingCash: Long,
@@ -4021,7 +4115,8 @@ private fun AppSettings?.toPaymentVisibility(): PaymentVisibility =
 
 private fun DailyReportInput.calculateTotals(
     paymentVisibility: PaymentVisibility,
-    expenses: List<ExpenseRecord>
+    expenses: List<ExpenseRecord>,
+    prepaidTransactions: List<PrepaidTransactionRecord>
 ): DailyReportTotals {
     val cashSales = if (paymentVisibility.useCashPayment) this.cashSales.toInputLong() else 0L
     val totalSales = listOf(
@@ -4049,8 +4144,14 @@ private fun DailyReportInput.calculateTotals(
         cashDetailExpense(this, expenses, OtherExpenseCategory) +
         cashDetailExpense(this, expenses, VehicleTransportCategory) +
         directExpenseTotal
-    val cashFlow = calculateCashFlow(cashSales, cashExpense)
-    val theoreticalClosingCash = calculateCashBalance(this.openingCash.toInputLong(), cashSales, cashExpense)
+    val cashCharge = netCashChargeAmount(prepaidTransactions) { it == reportDate }
+    val cashOutflow = cashExpense + cashCharge
+    val cashFlow = calculateCashFlow(cashSales, cashOutflow)
+    val theoreticalClosingCash = calculateCashBalance(
+        this.openingCash.toInputLong(),
+        cashSales,
+        cashOutflow
+    )
     val actualClosingCash = this.actualClosingCash
         .takeIf { it.isNotBlank() }
         ?.toInputLong()
@@ -4065,6 +4166,8 @@ private fun DailyReportInput.calculateTotals(
         expenseTotal = expenseTotal,
         todayBalance = totalSales - expenseTotal,
         cashExpense = cashExpense,
+        cashCharge = cashCharge,
+        cashOutflow = cashOutflow,
         cashFlow = cashFlow,
         theoreticalClosingCash = theoreticalClosingCash,
         actualClosingCash = actualClosingCash,
@@ -4085,7 +4188,8 @@ private fun DailyReportInput.withHiddenPaymentsCleared(paymentVisibility: Paymen
 internal fun buildBalanceSummary(
     reports: List<DailyReport>,
     expenses: List<ExpenseRecord>,
-    period: BalancePeriod
+    period: BalancePeriod,
+    prepaidTransactions: List<PrepaidTransactionRecord> = emptyList()
 ): BalanceSummary {
     val periodReports = reports.filter { period.contains(it.reportDate) }
     val periodExpenses = expenses.filter { expense -> period.contains(expense.expenseDate) }
@@ -4093,14 +4197,20 @@ internal fun buildBalanceSummary(
     val expenseTotal = periodReports.sumOf { it.totalExpense(periodExpenses) } + expensesWithoutReportsTotal(periodReports, periodExpenses)
     val cashSales = periodReports.sumOf { it.cashSales }
     val cashExpense = periodReports.sumOf { it.cashExpense(periodExpenses) } + cashExpensesWithoutReportsTotal(periodReports, periodExpenses)
-    val cashFlow = calculateCashFlow(cashSales, cashExpense)
+    val cashCharge = netCashChargeAmount(prepaidTransactions, period::contains)
+    val cashOutflow = cashExpense + cashCharge
+    val cashFlow = calculateCashFlow(cashSales, cashOutflow)
     val firstReport = periodReports.minWithOrNull(
         compareBy<DailyReport> { it.reportDate }.thenBy { it.createdAt }
     )
     val latestReport = periodReports.maxWithOrNull(
         compareBy<DailyReport> { it.reportDate }.thenBy { it.updatedAt }
     )
-    val theoreticalCashBalance = calculateCashBalance(firstReport?.openingCash ?: 0L, cashSales, cashExpense)
+    val theoreticalCashBalance = calculateCashBalance(
+        firstReport?.openingCash ?: 0L,
+        cashSales,
+        cashOutflow
+    )
     val actualCashBalance = latestReport?.takeIf { it.hasActualClosingCash }?.actualClosingCash ?: theoreticalCashBalance
     val categoryTotals = buildExpenseBreakdownTotals(periodReports, periodExpenses)
     val businessAnalysis = buildBusinessAnalysisSummary(
@@ -4108,14 +4218,22 @@ internal fun buildBalanceSummary(
         expenseTotal = expenseTotal,
         periodExpenses = periodExpenses
     )
-    val dailyRows = (periodReports.map { it.reportDate } + periodExpenses.map { it.expenseDate })
+    val periodPrepaidDates = prepaidTransactions
+        .map { it.transactionDate }
+        .filter(period::contains)
+    val dailyRows = (
+        periodReports.map { it.reportDate } +
+            periodExpenses.map { it.expenseDate } +
+            periodPrepaidDates
+        )
         .distinct()
         .sortedDescending()
         .map { reportDate ->
             buildDailyBalanceRow(
                 reportDate = reportDate,
                 reports = periodReports.filter { it.reportDate == reportDate },
-                expenses = periodExpenses.filter { it.expenseDate == reportDate }
+                expenses = periodExpenses.filter { it.expenseDate == reportDate },
+                prepaidTransactions = prepaidTransactions
             )
         }
 
@@ -4126,6 +4244,8 @@ internal fun buildBalanceSummary(
         balance = salesTotal - expenseTotal,
         cashSales = cashSales,
         cashExpense = cashExpense,
+        cashCharge = cashCharge,
+        cashOutflow = cashOutflow,
         cashFlow = cashFlow,
         theoreticalCashBalance = theoreticalCashBalance,
         actualCashBalance = actualCashBalance,
@@ -4140,7 +4260,8 @@ internal fun buildBalanceSummary(
 private fun buildDailyBalanceRow(
     reportDate: String,
     reports: List<DailyReport>,
-    expenses: List<ExpenseRecord> = emptyList()
+    expenses: List<ExpenseRecord> = emptyList(),
+    prepaidTransactions: List<PrepaidTransactionRecord> = emptyList()
 ): DailyBalanceRow {
     val salesTotal = reports.sumOf { it.totalSales() }
     val expenseTotal = reports.sumOf { it.totalExpense(expenses) } + expensesWithoutReportsTotal(reports, expenses)
@@ -4148,8 +4269,14 @@ private fun buildDailyBalanceRow(
     val firstReport = reports.minByOrNull { it.createdAt }
     val latestReport = reports.maxByOrNull { it.updatedAt }
     val cashExpense = reports.sumOf { it.cashExpense(expenses) } + cashExpensesWithoutReportsTotal(reports, expenses)
-    val cashFlow = calculateCashFlow(cashSales, cashExpense)
-    val theoreticalCashBalance = calculateCashBalance(firstReport?.openingCash ?: 0L, cashSales, cashExpense)
+    val cashCharge = netCashChargeAmount(prepaidTransactions) { it == reportDate }
+    val cashOutflow = cashExpense + cashCharge
+    val cashFlow = calculateCashFlow(cashSales, cashOutflow)
+    val theoreticalCashBalance = calculateCashBalance(
+        firstReport?.openingCash ?: 0L,
+        cashSales,
+        cashOutflow
+    )
     val actualCashBalance = latestReport?.takeIf { it.hasActualClosingCash }?.actualClosingCash ?: theoreticalCashBalance
 
     return DailyBalanceRow(
@@ -4159,6 +4286,8 @@ private fun buildDailyBalanceRow(
         balance = salesTotal - expenseTotal,
         cashSales = cashSales,
         cashExpense = cashExpense,
+        cashCharge = cashCharge,
+        cashOutflow = cashOutflow,
         cashFlow = cashFlow,
         cashDifference = actualCashBalance - theoreticalCashBalance
     )
@@ -4167,6 +4296,7 @@ private fun buildDailyBalanceRow(
 private fun buildMonthlyReportRows(
     reports: List<DailyReport>,
     expenses: List<ExpenseRecord>,
+    prepaidTransactions: List<PrepaidTransactionRecord>,
     month: YearMonth
 ): List<MonthlyReportRow> {
     val today = LocalDate.now()
@@ -4184,7 +4314,8 @@ private fun buildMonthlyReportRows(
         val dailyRow = buildDailyBalanceRow(
             reportDate = reportDate,
             reports = dayReports,
-            expenses = dayExpenses
+            expenses = dayExpenses,
+            prepaidTransactions = prepaidTransactions
         )
 
         MonthlyReportRow(

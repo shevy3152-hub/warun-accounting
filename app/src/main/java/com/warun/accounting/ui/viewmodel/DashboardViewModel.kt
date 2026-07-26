@@ -17,6 +17,7 @@ import com.warun.accounting.data.local.MonthlySubmission
 import com.warun.accounting.data.local.MonthlySubmissionStatus
 import com.warun.accounting.data.local.ReceiptRecord
 import com.warun.accounting.data.local.SupplierCandidateRecord
+import com.warun.accounting.data.prepaid.PrepaidRepository
 import com.warun.accounting.evidence.EvidenceSaveCoordinator
 import com.warun.accounting.evidence.EvidenceFileReference
 import com.warun.accounting.evidence.EvidenceFinalizationEntry
@@ -43,6 +44,7 @@ import kotlinx.coroutines.launch
 @HiltViewModel
 class DashboardViewModel @Inject constructor(
     private val repository: AccountingRepository,
+    private val prepaidRepository: PrepaidRepository,
     private val evidenceSaveCoordinator: EvidenceSaveCoordinator,
     private val evidenceRecoveryNoticeController: EvidenceRecoveryNoticeController
 ) : ViewModel() {
@@ -76,8 +78,9 @@ class DashboardViewModel @Inject constructor(
     val uiState: StateFlow<DashboardUiState> = combine(
         baseUiStateParts,
         repository.observeSupplierCandidates(),
-        repository.observeStoredExpenseEvidence()
-    ) { parts, supplierCandidates, expenseEvidence ->
+        repository.observeStoredExpenseEvidence(),
+        prepaidRepository.observeAllTransactions()
+    ) { parts, supplierCandidates, expenseEvidence, prepaidTransactions ->
         DashboardUiState(
             reports = parts.reports,
             receipts = parts.receipts,
@@ -85,7 +88,8 @@ class DashboardViewModel @Inject constructor(
             expenseEvidence = expenseEvidence,
             monthlySubmissions = parts.submissions,
             supplierCandidates = supplierCandidates,
-            appSettings = parts.settings
+            appSettings = parts.settings,
+            prepaidTransactions = prepaidTransactions
         )
     }.stateIn(
         scope = viewModelScope,

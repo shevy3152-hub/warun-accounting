@@ -37,7 +37,8 @@ enum class PrepaidValidationFailure {
     LinkAccountMismatch,
     LinkExpenseMismatch,
     DuplicateExpenseLink,
-    DuplicatePurchaseLink
+    DuplicatePurchaseLink,
+    InvalidDate
 }
 
 class PrepaidValidationException(
@@ -101,15 +102,7 @@ object PrepaidLedgerRules {
 
         when (transaction.transactionType) {
             PrepaidTransactionType.Charge -> validateCharge(account, transaction)
-            PrepaidTransactionType.Purchase -> {
-                validatePurchase(transaction)
-                currentBalance?.let { balance ->
-                    val resultingBalance = addExact(balance, transaction.balanceDelta)
-                    if (resultingBalance < 0L) {
-                        fail(PrepaidValidationFailure.InsufficientBalance)
-                    }
-                }
-            }
+            PrepaidTransactionType.Purchase -> validatePurchase(transaction)
             PrepaidTransactionType.Adjustment -> validateOrdinaryTransaction(transaction)
             PrepaidTransactionType.Refund -> {
                 if (transaction.balanceDelta < 0L) {
@@ -122,6 +115,19 @@ object PrepaidLedgerRules {
                 target = reversalTarget,
                 existingReversal = existingReversal
             )
+        }
+        currentBalance?.let { balance ->
+            val resultingBalance = addExact(balance, transaction.balanceDelta)
+            if (
+                resultingBalance < 0L &&
+                transaction.transactionType in setOf(
+                    PrepaidTransactionType.Purchase,
+                    PrepaidTransactionType.Adjustment,
+                    PrepaidTransactionType.Reversal
+                )
+            ) {
+                fail(PrepaidValidationFailure.InsufficientBalance)
+            }
         }
     }
 
