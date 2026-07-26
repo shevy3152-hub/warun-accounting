@@ -13,6 +13,7 @@ import com.warun.accounting.data.local.SupplierCandidateRecord
 import com.warun.accounting.ui.util.currentMonthString
 import com.warun.accounting.ui.util.todayString
 import com.warun.accounting.util.calculateCashBalance
+import com.warun.accounting.util.calculateCashFlow
 import com.warun.accounting.util.cashExpenseAmount
 import com.warun.accounting.util.expenseAmount
 import com.warun.accounting.util.preferredCashExpenseAmount
@@ -85,6 +86,7 @@ data class DashboardUiState(
     val todayBalance: Long = todaySales - todayExpensesTotal
     val todayCashSales: Long = todayReports.sumOf { it.cashSales }
     val todayCashExpenses: Long = todayReports.sumOf { it.cashExpenseTotal() } + cashExpensesWithoutReportsTotal(todayReports, expenses.filter { it.expenseDate == today })
+    val todayCashFlow: Long = calculateCashFlow(todayCashSales, todayCashExpenses)
     private val todayLatestReport: DailyReport? = todayReports.maxByOrNull { it.reportDate }
     private val todayTheoreticalClosingCash: Long =
         calculateCashBalance(todayLatestReport?.openingCash ?: 0L, todayCashSales, todayCashExpenses)

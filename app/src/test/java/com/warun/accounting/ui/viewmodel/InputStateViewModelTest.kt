@@ -380,6 +380,55 @@ class InputStateViewModelTest {
     }
 
     @Test
+    fun zeroLikeDraftAmountIsReplacedByConfirmedOcrWithoutChangingOtherFields() {
+        listOf("0", "000").forEachIndexed { index, zeroAmount ->
+            val state = InputStateViewModel(SavedStateHandle())
+            state.draftExpenseInputState.value = ExpenseInput(
+                id = "expense-zero-$index",
+                expenseDate = "",
+                category = "food_purchase",
+                supplierName = "",
+                amount = zeroAmount,
+                paymentMethod = "クレジット",
+                memo = "保持メモ"
+            )
+            val capture = ReceiptCaptureResult(
+                "capture-zero-$index",
+                "file:/pending/zero-$index.jpg",
+                7L + index
+            )
+
+            assertTrue(
+                state.applyReceiptOcr(
+                    ReceiptOcrApplyResult(capture, "ピアゴ", "2026-07-24", "1846"),
+                    expectedCaptureId = capture.captureId
+                )
+            )
+
+            val applied = state.draftExpenseInputState.value!!
+            assertEquals("ピアゴ", applied.supplierName)
+            assertEquals("2026-07-24", applied.expenseDate)
+            assertEquals("1846", applied.amount)
+            assertEquals("food_purchase", applied.category)
+            assertEquals("クレジット", applied.paymentMethod)
+            assertEquals("保持メモ", applied.memo)
+            assertEquals(capture, state.pendingCaptureFor(applied.id))
+        }
+    }
+
+    @Test
+    fun newReportStartsWithDefaultOpeningCashButSavedReportValueIsPreserved() {
+        assertEquals(DefaultOpeningCashYen.toString(), DailyReportInput().openingCash)
+
+        val state = InputStateViewModel(SavedStateHandle())
+        val saved = DailyReportInput(reportDate = "2026-07-24", openingCash = "54321")
+        state.openReport(saved)
+
+        assertEquals("54321", state.reportInputState.value.openingCash)
+        assertEquals("54321", state.cleanReportInputState.value.openingCash)
+    }
+
+    @Test
     fun differingOcrValuesDoNotOverwriteFullyEnteredForm() {
         val state = InputStateViewModel(SavedStateHandle())
         val original = ExpenseInput(

@@ -64,7 +64,7 @@ data class ReceiptOcrReviewState(
         } else {
             purchaseDateError == null
         }
-        val amountReady = if (existing.amount.isNotBlank()) {
+        val amountReady = if (!ReceiptOcrReviewValidator.isUnenteredAmount(existing.amount)) {
             ReceiptOcrReviewValidator.normalizeAmount(existing.amount) != null
         } else {
             totalAmountError == null
@@ -137,11 +137,12 @@ fun planReceiptOcrMerge(
         label: String,
         currentValue: String,
         ocrValue: String,
+        isCurrentEmpty: (String) -> Boolean = String::isBlank,
         equivalent: (String, String) -> Boolean = { first, second -> first.trim() == second.trim() }
     ): ReceiptOcrFieldMerge {
         val action = when {
-            currentValue.isBlank() && ocrValue.isNotBlank() -> ReceiptOcrMergeAction.FillFromOcr
-            currentValue.isNotBlank() && ocrValue.isNotBlank() && equivalent(currentValue, ocrValue) ->
+            isCurrentEmpty(currentValue) && ocrValue.isNotBlank() -> ReceiptOcrMergeAction.FillFromOcr
+            !isCurrentEmpty(currentValue) && ocrValue.isNotBlank() && equivalent(currentValue, ocrValue) ->
                 ReceiptOcrMergeAction.Match
             else -> ReceiptOcrMergeAction.KeepCurrent
         }
@@ -152,7 +153,12 @@ fun planReceiptOcrMerge(
     val date = field("支出日", current.expenseDate, result.expenseDate) { first, second ->
         ReceiptOcrReviewValidator.normalizeDate(first) == ReceiptOcrReviewValidator.normalizeDate(second)
     }
-    val amount = field("金額", current.amount, result.amount) { first, second ->
+    val amount = field(
+        label = "金額",
+        currentValue = current.amount,
+        ocrValue = result.amount,
+        isCurrentEmpty = ReceiptOcrReviewValidator::isUnenteredAmount
+    ) { first, second ->
         ReceiptOcrReviewValidator.normalizeAmount(first) == ReceiptOcrReviewValidator.normalizeAmount(second)
     }
     val fields = listOf(supplier, date, amount)
@@ -169,12 +175,23 @@ fun planReceiptOcrMerge(
 }
 
 object ReceiptOcrReviewValidator {
+    fun isUnenteredAmount(value: String): Boolean {
+        if (value.isBlank()) return true
+        val normalized = normalizeAmountCharacters(value)
+        return normalized.isNotBlank() &&
+            normalized.all(Char::isDigit) &&
+            normalized.toLongOrNull() == 0L
+    }
+
     fun normalizeAmount(value: String): Long? {
-        val normalized = Normalizer.normalize(value, Normalizer.Form.NFKC)
-            .replace(Regex("[,\\s円¥￥]"), "")
+        val normalized = normalizeAmountCharacters(value)
         if (normalized.isBlank() || normalized.any { !it.isDigit() }) return null
         return normalized.toLongOrNull()?.takeIf { it > 0L }
     }
+
+    private fun normalizeAmountCharacters(value: String): String =
+        Normalizer.normalize(value, Normalizer.Form.NFKC)
+            .replace(Regex("[,\\s円¥￥]"), "")
 
     fun normalizeDate(value: String): String? {
         val normalized = Normalizer.normalize(value, Normalizer.Form.NFKC).trim()

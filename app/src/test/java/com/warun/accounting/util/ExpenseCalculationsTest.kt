@@ -70,6 +70,12 @@ class ExpenseCalculationsTest {
         assertEquals(100_000, calculateCashBalance(0, 100_000, 0))
     }
 
+    @Test
+    fun cashFlowIsCashSalesMinusCashExpenseWithoutOpeningCash() {
+        assertEquals(-2_174, calculateCashFlow(0, 2_174))
+        assertEquals(7_500, calculateCashFlow(10_000, 2_500))
+    }
+
     private fun expense(
         id: String,
         amount: Long,

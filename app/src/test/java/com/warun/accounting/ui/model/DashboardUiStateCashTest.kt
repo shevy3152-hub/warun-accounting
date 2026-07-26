@@ -7,6 +7,7 @@ import com.warun.accounting.data.local.ExpenseRecord
 import com.warun.accounting.data.local.ExpenseSourceType
 import com.warun.accounting.util.PaymentMethodCash
 import com.warun.accounting.util.PaymentMethodCredit
+import com.warun.accounting.ui.util.todayString
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -54,6 +55,19 @@ class DashboardUiStateCashTest {
         assertEquals(0, creditState.cashExpenses)
         assertEquals(70_000, cashState.closingCash)
         assertEquals(100_000, creditState.closingCash)
+    }
+
+    @Test
+    fun todayCashFlowExcludesOpeningCashAndNonCashExpenses() {
+        val state = DashboardUiState(
+            reports = listOf(report(cashSales = 10_000).copy(reportDate = todayString())),
+            expenses = listOf(
+                expense("cash", 2_500, PaymentMethodCash).copy(expenseDate = todayString()),
+                expense("credit", 4_000, PaymentMethodCredit).copy(expenseDate = todayString())
+            )
+        )
+
+        assertEquals(7_500, state.todayCashFlow)
     }
 
     private fun report(cashSales: Long) = DailyReport(

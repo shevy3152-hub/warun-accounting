@@ -126,6 +126,7 @@ import com.warun.accounting.ui.receipt.planReceiptOcrMerge
 import com.warun.accounting.ui.receipt.toSavedValue
 import com.warun.accounting.ui.util.toYen
 import com.warun.accounting.util.calculateCashBalance
+import com.warun.accounting.util.calculateCashFlow
 import com.warun.accounting.util.cashExpenseAmount
 import com.warun.accounting.util.expenseAmount
 import com.warun.accounting.util.isSupportedPaymentMethod
@@ -888,6 +889,7 @@ private fun HomeStatusGrid(uiState: DashboardUiState) {
             SummaryCard("今日の売上", uiState.todaySales.toYen(), modifier = cardModifier)
             SummaryCard("今日の支出", uiState.todayExpensesTotal.toYen(), modifier = cardModifier)
             SummaryCard("今日の差額", uiState.todayBalance.toYen(), modifier = cardModifier)
+            SummaryCard("本日の現金収支", uiState.todayCashFlow.toYen(), modifier = cardModifier)
             SummaryCard("現金差額", uiState.todayCashDifference.toYen(), modifier = cardModifier)
             SummaryCard("未確認レシート件数", "${uiState.unconfirmedReceiptCount}件", modifier = cardModifier)
         }
@@ -2672,6 +2674,7 @@ private fun CashManagementCard(
         }
         TotalRow("現金売上", totals.cashSales.toYen())
         TotalRow("現金支出", totals.cashExpense.toYen())
+        TotalRow("現金収支", totals.cashFlow.toYen())
         TotalRow("理論上の終了時現金", totals.theoreticalClosingCash.toYen())
         TotalRow("現金差額", totals.cashDifference.toYen())
     }
@@ -2965,6 +2968,7 @@ private fun BalanceSummaryCards(summary: BalanceSummary) {
             SummaryCard("差額", summary.balance.toYen(), modifier = cardModifier)
             SummaryCard("現金売上", summary.cashSales.toYen(), modifier = cardModifier)
             SummaryCard("現金支出", summary.cashExpense.toYen(), modifier = cardModifier)
+            SummaryCard("現金収支", summary.cashFlow.toYen(), modifier = cardModifier)
             SummaryCard("理論上の現金残高", summary.theoreticalCashBalance.toYen(), modifier = cardModifier)
             SummaryCard("実際の現金残高", summary.actualCashBalance.toYen(), modifier = cardModifier)
             SummaryCard("現金差額", summary.cashDifference.toYen(), modifier = cardModifier)
@@ -3259,6 +3263,9 @@ private fun ReportDetailScreen(
             TotalRow("売上合計", row.salesTotal.toYen())
             TotalRow("支出合計", row.expenseTotal.toYen())
             TotalRow("差額", row.balance.toYen())
+            TotalRow("現金売上", row.cashSales.toYen())
+            TotalRow("現金支出", row.cashExpense.toYen())
+            TotalRow("現金収支", row.cashFlow.toYen())
             TotalRow("現金差額", row.cashDifference.toYen())
             if (dayReports.isEmpty()) {
                 Text("この日付の日報はまだ保存されていません。", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -3707,6 +3714,7 @@ internal data class BalanceSummary(
     val balance: Long,
     val cashSales: Long,
     val cashExpense: Long,
+    val cashFlow: Long,
     val theoreticalCashBalance: Long,
     val actualCashBalance: Long,
     val cashDifference: Long,
@@ -3721,6 +3729,9 @@ internal data class DailyBalanceRow(
     val salesTotal: Long,
     val expenseTotal: Long,
     val balance: Long,
+    val cashSales: Long,
+    val cashExpense: Long,
+    val cashFlow: Long,
     val cashDifference: Long
 )
 
@@ -3761,6 +3772,7 @@ private data class DailyReportTotals(
     val expenseTotal: Long,
     val todayBalance: Long,
     val cashExpense: Long,
+    val cashFlow: Long,
     val theoreticalClosingCash: Long,
     val actualClosingCash: Long,
     val cashDifference: Long,
@@ -3876,6 +3888,7 @@ private fun DailyReportInput.calculateTotals(
         cashDetailExpense(this, expenses, OtherExpenseCategory) +
         cashDetailExpense(this, expenses, VehicleTransportCategory) +
         directExpenseTotal
+    val cashFlow = calculateCashFlow(cashSales, cashExpense)
     val theoreticalClosingCash = calculateCashBalance(this.openingCash.toInputLong(), cashSales, cashExpense)
     val actualClosingCash = this.actualClosingCash
         .takeIf { it.isNotBlank() }
@@ -3891,6 +3904,7 @@ private fun DailyReportInput.calculateTotals(
         expenseTotal = expenseTotal,
         todayBalance = totalSales - expenseTotal,
         cashExpense = cashExpense,
+        cashFlow = cashFlow,
         theoreticalClosingCash = theoreticalClosingCash,
         actualClosingCash = actualClosingCash,
         cashDifference = cashDifference,
@@ -3918,6 +3932,7 @@ internal fun buildBalanceSummary(
     val expenseTotal = periodReports.sumOf { it.totalExpense(periodExpenses) } + expensesWithoutReportsTotal(periodReports, periodExpenses)
     val cashSales = periodReports.sumOf { it.cashSales }
     val cashExpense = periodReports.sumOf { it.cashExpense(periodExpenses) } + cashExpensesWithoutReportsTotal(periodReports, periodExpenses)
+    val cashFlow = calculateCashFlow(cashSales, cashExpense)
     val firstReport = periodReports.minWithOrNull(
         compareBy<DailyReport> { it.reportDate }.thenBy { it.createdAt }
     )
@@ -3950,6 +3965,7 @@ internal fun buildBalanceSummary(
         balance = salesTotal - expenseTotal,
         cashSales = cashSales,
         cashExpense = cashExpense,
+        cashFlow = cashFlow,
         theoreticalCashBalance = theoreticalCashBalance,
         actualCashBalance = actualCashBalance,
         cashDifference = actualCashBalance - theoreticalCashBalance,
@@ -3971,6 +3987,7 @@ private fun buildDailyBalanceRow(
     val firstReport = reports.minByOrNull { it.createdAt }
     val latestReport = reports.maxByOrNull { it.updatedAt }
     val cashExpense = reports.sumOf { it.cashExpense(expenses) } + cashExpensesWithoutReportsTotal(reports, expenses)
+    val cashFlow = calculateCashFlow(cashSales, cashExpense)
     val theoreticalCashBalance = calculateCashBalance(firstReport?.openingCash ?: 0L, cashSales, cashExpense)
     val actualCashBalance = latestReport?.takeIf { it.hasActualClosingCash }?.actualClosingCash ?: theoreticalCashBalance
 
@@ -3979,6 +3996,9 @@ private fun buildDailyBalanceRow(
         salesTotal = salesTotal,
         expenseTotal = expenseTotal,
         balance = salesTotal - expenseTotal,
+        cashSales = cashSales,
+        cashExpense = cashExpense,
+        cashFlow = cashFlow,
         cashDifference = actualCashBalance - theoreticalCashBalance
     )
 }

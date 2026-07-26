@@ -10,6 +10,9 @@ fun Iterable<ExpenseRecord>.cashExpenseAmount(): Long =
 fun calculateCashBalance(openingCash: Long, cashSales: Long, cashExpense: Long): Long =
     openingCash + cashSales - cashExpense
 
+fun calculateCashFlow(cashSales: Long, cashExpense: Long): Long =
+    cashSales - cashExpense
+
 fun Iterable<ExpenseRecord>.preferredExpenseAmount(
     reportDate: String,
     category: String,

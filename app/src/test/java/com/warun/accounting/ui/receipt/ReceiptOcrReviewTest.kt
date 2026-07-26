@@ -112,6 +112,68 @@ class ReceiptOcrReviewTest {
         assertFalse(state.canApplyWithExisting(existing))
     }
 
+    @Test
+    fun zeroLikeExistingAmountIsTreatedAsUnenteredAndCanUseConfirmedOcrAmount() {
+        val state = ReceiptOcrReviewState(
+            supplierName = "ピアゴ",
+            purchaseDate = "2026-07-24",
+            totalAmount = "1846",
+            supplierConfirmed = true,
+            purchaseDateConfirmed = true,
+            totalAmountConfirmed = true
+        )
+
+        listOf("", "0", "00", "000").forEach { existingAmount ->
+            val existing = ExpenseInput(
+                id = "expense-$existingAmount",
+                expenseDate = "",
+                category = "food_purchase",
+                supplierName = "",
+                amount = existingAmount
+            )
+
+            assertTrue(state.canApplyWithExisting(existing))
+            assertEquals(
+                "1846",
+                planReceiptOcrMerge(
+                    existing,
+                    ReceiptOcrApplyResult(
+                        capture = com.warun.accounting.camera.ReceiptCaptureResult(
+                            captureId = "capture-$existingAmount",
+                            localUri = "file:/pending/$existingAmount.jpg",
+                            capturedAt = 1L
+                        ),
+                        supplierName = "ピアゴ",
+                        expenseDate = "2026-07-24",
+                        amount = "1846"
+                    )
+                ).mergedExpense.amount
+            )
+        }
+    }
+
+    @Test
+    fun positiveExistingAmountIsKeptAndUnconfirmedOcrAmountCannotFillZero() {
+        val confirmed = ReceiptOcrReviewState(
+            supplierName = "ピアゴ",
+            purchaseDate = "2026-07-24",
+            totalAmount = "1846",
+            supplierConfirmed = true,
+            purchaseDateConfirmed = true,
+            totalAmountConfirmed = true
+        )
+        val entered = ExpenseInput(
+            id = "expense-entered",
+            expenseDate = "2026-07-24",
+            supplierName = "ピアゴ",
+            amount = "1"
+        )
+        assertTrue(confirmed.canApplyWithExisting(entered))
+
+        val unconfirmed = confirmed.copy(totalAmountConfirmed = false)
+        assertFalse(unconfirmed.canApplyWithExisting(entered.copy(amount = "0")))
+    }
+
     private fun parseResult(confidence: ReceiptCandidateConfidence): ReceiptParseResult {
         val line = ReceiptLine(0, "バロー 岐南店", "バロー 岐南店")
         val evidence = ReceiptCandidateEvidence(listOf(line), "テスト根拠")
