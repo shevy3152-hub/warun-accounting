@@ -3,6 +3,7 @@ package com.warun.accounting.ui
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TopLevelNavigationTest {
@@ -30,5 +31,12 @@ class TopLevelNavigationTest {
             ReportRoutes.detail("2026-07-24"),
             ReportRoutes.entry("2026-07-24")
         )
+    }
+
+    @Test
+    fun onlyDatedReportEntryShowsDetailBackAction() {
+        assertTrue(shouldShowDatedReportBack("2026-07-24"))
+        assertFalse(shouldShowDatedReportBack(null))
+        assertFalse(shouldShowDatedReportBack(""))
     }
 }

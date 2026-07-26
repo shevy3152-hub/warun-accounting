@@ -67,6 +67,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -109,7 +110,11 @@ import com.warun.accounting.ui.model.BusinessAnalysisSummary
 import com.warun.accounting.ui.model.breakEvenStatusMessage
 import com.warun.accounting.ui.model.buildBusinessAnalysisSummary
 import com.warun.accounting.ui.model.DashboardUiState
+import com.warun.accounting.ui.model.MaxRecentSupplierCandidates
 import com.warun.accounting.ui.model.formatBusinessRate
+import com.warun.accounting.ui.model.normalizeSupplierCandidateName
+import com.warun.accounting.ui.model.shouldPersistSupplierCandidateAfterExpenseSave
+import com.warun.accounting.ui.model.shouldSaveCustomSupplierCandidate
 import com.warun.accounting.ui.receipt.ReceiptCameraScreen
 import com.warun.accounting.ui.receipt.ReceiptCaptureStartCoordinator
 import com.warun.accounting.ui.receipt.ReceiptCaptureResultKey
@@ -117,6 +122,7 @@ import com.warun.accounting.ui.receipt.ReceiptImageImportUiState
 import com.warun.accounting.ui.receipt.ReceiptImageImportViewModel
 import com.warun.accounting.ui.receipt.ReceiptOcrPanel
 import com.warun.accounting.ui.evidence.EvidenceImageDialog
+import com.warun.accounting.ui.evidence.EvidenceThumbnail
 import com.warun.accounting.ui.receipt.ReceiptOcrViewModel
 import com.warun.accounting.ui.receipt.ReceiptOcrMergeAction
 import com.warun.accounting.ui.receipt.captureOrNull
@@ -262,9 +268,19 @@ private fun supplierCandidatesFor(
     savedCandidates: List<SupplierCandidateRecord>
 ): List<SupplierCandidate> {
     val fixedCandidates = fixedSupplierCandidatesFor(category)
-    val fixedNames = fixedCandidates.map { it.name }.toSet()
+    val fixedNames = fixedCandidates
+        .map { normalizeSupplierCandidateName(it.name) }
+        .toSet()
     val userCandidates = savedCandidates
-        .filter { it.category == category && !it.isHidden && it.name !in fixedNames }
+        .asSequence()
+        .filter {
+            it.category == category &&
+                !it.isHidden &&
+                normalizeSupplierCandidateName(it.name) !in fixedNames
+        }
+        .sortedByDescending { it.updatedAt }
+        .distinctBy { normalizeSupplierCandidateName(it.name) }
+        .take(MaxRecentSupplierCandidates)
         .map { record ->
             SupplierCandidate(
                 name = record.name,
@@ -273,8 +289,13 @@ private fun supplierCandidatesFor(
                 record = record
             )
         }
-    return fixedCandidates + userCandidates
+        .toList()
+    val other = fixedCandidates.filter { it.name == "他" }
+    return fixedCandidates.filterNot { it.name == "他" } + userCandidates + other
 }
+
+internal fun shouldShowDatedReportBack(initialDate: String?): Boolean =
+    !initialDate.isNullOrBlank()
 
 private fun receiptParserStoreNames(savedCandidates: List<SupplierCandidateRecord>): List<String> {
     val fixedNames = (
@@ -1507,10 +1528,18 @@ private fun ReportEntryScreen(
         onDispose { navigationGuard?.reset() }
     }
 
-    BackHandler(enabled = hasUnsavedChanges && pendingReportDate == null && savingStatus == null) {
+    val requestBack = {
         navigationGuard?.isActive = true
-        navigationGuard?.hasUnsavedChanges = true
+        navigationGuard?.hasUnsavedChanges = hasUnsavedChanges
         onRequestBack()
+    }
+
+    BackHandler(
+        enabled = (shouldShowDatedReportBack(initialDate) || hasUnsavedChanges) &&
+            pendingReportDate == null &&
+            savingStatus == null
+    ) {
+        requestBack()
     }
 
     fun requestOpenReportDate(reportDate: String) {
@@ -1583,6 +1612,14 @@ private fun ReportEntryScreen(
     }
 
     ScreenColumn {
+        if (shouldShowDatedReportBack(initialDate)) {
+            OutlinedButton(
+                onClick = requestBack,
+                enabled = savingStatus == null
+            ) {
+                Text("← 日報詳細へ戻る")
+            }
+        }
         ScreenTitle("日報入力", "空いた時間に任意の日付で入力できます。途中でも下書き保存できます。")
         ReceiptOcrPanel(
             capturedReceipt = capturedReceipt,
@@ -2309,13 +2346,16 @@ private fun ExpenseDetailPanel(
                 reportDate = reportDate,
                 initialCategory = category,
                 editingExpense = editingExpense,
+                editingEvidence = editingExpense
+                    ?.let { expense -> expenseEvidence.filter { it.expenseId == expense.id } }
+                    .orEmpty(),
                 resetKey = formResetKey,
                 supplierCandidates = supplierCandidates,
-                onAddSupplierCandidate = onAddSupplierCandidate,
                 onHideSupplierCandidate = onHideSupplierCandidate,
                 onOpenReceiptCamera = onOpenReceiptCamera,
                 onOpenReceiptGallery = onOpenReceiptGallery,
                 receiptAcquisitionEnabled = receiptAcquisitionEnabled && !expenseSaveInProgress,
+                onOpenEvidence = { selectedEvidence = it },
                 onDirtyChanged = onDirtyChanged,
                 onDraftExpenseChanged = onDraftExpenseChanged,
                 restoredDraft = restoredDraft,
@@ -2331,14 +2371,26 @@ private fun ExpenseDetailPanel(
                     editingExpense = null
                     showForm = false
                 },
-                onSave = { expenseInput ->
+                onSave = { expenseInput, saveCustomSupplierCandidate ->
                     if (expenseSaveInProgress) return@ExpenseRecordForm
                     expenseSaveInProgress = true
                     val wasEditing = editingExpense != null
                     onSaveExpense(expenseInput) { result ->
                         expenseSaveInProgress = false
+                        val shouldPersistSupplierCandidate =
+                            shouldPersistSupplierCandidateAfterExpenseSave(
+                                saveSucceeded = result.isSuccess,
+                                candidateEligible = saveCustomSupplierCandidate
+                            )
                         if (result.isSuccess) {
                             saveFailureMessage = null
+                            if (shouldPersistSupplierCandidate) {
+                                onAddSupplierCandidate(
+                                    expenseInput.category,
+                                    expenseInput.supplierName,
+                                    expenseInput.paymentMethod
+                                )
+                            }
                             onDirtyChanged(false)
                             onDraftExpenseChanged(null)
                             editingExpense = null
@@ -2388,11 +2440,7 @@ private fun ExpenseRecordRow(
             Text("${expense.amount.toYen()} / ${expense.paymentMethod.orEmpty().ifBlank { "支払方法未入力" }}")
             if (evidence.isNotEmpty()) {
                 Text("保存済みレシート ${evidence.size}件", color = MaterialTheme.colorScheme.primary)
-                evidence.forEachIndexed { index, item ->
-                    OutlinedButton(onClick = { onOpenEvidence(item) }) {
-                        Text(if (evidence.size == 1) "レシート画像を開く" else "レシート画像 ${index + 1}を開く")
-                    }
-                }
+                EvidenceThumbnailRow(evidence = evidence, onOpenEvidence = onOpenEvidence)
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = onEdit) { Text("編集") }
@@ -2401,25 +2449,45 @@ private fun ExpenseRecordRow(
         }
     }
 }
+
+@Composable
+private fun EvidenceThumbnailRow(
+    evidence: List<ExpenseEvidenceRecord>,
+    onOpenEvidence: (ExpenseEvidenceRecord) -> Unit
+) {
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        evidence.forEach { item ->
+            EvidenceThumbnail(
+                evidence = item,
+                onClick = { onOpenEvidence(item) }
+            )
+        }
+    }
+}
+
 @Composable
 private fun ExpenseRecordForm(
     reportDate: String,
     initialCategory: String,
     editingExpense: ExpenseRecord?,
+    editingEvidence: List<ExpenseEvidenceRecord>,
     resetKey: Int,
     supplierCandidates: List<SupplierCandidateRecord>,
     onClose: () -> Unit,
-    onAddSupplierCandidate: (String, String, String) -> Unit,
     onHideSupplierCandidate: (SupplierCandidateRecord) -> Unit,
     onOpenReceiptCamera: () -> Unit,
     onOpenReceiptGallery: () -> Unit,
     receiptAcquisitionEnabled: Boolean,
+    onOpenEvidence: (ExpenseEvidenceRecord) -> Unit,
     onDirtyChanged: (Boolean) -> Unit,
     onDraftExpenseChanged: (ExpenseInput?) -> Unit,
     restoredDraft: ExpenseInput?,
     ocrApplyCaptureId: String?,
     onCancel: () -> Unit,
-    onSave: (ExpenseInput) -> Unit
+    onSave: (ExpenseInput, Boolean) -> Unit
 ) {
     val restoredInput = restoredDraft
     var expenseDate by remember(editingExpense, initialCategory, resetKey, restoredInput?.id, ocrApplyCaptureId) { mutableStateOf(restoredInput?.expenseDate ?: editingExpense?.expenseDate ?: reportDate) }
@@ -2428,14 +2496,20 @@ private fun ExpenseRecordForm(
     var paymentMethod by remember(editingExpense, initialCategory, resetKey, restoredInput?.id) { mutableStateOf(normalizePaymentMethod(restoredInput?.paymentMethod ?: editingExpense?.paymentMethod)) }
     var amount by remember(editingExpense, initialCategory, resetKey, restoredInput?.id, ocrApplyCaptureId) { mutableStateOf(restoredInput?.amount ?: editingExpense?.amount?.takeIf { it > 0L }?.toString().orEmpty()) }
     var memo by remember(editingExpense, initialCategory, resetKey, restoredInput?.id) { mutableStateOf(restoredInput?.memo ?: editingExpense?.memo.orEmpty()) }
-    var isCustomSupplier by remember(editingExpense, initialCategory, resetKey) { mutableStateOf(false) }
+    var isCustomSupplier by rememberSaveable(editingExpense?.id, initialCategory, resetKey) {
+        mutableStateOf(false)
+    }
     val supplierFocusRequester = remember { FocusRequester() }
     val amountFocusRequester = remember { FocusRequester() }
     var candidateToHide by remember { mutableStateOf<SupplierCandidateRecord?>(null) }
     val newExpenseId = remember(reportDate, initialCategory, resetKey, restoredInput?.id) { restoredInput?.id ?: UUID.randomUUID().toString() }
     val expenseId = editingExpense?.id ?: newExpenseId
     val candidates = remember(category, supplierCandidates) { supplierCandidatesFor(category, supplierCandidates) }
-    val canAddCandidate = isCustomSupplier && supplier.trim().isNotBlank() && candidates.none { it.name == supplier.trim() }
+    val shouldSaveSupplierCandidate = shouldSaveCustomSupplierCandidate(
+        customSupplierSelected = isCustomSupplier,
+        supplierName = supplier,
+        displayedCandidateNames = candidates.map { it.name }
+    )
     val initialSupplier = editingExpense?.supplierName.orEmpty()
     val initialExpenseDate = editingExpense?.expenseDate ?: reportDate
     val initialCategoryValue = editingExpense?.category ?: initialCategory
@@ -2499,6 +2573,17 @@ private fun ExpenseRecordForm(
     Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth()) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(12.dp)) {
             Text(if (editingExpense == null) "支出を追加" else "支出を編集", fontWeight = FontWeight.Bold)
+            if (editingEvidence.isNotEmpty()) {
+                Text(
+                    "保存済みレシート ${editingEvidence.size}件",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                EvidenceThumbnailRow(
+                    evidence = editingEvidence,
+                    onOpenEvidence = onOpenEvidence
+                )
+            }
             Text("候補", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 candidates.forEach { candidate ->
@@ -2608,18 +2693,13 @@ private fun ExpenseRecordForm(
                                 receiptId = restoredReceiptId,
                                 sourceType = restoredInput?.sourceType ?: editingExpense?.sourceType ?: ExpenseSourceType.Manual,
                                 createdAt = restoredInput?.createdAt ?: editingExpense?.createdAt
-                            )
+                            ),
+                            shouldSaveSupplierCandidate
                         )
                     }
                 ) { Text("保存") }
                 OutlinedButton(onClick = onCancel) { Text("キャンセル") }
                 OutlinedButton(onClick = onClose) { Text("閉じる") }
-                if (canAddCandidate) {
-                    OutlinedButton(
-                        onClick = { onAddSupplierCandidate(category, supplier.trim(), normalizePaymentMethod(paymentMethod)) },
-                        enabled = canAddCandidate
-                    ) { Text("候補に追加") }
-                }
             }
         }
     }
@@ -3232,6 +3312,7 @@ private fun ReportDetailScreen(
     onBack: () -> Unit,
     onEntry: () -> Unit
 ) {
+    var selectedEvidence by remember { mutableStateOf<ExpenseEvidenceRecord?>(null) }
     val dayReports = remember(uiState.reports, reportDate) {
         uiState.reports.filter { it.reportDate == reportDate }
     }
@@ -3243,6 +3324,9 @@ private fun ReportDetailScreen(
     }
     val row = remember(dayReports, dayExpenses, reportDate) {
         buildDailyBalanceRow(reportDate, dayReports, dayExpenses)
+    }
+    val registeredEvidence = remember(dayExpenses, uiState.expenseEvidence) {
+        evidenceForExpenses(dayExpenses, uiState.expenseEvidence)
     }
 
     ScreenColumn {
@@ -3274,8 +3358,63 @@ private fun ReportDetailScreen(
         dayReports.forEachIndexed { index, report ->
             DailyReportDetailCard(index = index, report = report, expenses = dayExpenses)
         }
+        if (registeredEvidence.isNotEmpty()) {
+            RegisteredReceiptSection(
+                expenses = dayExpenses,
+                evidence = registeredEvidence,
+                onOpenEvidence = { selectedEvidence = it }
+            )
+        }
+    }
+    selectedEvidence?.let { evidence ->
+        EvidenceImageDialog(
+            evidence = evidence,
+            onDismiss = { selectedEvidence = null }
+        )
     }
 }
+
+internal fun evidenceForExpenses(
+    expenses: List<ExpenseRecord>,
+    evidence: List<ExpenseEvidenceRecord>
+): List<ExpenseEvidenceRecord> {
+    val expenseIds = expenses.mapTo(mutableSetOf()) { it.id }
+    return evidence.filter { it.expenseId in expenseIds }
+}
+
+@Composable
+private fun RegisteredReceiptSection(
+    expenses: List<ExpenseRecord>,
+    evidence: List<ExpenseEvidenceRecord>,
+    onOpenEvidence: (ExpenseEvidenceRecord) -> Unit
+) {
+    DashboardCard {
+        Text(
+            "登録レシート",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold
+        )
+        expenses.forEach { expense ->
+            val linkedEvidence = evidence.filter { it.expenseId == expense.id }
+            if (linkedEvidence.isNotEmpty()) {
+                Text(
+                    expense.supplierName.orEmpty().ifBlank { "支払先未入力" },
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    "${expense.amount.toYen()} / ${expenseCategoryLabel(expense.category)} / " +
+                        expense.paymentMethod.orEmpty().ifBlank { "支払方法未入力" },
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                EvidenceThumbnailRow(
+                    evidence = linkedEvidence,
+                    onOpenEvidence = onOpenEvidence
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun DailyReportDetailCard(index: Int, report: DailyReport, expenses: List<ExpenseRecord>) {
     DashboardCard {

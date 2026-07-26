@@ -24,6 +24,7 @@ import com.warun.accounting.evidence.EvidenceRecoveryNotice
 import com.warun.accounting.evidence.EvidenceRecoveryNoticeController
 import com.warun.accounting.evidence.noticeIssueKeys
 import com.warun.accounting.ui.model.DashboardUiState
+import com.warun.accounting.ui.model.normalizeSupplierCandidateName
 import com.warun.accounting.ui.util.todayString
 import com.warun.accounting.util.isSupportedPaymentMethod
 import com.warun.accounting.util.normalizePaymentMethod
@@ -300,15 +301,20 @@ class DashboardViewModel @Inject constructor(
         )
 
     fun addSupplierCandidate(category: String, name: String, paymentMethod: String) {
-        val trimmedName = name.trim()
-        if (category.isBlank() || trimmedName.isBlank()) return
+        val normalizedName = normalizeSupplierCandidateName(name)
+        if (category.isBlank() || normalizedName.isBlank()) return
         viewModelScope.launch {
+            val alreadyRegistered = repository.observeSupplierCandidates().first().any { candidate ->
+                candidate.category == category &&
+                    normalizeSupplierCandidateName(candidate.name) == normalizedName
+            }
+            if (alreadyRegistered) return@launch
             val now = System.currentTimeMillis()
             repository.saveSupplierCandidate(
                 SupplierCandidateRecord(
-                    id = "supplier-${category}-${trimmedName}",
+                    id = "supplier-${category}-${normalizedName}",
                     category = category,
-                    name = trimmedName,
+                    name = normalizedName,
                     paymentMethod = normalizePaymentMethod(paymentMethod),
                     isDefault = false,
                     isHidden = false,
@@ -476,12 +482,14 @@ data class DailyReportInput(
     val accountantFeeExpense: String = "",
     val miscellaneousExpense: String = "",
     val otherExpense: String = "",
-    val openingCash: String = "",
+    val openingCash: String = DefaultOpeningCashYen.toString(),
     val actualClosingCash: String = "",
     val customerCount: String = "",
     val groupCount: String = "",
     val memo: String = ""
 )
+
+const val DefaultOpeningCashYen = 100_000L
 
 data class ReceiptInput(
     val id: String = "",
