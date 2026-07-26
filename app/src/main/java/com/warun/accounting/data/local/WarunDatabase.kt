@@ -12,11 +12,17 @@ import androidx.room.RoomDatabase
         ExpenseEvidenceLinkRecord::class,
         SupplierCandidateRecord::class,
         MonthlySubmission::class,
-        AppSettings::class
+        AppSettings::class,
+        PrepaidAccountRecord::class,
+        PrepaidTransactionRecord::class,
+        ExpensePrepaidLinkRecord::class
     ],
-    version = 11,
+    version = 12,
     exportSchema = true
 )
 abstract class WarunDatabase : RoomDatabase() {
     abstract fun warunDao(): WarunDao
+    abstract fun prepaidAccountDao(): PrepaidAccountDao
+    abstract fun prepaidTransactionDao(): PrepaidTransactionDao
+    abstract fun expensePrepaidLinkDao(): ExpensePrepaidLinkDao
 }

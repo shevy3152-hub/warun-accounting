@@ -3,12 +3,19 @@ package com.warun.accounting.di
 import android.content.Context
 
 import androidx.room.Room
+import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.warun.accounting.data.AccountingRepository
 import com.warun.accounting.data.OfflineAccountingRepository
+import com.warun.accounting.data.prepaid.OfflinePrepaidRepository
+import com.warun.accounting.data.prepaid.PrepaidRepository
 import com.warun.accounting.camera.ReceiptImageImportGateway
 import com.warun.accounting.camera.ReceiptPendingImageImporter
+import com.warun.accounting.data.local.ExpensePrepaidLinkDao
+import com.warun.accounting.data.local.InitialPrepaidAccounts
+import com.warun.accounting.data.local.PrepaidAccountDao
+import com.warun.accounting.data.local.PrepaidTransactionDao
 import com.warun.accounting.data.local.WarunDao
 import com.warun.accounting.data.local.WarunDatabase
 import com.warun.accounting.evidence.EvidenceFileStore
@@ -132,6 +139,19 @@ object DatabaseModule {
             db.execSQL(
                 "CREATE UNIQUE INDEX IF NOT EXISTS index_expense_evidence_links_evidenceId ON expense_evidence_links(evidenceId)"
             )
+        }
+    }
+
+    internal val MIGRATION_11_12 = object : Migration(11, 12) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.createPrepaidTables()
+            db.insertInitialPrepaidAccounts()
+        }
+    }
+
+    internal val PREPAID_DATABASE_CALLBACK = object : RoomDatabase.Callback() {
+        override fun onCreate(db: SupportSQLiteDatabase) {
+            db.insertInitialPrepaidAccounts()
         }
     }
 
@@ -329,13 +349,138 @@ object DatabaseModule {
                 MIGRATION_7_8,
                 MIGRATION_8_9,
                 MIGRATION_9_10,
-                MIGRATION_10_11
+                MIGRATION_10_11,
+                MIGRATION_11_12
             )
+            .addCallback(PREPAID_DATABASE_CALLBACK)
             .build()
     }
 
     @Provides
     fun provideDao(database: WarunDatabase): WarunDao = database.warunDao()
+
+    @Provides
+    fun providePrepaidAccountDao(database: WarunDatabase): PrepaidAccountDao =
+        database.prepaidAccountDao()
+
+    @Provides
+    fun providePrepaidTransactionDao(database: WarunDatabase): PrepaidTransactionDao =
+        database.prepaidTransactionDao()
+
+    @Provides
+    fun provideExpensePrepaidLinkDao(database: WarunDatabase): ExpensePrepaidLinkDao =
+        database.expensePrepaidLinkDao()
+}
+
+private fun SupportSQLiteDatabase.createPrepaidTables() {
+    execSQL(
+        """
+        CREATE TABLE IF NOT EXISTS prepaid_accounts (
+            id TEXT NOT NULL,
+            type TEXT NOT NULL,
+            name TEXT NOT NULL,
+            isActive INTEGER NOT NULL,
+            createdAt INTEGER NOT NULL,
+            updatedAt INTEGER NOT NULL,
+            PRIMARY KEY(id)
+        )
+        """.trimIndent()
+    )
+    execSQL(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS index_prepaid_accounts_type
+        ON prepaid_accounts(type)
+        """.trimIndent()
+    )
+    execSQL(
+        """
+        CREATE TABLE IF NOT EXISTS prepaid_transactions (
+            id TEXT NOT NULL,
+            accountId TEXT NOT NULL,
+            transactionDate TEXT NOT NULL,
+            transactionType TEXT NOT NULL,
+            balanceDelta INTEGER NOT NULL,
+            expenseId TEXT,
+            chargeSource TEXT,
+            reversalOfTransactionId TEXT,
+            operationKey TEXT NOT NULL,
+            memo TEXT NOT NULL DEFAULT '',
+            createdAt INTEGER NOT NULL,
+            PRIMARY KEY(id),
+            FOREIGN KEY(accountId) REFERENCES prepaid_accounts(id)
+                ON UPDATE NO ACTION ON DELETE RESTRICT,
+            FOREIGN KEY(expenseId) REFERENCES expense_records(id)
+                ON UPDATE NO ACTION ON DELETE SET NULL,
+            FOREIGN KEY(reversalOfTransactionId) REFERENCES prepaid_transactions(id)
+                ON UPDATE NO ACTION ON DELETE RESTRICT
+        )
+        """.trimIndent()
+    )
+    execSQL(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS index_prepaid_transactions_operationKey
+        ON prepaid_transactions(operationKey)
+        """.trimIndent()
+    )
+    execSQL(
+        """
+        CREATE INDEX IF NOT EXISTS index_prepaid_transactions_accountId_transactionDate
+        ON prepaid_transactions(accountId, transactionDate)
+        """.trimIndent()
+    )
+    execSQL(
+        """
+        CREATE INDEX IF NOT EXISTS index_prepaid_transactions_expenseId
+        ON prepaid_transactions(expenseId)
+        """.trimIndent()
+    )
+    execSQL(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS index_prepaid_transactions_reversalOfTransactionId
+        ON prepaid_transactions(reversalOfTransactionId)
+        """.trimIndent()
+    )
+    execSQL(
+        """
+        CREATE TABLE IF NOT EXISTS expense_prepaid_links (
+            expenseId TEXT NOT NULL,
+            purchaseTransactionId TEXT NOT NULL,
+            linkedAt INTEGER NOT NULL,
+            updatedAt INTEGER NOT NULL,
+            PRIMARY KEY(expenseId),
+            FOREIGN KEY(expenseId) REFERENCES expense_records(id)
+                ON UPDATE NO ACTION ON DELETE CASCADE,
+            FOREIGN KEY(purchaseTransactionId) REFERENCES prepaid_transactions(id)
+                ON UPDATE NO ACTION ON DELETE RESTRICT
+        )
+        """.trimIndent()
+    )
+    execSQL(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS index_expense_prepaid_links_purchaseTransactionId
+        ON expense_prepaid_links(purchaseTransactionId)
+        """.trimIndent()
+    )
+}
+
+private fun SupportSQLiteDatabase.insertInitialPrepaidAccounts() {
+    InitialPrepaidAccounts.Records.forEach { account ->
+        execSQL(
+            """
+            INSERT OR IGNORE INTO prepaid_accounts (
+                id, type, name, isActive, createdAt, updatedAt
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """.trimIndent(),
+            arrayOf<Any>(
+                account.id,
+                account.type,
+                account.name,
+                if (account.isActive) 1 else 0,
+                account.createdAt,
+                account.updatedAt
+            )
+        )
+    }
 }
 
 @Module
@@ -346,6 +491,12 @@ abstract class RepositoryModule {
     abstract fun bindAccountingRepository(
         repository: OfflineAccountingRepository
     ): AccountingRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindPrepaidRepository(
+        repository: OfflinePrepaidRepository
+    ): PrepaidRepository
 
     @Binds
     @Singleton
