@@ -17,7 +17,25 @@ android {
         versionCode = 1
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField("String", "DATABASE_NAME", "\"warun-accounting.db\"")
     }
+
+    buildTypes {
+        create("instrumented") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".instrumented"
+            matchingFallbacks += listOf("debug")
+            isDebuggable = true
+            buildConfigField(
+                "String",
+                "DATABASE_NAME",
+                "\"warun-accounting-instrumented.db\""
+            )
+            resValue("string", "app_name", "わるん会計 TEST")
+        }
+    }
+
+    testBuildType = "instrumented"
 
     sourceSets {
         getByName("androidTest").assets.srcDir("$projectDir/schemas")
@@ -25,6 +43,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     compileOptions {
@@ -34,6 +53,99 @@ android {
 
     kotlinOptions {
         jvmTarget = "17"
+    }
+}
+
+val expectedInstrumentedApplicationId = "com.warun.accounting.instrumented"
+val blockedA90SerialFragment = "A90SM241201326"
+val connectedAndroidTestTaskPattern = Regex("""connected.*AndroidTest""")
+
+val verifyInstrumentedApplicationIds by tasks.registering {
+    group = "verification"
+    description = "Verifies that instrumentation targets only the isolated test application."
+    dependsOn("assembleInstrumented", "assembleInstrumentedAndroidTest")
+
+    doLast {
+        val appMetadata = layout.buildDirectory
+            .file("outputs/apk/instrumented/output-metadata.json")
+            .get()
+            .asFile
+        val testManifest = layout.buildDirectory
+            .file(
+                "intermediates/packaged_manifests/instrumentedAndroidTest/" +
+                    "processInstrumentedAndroidTestManifest/AndroidManifest.xml"
+            )
+            .get()
+            .asFile
+
+        check(appMetadata.isFile) {
+            "Instrumented APK metadata was not generated: ${appMetadata.absolutePath}"
+        }
+        check(testManifest.isFile) {
+            "Instrumented AndroidTest manifest was not generated: ${testManifest.absolutePath}"
+        }
+
+        val appId = Regex(""""applicationId"\s*:\s*"([^"]+)"""")
+            .find(appMetadata.readText())
+            ?.groupValues
+            ?.get(1)
+        val targetAppId = Regex("""android:targetPackage="([^"]+)"""")
+            .find(testManifest.readText())
+            ?.groupValues
+            ?.get(1)
+
+        check(appId == expectedInstrumentedApplicationId) {
+            "Instrumentation APK must use $expectedInstrumentedApplicationId, but was $appId."
+        }
+        check(targetAppId == expectedInstrumentedApplicationId) {
+            "AndroidTest must target $expectedInstrumentedApplicationId, but was $targetAppId."
+        }
+    }
+}
+
+val verifyNoA90ForInstrumentation by tasks.registering {
+    group = "verification"
+    description = "Blocks instrumentation while the accounting acceptance-test A90 is connected."
+
+    doLast {
+        val adb = androidComponents.sdkComponents.adb.get().asFile
+        val devices = providers.exec {
+            commandLine(adb.absolutePath, "devices", "-l")
+        }.standardOutput.asText.get()
+        val connectedDevices = devices
+            .lineSequence()
+            .drop(1)
+            .map(String::trim)
+            .filter { it.contains(Regex("""\sdevice(?:\s|$)""")) }
+            .toList()
+        val a90 = connectedDevices.firstOrNull { device ->
+            device.contains(blockedA90SerialFragment, ignoreCase = true) ||
+                device.contains(Regex("""(?:^|\s)(?:product|model|device):A90(?:\s|$)"""))
+        }
+
+        check(a90 == null) {
+            "A90 is reserved for manual acceptance testing. " +
+                "Run instrumentation on an emulator or dedicated test device. Detected: $a90"
+        }
+    }
+}
+
+val verifyInstrumentationSafety by tasks.registering {
+    group = "verification"
+    description = "Verifies the isolated application ID and rejects the A90 before instrumentation."
+    dependsOn(verifyInstrumentedApplicationIds, verifyNoA90ForInstrumentation)
+}
+
+tasks.configureEach {
+    if (name == "connectedInstrumentedAndroidTest" || name == "connectedAndroidTest") {
+        dependsOn(verifyInstrumentationSafety)
+    } else if (connectedAndroidTestTaskPattern.matches(name)) {
+        doFirst {
+            throw GradleException(
+                "$name is prohibited. Run connectedInstrumentedAndroidTest " +
+                    "on an emulator or dedicated test device."
+            )
+        }
     }
 }
 

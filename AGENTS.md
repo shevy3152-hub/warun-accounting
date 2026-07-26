@@ -162,7 +162,14 @@ git diff --check
 - Room変更が承認された場合は、対象MigrationのAndroidテストとschema検証を必須とする。
 - CameraX実撮影、権限、回転、レンズ方向、ML Kitの実レシート精度をJVMテストだけで成功扱いにしない。接続済み実機で確認するか、未確認として手順を提示する。
 - 接続端末がある場合の実機テストは `adb devices -l` で対象を特定し、推測で端末名やOSを報告しない。
-- `connectedDebugAndroidTest`は接続端末の状態に依存するため、実行対象とデータ影響を確認してから使う。
+- `connectedDebugAndroidTest`は禁止する。Instrumentationは分離された
+  `com.warun.accounting.instrumented`／`warun-accounting-instrumented.db`を対象とする
+  `connectedInstrumentedAndroidTest`だけを、Android Emulatorまたは専用テスト端末で実行する。
+- A90は手動受入確認専用とし、A90接続中は`connected*AndroidTest`を実行しない。
+  A90への`adb install -r`は通常版の手動受入確認を明示された場合だけ行う。
+- Instrumentation実行前に、対象APKとandroidTest manifestのtarget applicationIdが
+  `com.warun.accounting.instrumented`であることを確認する。通常版
+  `com.warun.accounting`をtargetにしたテストを実行しない。
 - 失敗、skip、未実行は成功と分けて報告する。
 
 テストのみの変更でも、少なくとも対象テストと `git diff --check` を実行する。ドキュメントのみの変更では、ビルドは通常不要だが `git diff --check` と差分範囲確認を行う。

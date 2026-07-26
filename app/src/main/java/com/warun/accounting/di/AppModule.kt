@@ -6,6 +6,7 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.warun.accounting.BuildConfig
 import com.warun.accounting.data.AccountingRepository
 import com.warun.accounting.data.OfflineAccountingRepository
 import com.warun.accounting.data.prepaid.OfflinePrepaidRepository
@@ -37,8 +38,6 @@ import javax.inject.Singleton
 @Module
 @InstallIn(SingletonComponent::class)
 object DatabaseModule {
-    private const val DatabaseName = "warun-accounting.db"
-
     private val MIGRATION_6_7 = object : Migration(6, 7) {
         override fun migrate(db: SupportSQLiteDatabase) {
             db.addColumnIfMissing("daily_reports", "electricityExpense", "INTEGER NOT NULL DEFAULT 0")
@@ -343,7 +342,7 @@ object DatabaseModule {
     @Provides
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): WarunDatabase {
-        return Room.databaseBuilder(context, WarunDatabase::class.java, DatabaseName)
+        return Room.databaseBuilder(context, WarunDatabase::class.java, BuildConfig.DATABASE_NAME)
             .addMigrations(
                 MIGRATION_6_7,
                 MIGRATION_7_8,
