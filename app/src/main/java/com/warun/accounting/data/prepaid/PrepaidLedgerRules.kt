@@ -38,7 +38,11 @@ enum class PrepaidValidationFailure {
     LinkExpenseMismatch,
     DuplicateExpenseLink,
     DuplicatePurchaseLink,
-    InvalidDate
+    InvalidDate,
+    PaymentMethodMismatch,
+    ExpenseAlreadyExists,
+    ExpenseContentMismatch,
+    EvidenceContentMismatch
 }
 
 class PrepaidValidationException(

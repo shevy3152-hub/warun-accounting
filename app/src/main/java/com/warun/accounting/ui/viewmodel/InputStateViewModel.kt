@@ -28,6 +28,8 @@ class InputStateViewModel @Inject constructor(
         const val PendingExpenseCaptureKey = "input.expense.pendingCapture"
         const val PendingExpenseCaptureOwnerKey = "input.expense.pendingCaptureOwner"
         const val AppliedOcrCaptureIdKey = "input.expense.appliedOcrCaptureId"
+        const val PrepaidOperationKey = "input.expense.prepaidOperationKey"
+        const val PrepaidOperationOwnerKey = "input.expense.prepaidOperationOwner"
         const val ReceiptInputKey = "input.receipt"
     }
 
@@ -70,6 +72,7 @@ class InputStateViewModel @Inject constructor(
     }
 
     fun openReport(input: DailyReportInput) {
+        clearPrepaidOperationFor(draftExpenseInputState.value?.id)
         reportInputState.value = input
         cleanReportInputState.value = input
         pendingReportDateState.value = null
@@ -79,6 +82,7 @@ class InputStateViewModel @Inject constructor(
     }
 
     fun markReportSaved(input: DailyReportInput) {
+        clearPrepaidOperationFor(draftExpenseInputState.value?.id)
         reportInputState.value = input
         cleanReportInputState.value = input
         expenseFormDirtyState.value = false
@@ -96,6 +100,7 @@ class InputStateViewModel @Inject constructor(
 
     fun discardReportChanges(): ReceiptCaptureResult? {
         val ownedPendingCapture = pendingCaptureOwnedByCurrentDraft()
+        val discardedExpenseId = draftExpenseInputState.value?.id
         reportInputState.value = cleanReportInputState.value
         expenseFormDirtyState.value = false
         utilityFieldsEditedState.value = false
@@ -103,7 +108,37 @@ class InputStateViewModel @Inject constructor(
         if (ownedPendingCapture != null) {
             clearPendingExpenseCapture()
         }
+        clearPrepaidOperationFor(discardedExpenseId)
         return ownedPendingCapture
+    }
+
+    fun prepaidOperationKeyFor(expenseId: String): String {
+        require(expenseId.isNotBlank())
+        val draftKey = draftExpenseInputState.value
+            ?.takeIf { it.id == expenseId }
+            ?.prepaidOperationKey
+            ?.takeIf { it.isNotBlank() }
+        if (draftKey != null) {
+            savedStateHandle[PrepaidOperationOwnerKey] = expenseId
+            savedStateHandle[PrepaidOperationKey] = draftKey
+            return draftKey
+        }
+        val savedOwner = savedStateHandle.get<String>(PrepaidOperationOwnerKey)
+        val savedKey = savedStateHandle.get<String>(PrepaidOperationKey)
+        if (savedOwner == expenseId && !savedKey.isNullOrBlank()) return savedKey
+        return UUID.randomUUID().toString().also { operationKey ->
+            savedStateHandle[PrepaidOperationOwnerKey] = expenseId
+            savedStateHandle[PrepaidOperationKey] = operationKey
+        }
+    }
+
+    fun markExpenseSaveSucceeded(expenseId: String, operationKey: String) {
+        if (
+            savedStateHandle.get<String>(PrepaidOperationOwnerKey) == expenseId &&
+            savedStateHandle.get<String>(PrepaidOperationKey) == operationKey
+        ) {
+            clearPrepaidOperationFor(expenseId)
+        }
     }
 
     fun completeReceiptSave(): ReceiptInput {
@@ -151,6 +186,16 @@ class InputStateViewModel @Inject constructor(
         pendingExpenseCaptureState.value = null
         savedStateHandle.remove<String>(PendingExpenseCaptureOwnerKey)
         savedStateHandle.remove<String>(AppliedOcrCaptureIdKey)
+    }
+
+    private fun clearPrepaidOperationFor(expenseId: String?) {
+        if (
+            !expenseId.isNullOrBlank() &&
+            savedStateHandle.get<String>(PrepaidOperationOwnerKey) == expenseId
+        ) {
+            savedStateHandle.remove<String>(PrepaidOperationOwnerKey)
+            savedStateHandle.remove<String>(PrepaidOperationKey)
+        }
     }
 
     private fun newReceiptInput() = ReceiptInput(
@@ -237,7 +282,8 @@ private fun List<String>.toDailyReportInput() = DailyReportInput(
 
 private fun ExpenseInput.toSavedStrings() = arrayListOf(
     id, expenseDate, category, supplierName, amount, paymentMethod, memo,
-    receiptId, sourceType, createdAt?.toString().orEmpty()
+    receiptId, sourceType, createdAt?.toString().orEmpty(), prepaidAccountId,
+    prepaidOperationKey
 )
 
 private fun List<String>.toExpenseInput() = ExpenseInput(
@@ -250,7 +296,9 @@ private fun List<String>.toExpenseInput() = ExpenseInput(
     memo = getOrElse(6) { "" },
     receiptId = getOrElse(7) { "" },
     sourceType = getOrElse(8) { ExpenseSourceType.Manual },
-    createdAt = getOrElse(9) { "" }.toLongOrNull()
+    createdAt = getOrElse(9) { "" }.toLongOrNull(),
+    prepaidAccountId = getOrElse(10) { "" },
+    prepaidOperationKey = getOrElse(11) { "" }
 )
 
 private fun ReceiptCaptureResult.toSavedStrings() = arrayListOf(

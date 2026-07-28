@@ -41,7 +41,9 @@ class InputStateViewModelTest {
             paymentMethod = "現金",
             memo = "入力中",
             receiptId = "pending-camera-capture",
-            sourceType = "manual"
+            sourceType = "manual",
+            prepaidAccountId = "prepaid-majica",
+            prepaidOperationKey = "stable-operation"
         )
         first.expenseFormDirtyState.value = true
         first.draftExpenseInputState.value = expense
@@ -55,6 +57,48 @@ class InputStateViewModelTest {
         assertEquals("現金", restored.draftExpenseInputState.value?.paymentMethod)
         assertEquals("入力中", restored.draftExpenseInputState.value?.memo)
         assertEquals("pending-camera-capture", restored.draftExpenseInputState.value?.receiptId)
+        assertEquals("prepaid-majica", restored.draftExpenseInputState.value?.prepaidAccountId)
+        assertEquals("stable-operation", restored.draftExpenseInputState.value?.prepaidOperationKey)
+    }
+
+    @Test
+    fun prepaidOperationKeyIsStableUntilSuccessfulSave() {
+        val handle = SavedStateHandle()
+        val first = InputStateViewModel(handle)
+        val operationKey = first.prepaidOperationKeyFor("expense-id")
+
+        assertEquals(operationKey, first.prepaidOperationKeyFor("expense-id"))
+        assertEquals(operationKey, InputStateViewModel(handle).prepaidOperationKeyFor("expense-id"))
+
+        first.markExpenseSaveSucceeded("expense-id", "different-key")
+        assertEquals(operationKey, first.prepaidOperationKeyFor("expense-id"))
+
+        first.markExpenseSaveSucceeded("expense-id", operationKey)
+        assertNotEquals(operationKey, first.prepaidOperationKeyFor("expense-id"))
+    }
+
+    @Test
+    fun ocrMergePreservesPrepaidSelectionAndOperationKey() {
+        val state = InputStateViewModel(SavedStateHandle())
+        state.draftExpenseInputState.value = ExpenseInput(
+            id = "expense-id",
+            paymentMethod = "プリペイド",
+            prepaidAccountId = "prepaid-au-pay",
+            prepaidOperationKey = "purchase-operation"
+        )
+        val capture = ReceiptCaptureResult("capture", "file:/pending/capture.jpg", 1L)
+
+        assertTrue(
+            state.applyReceiptOcr(
+                ReceiptOcrApplyResult(capture, "店舗", "2026-07-28", "300"),
+                capture.captureId
+            )
+        )
+
+        val merged = state.draftExpenseInputState.value!!
+        assertEquals("プリペイド", merged.paymentMethod)
+        assertEquals("prepaid-au-pay", merged.prepaidAccountId)
+        assertEquals("purchase-operation", merged.prepaidOperationKey)
     }
 
     @Test

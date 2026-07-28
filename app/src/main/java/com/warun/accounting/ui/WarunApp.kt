@@ -106,8 +106,13 @@ import com.warun.accounting.data.local.ExpenseSourceType
 import com.warun.accounting.data.local.MonthlySubmissionStatus
 import com.warun.accounting.data.local.ReceiptRecord
 import com.warun.accounting.data.local.SupplierCandidateRecord
+import com.warun.accounting.data.local.PrepaidAccountBalance
+import com.warun.accounting.data.local.PrepaidAccountRecord
+import com.warun.accounting.data.local.ExpensePrepaidLinkRecord
 import com.warun.accounting.data.local.PrepaidTransactionRecord
 import com.warun.accounting.data.prepaid.netCashChargeAmount
+import com.warun.accounting.data.prepaid.PrepaidValidationException
+import com.warun.accounting.data.prepaid.PrepaidValidationFailure
 import com.warun.accounting.ui.input.DateInputTextField
 import com.warun.accounting.ui.model.BusinessAnalysisSummary
 import com.warun.accounting.ui.model.breakEvenStatusMessage
@@ -142,6 +147,9 @@ import com.warun.accounting.util.calculateCashFlow
 import com.warun.accounting.util.cashExpenseAmount
 import com.warun.accounting.util.expenseAmount
 import com.warun.accounting.util.isSupportedPaymentMethod
+import com.warun.accounting.util.PaymentMethodCash
+import com.warun.accounting.util.PaymentMethodPrepaid
+import com.warun.accounting.util.paymentMethodDisplayName
 import com.warun.accounting.util.normalizePaymentMethod
 import com.warun.accounting.util.paymentMethodOptions
 import com.warun.accounting.util.preferredCashExpenseAmount
@@ -160,6 +168,24 @@ import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+
+private data class PrepaidExpenseUiSnapshot(
+    val accounts: List<PrepaidAccountRecord>,
+    val balances: List<PrepaidAccountBalance>,
+    val transactions: List<PrepaidTransactionRecord>,
+    val links: List<ExpensePrepaidLinkRecord>
+) {
+    fun balanceFor(accountId: String): Long =
+        balances.firstOrNull { it.accountId == accountId }?.balance ?: 0L
+
+    fun accountForExpense(expenseId: String): PrepaidAccountRecord? {
+        val purchaseId = links.firstOrNull { it.expenseId == expenseId }?.purchaseTransactionId
+            ?: return null
+        val accountId = transactions.firstOrNull { it.id == purchaseId }?.accountId
+            ?: return null
+        return accounts.firstOrNull { it.id == accountId }
+    }
+}
 
 private sealed class AppDestination(
     val route: String,
@@ -1444,6 +1470,12 @@ private fun ReportEntryScreen(
     }
 
     val paymentVisibility = uiState.appSettings.toPaymentVisibility()
+    val prepaidExpenseUi = PrepaidExpenseUiSnapshot(
+        accounts = uiState.prepaidAccounts,
+        balances = uiState.prepaidBalances,
+        transactions = uiState.prepaidTransactions,
+        links = uiState.expensePrepaidLinks
+    )
     val reportExpenses = uiState.expenses.filter { it.expenseDate == reportInput.reportDate }
     val liveReportExpenses = reportExpenses.withDraftExpensePreview(draftExpenseInput?.takeIf { it.expenseDate == reportInput.reportDate })
     val enteredReportDates = remember(uiState.reports) { uiState.reports.map { it.reportDate }.toSet() }
@@ -1520,11 +1552,24 @@ private fun ReportEntryScreen(
             )
             return
         }
+        val allowedDecision = currentExpenseDecision as ReportExpenseSaveDecision.Allowed
+        if (
+            allowedDecision.expenseToSave
+                ?.paymentMethod
+                ?.let(::normalizePaymentMethod) == PaymentMethodPrepaid
+        ) {
+            saveFeedback = SaveFeedback(
+                title = "プリペイド支出を先に保存してください",
+                body = "残高と台帳を安全に更新するため、支出フォームの「保存」で個別保存してください。",
+                isError = true
+            )
+            return
+        }
         val savedInput = reportInput
             .copy(status = status)
             .withUtilityCompatibility(cleanReportInput, utilityFieldsEdited)
             .withHiddenPaymentsCleared(paymentVisibility)
-        val expenseToSave = (currentExpenseDecision as ReportExpenseSaveDecision.Allowed).expenseToSave
+        val expenseToSave = allowedDecision.expenseToSave
 
         savingStatus = status
         if (expenseToSave != null && !expenseToSave.isReadyToSave()) {
@@ -1560,10 +1605,16 @@ private fun ReportEntryScreen(
         val evidenceCapture = inputStateViewModel.pendingCaptureFor(input.id)
         onSaveExpense(input, evidenceCapture) { result ->
             expenseSaveInProgress = false
-            if (result.isSuccess && evidenceCapture != null) {
-                inputStateViewModel.markPendingEvidenceStored(
+            if (result.isSuccess) {
+                if (evidenceCapture != null) {
+                    inputStateViewModel.markPendingEvidenceStored(
+                        expenseId = input.id,
+                        captureId = evidenceCapture.captureId
+                    )
+                }
+                inputStateViewModel.markExpenseSaveSucceeded(
                     expenseId = input.id,
-                    captureId = evidenceCapture.captureId
+                    operationKey = input.prepaidOperationKey
                 )
             }
             onResult(result)
@@ -1794,6 +1845,8 @@ private fun ReportEntryScreen(
             draftExpenseInput = draftExpenseInput,
             ocrApplyCaptureId = pendingExpenseCapture?.captureId,
             supplierCandidates = uiState.supplierCandidates,
+            prepaidExpenseUi = prepaidExpenseUi,
+            prepaidOperationKeyFor = inputStateViewModel::prepaidOperationKeyFor,
             enteredReportDates = enteredReportDates,
             onInputChange = { reportInput = it },
             onUtilityInputChange = { nextInput, editedValue ->
@@ -1827,6 +1880,8 @@ private fun DailyReportForm(
     draftExpenseInput: ExpenseInput?,
     ocrApplyCaptureId: String?,
     supplierCandidates: List<SupplierCandidateRecord>,
+    prepaidExpenseUi: PrepaidExpenseUiSnapshot,
+    prepaidOperationKeyFor: (String) -> String,
     enteredReportDates: Set<String>,
     onInputChange: (DailyReportInput) -> Unit,
     onUtilityInputChange: (DailyReportInput, String) -> Unit,
@@ -1867,6 +1922,8 @@ private fun DailyReportForm(
                 draftExpenseInput = draftExpenseInput,
                 ocrApplyCaptureId = ocrApplyCaptureId,
                 supplierCandidates = supplierCandidates,
+                prepaidExpenseUi = prepaidExpenseUi,
+                prepaidOperationKeyFor = prepaidOperationKeyFor,
                 expenseTotal = totals.expenseTotal,
                 todayBalance = totals.todayBalance,
                 onInputChange = onInputChange,
@@ -2157,6 +2214,8 @@ private fun ExpenseCard(
     onSaveExpense: (ExpenseInput, (Result<Unit>) -> Unit) -> Unit,
     onDeleteExpense: (ExpenseRecord) -> Unit,
     supplierCandidates: List<SupplierCandidateRecord>,
+    prepaidExpenseUi: PrepaidExpenseUiSnapshot,
+    prepaidOperationKeyFor: (String) -> String,
     onAddSupplierCandidate: (String, String, String) -> Unit,
     onHideSupplierCandidate: (SupplierCandidateRecord) -> Unit,
     onOpenReceiptCamera: () -> Unit,
@@ -2200,6 +2259,8 @@ private fun ExpenseCard(
                         onSaveExpense = onSaveExpense,
                         onDeleteExpense = onDeleteExpense,
                         supplierCandidates = supplierCandidates,
+                        prepaidExpenseUi = prepaidExpenseUi,
+                        prepaidOperationKeyFor = prepaidOperationKeyFor,
                         onAddSupplierCandidate = onAddSupplierCandidate,
                         onHideSupplierCandidate = onHideSupplierCandidate,
                         onOpenReceiptCamera = onOpenReceiptCamera,
@@ -2236,6 +2297,8 @@ private fun ExpenseCard(
                         expenses = expenses.filter { it.category == ConsumablesCategory },
                         expenseEvidence = expenseEvidence,
                         supplierCandidates = supplierCandidates,
+                        prepaidExpenseUi = prepaidExpenseUi,
+                        prepaidOperationKeyFor = prepaidOperationKeyFor,
                         onClose = { selectedCategory = null },
                         onSaveExpense = onSaveExpense,
                         onDeleteExpense = onDeleteExpense,
@@ -2281,6 +2344,8 @@ private fun ExpenseCard(
                         expenses = expenses.filter { it.category == VehicleTransportCategory },
                         expenseEvidence = expenseEvidence,
                         supplierCandidates = supplierCandidates,
+                        prepaidExpenseUi = prepaidExpenseUi,
+                        prepaidOperationKeyFor = prepaidOperationKeyFor,
                         onClose = { selectedCategory = null },
                         onSaveExpense = onSaveExpense,
                         onDeleteExpense = onDeleteExpense,
@@ -2311,6 +2376,8 @@ private fun ExpenseCard(
                         onSaveExpense = onSaveExpense,
                         onDeleteExpense = onDeleteExpense,
                         supplierCandidates = supplierCandidates,
+                        prepaidExpenseUi = prepaidExpenseUi,
+                        prepaidOperationKeyFor = prepaidOperationKeyFor,
                         onAddSupplierCandidate = onAddSupplierCandidate,
                         onHideSupplierCandidate = onHideSupplierCandidate,
                         onOpenReceiptCamera = onOpenReceiptCamera,
@@ -2357,6 +2424,8 @@ private fun ExpenseDetailPanel(
     category: String,
     expenses: List<ExpenseRecord>,
     expenseEvidence: List<ExpenseEvidenceRecord>,
+    prepaidExpenseUi: PrepaidExpenseUiSnapshot,
+    prepaidOperationKeyFor: (String) -> String,
     onClose: () -> Unit,
     onSaveExpense: (ExpenseInput, (Result<Unit>) -> Unit) -> Unit,
     onDeleteExpense: (ExpenseRecord) -> Unit,
@@ -2400,6 +2469,7 @@ private fun ExpenseDetailPanel(
                 ExpenseRecordRow(
                     expense = expense,
                     evidence = expenseEvidence.filter { it.expenseId == expense.id },
+                    prepaidAccount = prepaidExpenseUi.accountForExpense(expense.id),
                     onOpenEvidence = { selectedEvidence = it },
                     onEdit = {
                         editingExpense = expense
@@ -2426,6 +2496,8 @@ private fun ExpenseDetailPanel(
                 editingEvidence = editingExpense
                     ?.let { expense -> expenseEvidence.filter { it.expenseId == expense.id } }
                     .orEmpty(),
+                prepaidExpenseUi = prepaidExpenseUi,
+                prepaidOperationKeyFor = prepaidOperationKeyFor,
                 resetKey = formResetKey,
                 supplierCandidates = supplierCandidates,
                 onHideSupplierCandidate = onHideSupplierCandidate,
@@ -2480,7 +2552,7 @@ private fun ExpenseDetailPanel(
                         } else {
                             saveFailureMessage = (result.exceptionOrNull() as? EvidenceFinalizationAfterAccountingSaveException)
                                 ?.message
-                                ?: "支出明細を保存できませんでした。入力内容を確認して、もう一度お試しください。"
+                                ?: expenseSaveFailureMessage(result.exceptionOrNull())
                         }
                     }
                 }
@@ -2503,25 +2575,66 @@ private fun ExpenseDetailPanel(
             onDismiss = { selectedEvidence = null }
         )
     }
-}@Composable
+}
+
+internal fun expenseSaveFailureMessage(error: Throwable?): String =
+    when ((error as? PrepaidValidationException)?.failure) {
+        PrepaidValidationFailure.AccountNotFound ->
+            "選択したプリペイド口座が見つかりません。口座を選び直してください。"
+        PrepaidValidationFailure.AccountInactive ->
+            "選択したプリペイド口座は現在利用できません。"
+        PrepaidValidationFailure.InsufficientBalance ->
+            "プリペイド残高が不足しているため保存できません。"
+        PrepaidValidationFailure.DuplicateOperationKey,
+        PrepaidValidationFailure.ExpenseAlreadyExists,
+        PrepaidValidationFailure.ExpenseContentMismatch,
+        PrepaidValidationFailure.EvidenceContentMismatch ->
+            "同じ保存操作と異なる内容が検出されました。入力内容を確認してください。"
+        PrepaidValidationFailure.ArithmeticOverflow,
+        PrepaidValidationFailure.InvalidBalanceDelta,
+        PrepaidValidationFailure.ZeroBalanceDelta ->
+            "金額が正しくないため保存できません。"
+        PrepaidValidationFailure.PaymentMethodMismatch ->
+            "支払方法を確認してください。"
+        PrepaidValidationFailure.BlankIdentifier ->
+            "プリペイド口座を選択してから保存してください。"
+        null -> "支出明細を保存できませんでした。入力内容を確認して、もう一度お試しください。"
+        else -> "プリペイド支出を保存できませんでした。入力内容を確認してください。"
+    }
+
+@Composable
 private fun ExpenseRecordRow(
     expense: ExpenseRecord,
     evidence: List<ExpenseEvidenceRecord>,
+    prepaidAccount: PrepaidAccountRecord?,
     onOpenEvidence: (ExpenseEvidenceRecord) -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit
 ) {
+    val isPrepaidExpense =
+        normalizePaymentMethod(expense.paymentMethod) == PaymentMethodPrepaid ||
+            prepaidAccount != null
     Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth()) {
         Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(10.dp)) {
             Text(expense.supplierName.orEmpty().ifBlank { "支払先未入力" }, fontWeight = FontWeight.Bold)
-            Text("${expense.amount.toYen()} / ${expense.paymentMethod.orEmpty().ifBlank { "支払方法未入力" }}")
+            Text("${expense.amount.toYen()} / ${paymentMethodDisplayName(expense.paymentMethod)}")
+            if (isPrepaidExpense) {
+                Text(
+                    "使用口座: ${prepaidAccount?.name ?: "関連口座を確認できません"}",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    "プリペイド支出の編集・削除は次の更新で対応予定です",
+                    color = MaterialTheme.colorScheme.tertiary
+                )
+            }
             if (evidence.isNotEmpty()) {
                 Text("保存済みレシート ${evidence.size}件", color = MaterialTheme.colorScheme.primary)
                 EvidenceThumbnailRow(evidence = evidence, onOpenEvidence = onOpenEvidence)
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onEdit) { Text("編集") }
-                OutlinedButton(onClick = onDelete) { Text("削除") }
+                OutlinedButton(onClick = onEdit, enabled = !isPrepaidExpense) { Text("編集") }
+                OutlinedButton(onClick = onDelete, enabled = !isPrepaidExpense) { Text("削除") }
             }
         }
     }
@@ -2551,6 +2664,8 @@ private fun ExpenseRecordForm(
     initialCategory: String,
     editingExpense: ExpenseRecord?,
     editingEvidence: List<ExpenseEvidenceRecord>,
+    prepaidExpenseUi: PrepaidExpenseUiSnapshot,
+    prepaidOperationKeyFor: (String) -> String,
     resetKey: Int,
     supplierCandidates: List<SupplierCandidateRecord>,
     onClose: () -> Unit,
@@ -2570,9 +2685,21 @@ private fun ExpenseRecordForm(
     var expenseDate by remember(editingExpense, initialCategory, resetKey, restoredInput?.id, ocrApplyCaptureId) { mutableStateOf(restoredInput?.expenseDate ?: editingExpense?.expenseDate ?: reportDate) }
     var supplier by remember(editingExpense, initialCategory, resetKey, restoredInput?.id, ocrApplyCaptureId) { mutableStateOf(restoredInput?.supplierName ?: editingExpense?.supplierName.orEmpty()) }
     var category by remember(editingExpense, initialCategory, resetKey, restoredInput?.id) { mutableStateOf(restoredInput?.category ?: editingExpense?.category ?: initialCategory) }
-    var paymentMethod by remember(editingExpense, initialCategory, resetKey, restoredInput?.id) { mutableStateOf(normalizePaymentMethod(restoredInput?.paymentMethod ?: editingExpense?.paymentMethod)) }
+    var paymentMethod by remember(editingExpense, initialCategory, resetKey, restoredInput?.id) {
+        mutableStateOf(
+            normalizePaymentMethod(restoredInput?.paymentMethod ?: editingExpense?.paymentMethod)
+                .ifBlank { PaymentMethodCash }
+        )
+    }
     var amount by remember(editingExpense, initialCategory, resetKey, restoredInput?.id, ocrApplyCaptureId) { mutableStateOf(restoredInput?.amount ?: editingExpense?.amount?.takeIf { it > 0L }?.toString().orEmpty()) }
     var memo by remember(editingExpense, initialCategory, resetKey, restoredInput?.id) { mutableStateOf(restoredInput?.memo ?: editingExpense?.memo.orEmpty()) }
+    var prepaidAccountId by remember(editingExpense, initialCategory, resetKey, restoredInput?.id) {
+        mutableStateOf(
+            restoredInput?.prepaidAccountId
+                ?: editingExpense?.let { prepaidExpenseUi.accountForExpense(it.id)?.id }
+                ?: ""
+        )
+    }
     var isCustomSupplier by rememberSaveable(editingExpense?.id, initialCategory, resetKey) {
         mutableStateOf(false)
     }
@@ -2591,18 +2718,40 @@ private fun ExpenseRecordForm(
     val initialExpenseDate = editingExpense?.expenseDate ?: reportDate
     val initialCategoryValue = editingExpense?.category ?: initialCategory
     val initialPaymentMethod = normalizePaymentMethod(editingExpense?.paymentMethod)
+        .ifBlank { PaymentMethodCash }
     val initialAmount = editingExpense?.amount?.takeIf { it > 0L }?.toString().orEmpty()
     val initialMemo = editingExpense?.memo.orEmpty()
+    val initialPrepaidAccountId =
+        editingExpense?.let { prepaidExpenseUi.accountForExpense(it.id)?.id }.orEmpty()
     val formDirty = expenseDate != initialExpenseDate ||
         supplier != initialSupplier ||
         category != initialCategoryValue ||
         paymentMethod != initialPaymentMethod ||
+        prepaidAccountId != initialPrepaidAccountId ||
         amount != initialAmount ||
         memo != initialMemo
     val parsedAmount = amount.toLongOrNull()
     val isAmountValid = parsedAmount != null && parsedAmount > 0L
     val isExpenseDateValid = runCatching { LocalDate.parse(expenseDate) }.isSuccess
     val restoredReceiptId = restoredInput?.receiptId ?: editingExpense?.receiptId.orEmpty()
+    val prepaidOperationKey = remember(expenseId, restoredInput?.prepaidOperationKey) {
+        restoredInput?.prepaidOperationKey
+            ?.takeIf { it.isNotBlank() }
+            ?: prepaidOperationKeyFor(expenseId)
+    }
+    val isPrepaidPayment = normalizePaymentMethod(paymentMethod) == PaymentMethodPrepaid
+    val activePrepaidAccounts = prepaidExpenseUi.accounts.filter { it.isActive }
+    val selectedPrepaidAccount =
+        activePrepaidAccounts.firstOrNull { it.id == prepaidAccountId }
+    val prepaidProjection = prepaidBalanceProjection(
+        currentBalance = selectedPrepaidAccount?.let { prepaidExpenseUi.balanceFor(it.id) },
+        amount = parsedAmount
+    )
+    val prepaidSelectionValid = !isPrepaidPayment ||
+        (
+            selectedPrepaidAccount != null &&
+                prepaidProjection is PrepaidBalanceProjection.Available
+        )
     val currentExpenseInput = ExpenseInput(
         id = expenseId,
         expenseDate = expenseDate,
@@ -2613,7 +2762,9 @@ private fun ExpenseRecordForm(
         memo = memo,
         receiptId = restoredReceiptId,
         sourceType = restoredInput?.sourceType ?: editingExpense?.sourceType ?: ExpenseSourceType.Manual,
-        createdAt = restoredInput?.createdAt ?: editingExpense?.createdAt
+        createdAt = restoredInput?.createdAt ?: editingExpense?.createdAt,
+        prepaidAccountId = prepaidAccountId,
+        prepaidOperationKey = prepaidOperationKey
     )
     val shouldRetainDraft = shouldRetainExpenseDraft(
         formDirty = formDirty,
@@ -2723,6 +2874,83 @@ private fun ExpenseRecordForm(
                     }
                 }
             }
+            if (isPrepaidPayment) {
+                Text(
+                    "プリペイド口座",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (activePrepaidAccounts.isEmpty()) {
+                    Text(
+                        "利用できるプリペイド口座がありません",
+                        color = MaterialTheme.colorScheme.error
+                    )
+                } else {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        activePrepaidAccounts.forEach { account ->
+                            val selected = prepaidAccountId == account.id
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (selected) {
+                                    MaterialTheme.colorScheme.primaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.surface
+                                },
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (selected) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.outline
+                                    }
+                                ),
+                                modifier = Modifier.clickable {
+                                    prepaidAccountId = account.id
+                                }
+                            ) {
+                                Text(
+                                    account.name,
+                                    modifier = Modifier.padding(
+                                        horizontal = 14.dp,
+                                        vertical = 8.dp
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+                if (selectedPrepaidAccount == null) {
+                    Text(
+                        "プリペイド口座を選択してください",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                } else {
+                    Text("現在残高: ${prepaidExpenseUi.balanceFor(selectedPrepaidAccount.id).toYen()}")
+                    when (val projection = prepaidProjection) {
+                        is PrepaidBalanceProjection.Available ->
+                            Text("利用後見込み残高: ${projection.balance.toYen()}")
+                        is PrepaidBalanceProjection.Insufficient ->
+                            Text(
+                                "残高が不足しています（利用後見込み ${projection.balance.toYen()}）",
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        PrepaidBalanceProjection.Invalid ->
+                            Text(
+                                "金額を入力すると利用後残高を確認できます",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        PrepaidBalanceProjection.Overflow ->
+                            Text(
+                                "金額が大きすぎるため残高を計算できません",
+                                color = MaterialTheme.colorScheme.error
+                            )
+                    }
+                }
+            }
             AppTextField("金額", amount, KeyboardType.Number, Modifier.focusRequester(amountFocusRequester), clearZeroOnFocus = true) { value ->
                 amount = value.filter { it.isDigit() }
             }
@@ -2756,7 +2984,10 @@ private fun ExpenseRecordForm(
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
-                    enabled = isExpenseDateValid && isAmountValid && isSupportedPaymentMethod(paymentMethod),
+                    enabled = isExpenseDateValid &&
+                        isAmountValid &&
+                        isSupportedPaymentMethod(normalizePaymentMethod(paymentMethod)) &&
+                        prepaidSelectionValid,
                     onClick = {
                         onSave(
                             ExpenseInput(
@@ -2769,7 +3000,9 @@ private fun ExpenseRecordForm(
                                 memo = memo,
                                 receiptId = restoredReceiptId,
                                 sourceType = restoredInput?.sourceType ?: editingExpense?.sourceType ?: ExpenseSourceType.Manual,
-                                createdAt = restoredInput?.createdAt ?: editingExpense?.createdAt
+                                createdAt = restoredInput?.createdAt ?: editingExpense?.createdAt,
+                                prepaidAccountId = prepaidAccountId,
+                                prepaidOperationKey = prepaidOperationKey
                             ),
                             shouldSaveSupplierCandidate
                         )
@@ -2787,6 +3020,32 @@ internal fun shouldRetainExpenseDraft(
     restoredDraftId: String?,
     currentExpenseId: String
 ): Boolean = formDirty || restoredDraftId == currentExpenseId
+
+internal sealed interface PrepaidBalanceProjection {
+    data class Available(val balance: Long) : PrepaidBalanceProjection
+    data class Insufficient(val balance: Long) : PrepaidBalanceProjection
+    data object Invalid : PrepaidBalanceProjection
+    data object Overflow : PrepaidBalanceProjection
+}
+
+internal fun prepaidBalanceProjection(
+    currentBalance: Long?,
+    amount: Long?
+): PrepaidBalanceProjection {
+    if (currentBalance == null || amount == null || amount <= 0L) {
+        return PrepaidBalanceProjection.Invalid
+    }
+    val projected = try {
+        Math.subtractExact(currentBalance, amount)
+    } catch (_: ArithmeticException) {
+        return PrepaidBalanceProjection.Overflow
+    }
+    return if (projected < 0L) {
+        PrepaidBalanceProjection.Insufficient(projected)
+    } else {
+        PrepaidBalanceProjection.Available(projected)
+    }
+}
 
 internal data class ReceiptOcrMergeSummary(
     val filledFields: List<String>,
@@ -3465,6 +3724,34 @@ private fun ReportDetailScreen(
         }
         dayReports.forEachIndexed { index, report ->
             DailyReportDetailCard(index = index, report = report, expenses = dayExpenses)
+        }
+        if (dayExpenses.isNotEmpty()) {
+            DashboardCard {
+                Text(
+                    "支出明細",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                dayExpenses.forEach { expense ->
+                    Text(
+                        "${expense.supplierName.orEmpty().ifBlank { "支払先未入力" }} / " +
+                            expense.amount.toYen()
+                    )
+                    Text(
+                        "支払方法: ${paymentMethodDisplayName(expense.paymentMethod)}",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (normalizePaymentMethod(expense.paymentMethod) == PaymentMethodPrepaid) {
+                        Text(
+                            "使用口座: ${
+                                uiState.prepaidAccountForExpense(expense.id)?.name
+                                    ?: "関連口座を確認できません"
+                            }",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
         }
         if (registeredEvidence.isNotEmpty()) {
             RegisteredReceiptSection(

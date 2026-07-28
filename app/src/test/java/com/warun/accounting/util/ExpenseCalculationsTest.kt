@@ -13,10 +13,11 @@ class ExpenseCalculationsTest {
             expense("cash", 20_000, PaymentMethodCash),
             expense("credit", 30_000, PaymentMethodCredit),
             expense("electronic", 4_000, PaymentMethodElectronicMoney),
-            expense("credit-purchase", 6_000, PaymentMethodCreditPurchase)
+            expense("credit-purchase", 6_000, PaymentMethodCreditPurchase),
+            expense("prepaid", 1_500, PaymentMethodPrepaid)
         )
 
-        assertEquals(60_000, expenses.expenseAmount())
+        assertEquals(61_500, expenses.expenseAmount())
         assertEquals(20_000, expenses.cashExpenseAmount())
     }
 

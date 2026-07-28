@@ -3,6 +3,7 @@ package com.warun.accounting.ui.model
 import com.warun.accounting.data.local.ExpenseCategory
 import com.warun.accounting.data.local.ExpenseRecord
 import com.warun.accounting.data.local.ExpenseSourceType
+import com.warun.accounting.util.PaymentMethodPrepaid
 import java.math.BigDecimal
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -46,6 +47,24 @@ class BusinessAnalysisTest {
 
         assertEquals(15_000L, summary.estimatedCost)
         assertEquals(20_000L, summary.simpleFixedCost)
+    }
+
+    @Test
+    fun prepaidPurchaseIsCountedOnceFromExpenseRecord() {
+        val prepaidFood = expense(
+            "prepaid-food",
+            ExpenseCategory.FoodPurchase,
+            1_500
+        ).copy(paymentMethod = PaymentMethodPrepaid)
+
+        val summary = buildBusinessAnalysisSummary(
+            salesTotal = 10_000,
+            expenseTotal = 1_500,
+            periodExpenses = listOf(prepaidFood)
+        )
+
+        assertEquals(1_500L, summary.estimatedCost)
+        assertEquals(8_500L, summary.estimatedGrossProfit)
     }
 
     @Test

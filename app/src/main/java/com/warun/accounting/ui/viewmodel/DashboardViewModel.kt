@@ -17,6 +17,11 @@ import com.warun.accounting.data.local.MonthlySubmission
 import com.warun.accounting.data.local.MonthlySubmissionStatus
 import com.warun.accounting.data.local.ReceiptRecord
 import com.warun.accounting.data.local.SupplierCandidateRecord
+import com.warun.accounting.data.local.PrepaidAccountBalance
+import com.warun.accounting.data.local.PrepaidAccountRecord
+import com.warun.accounting.data.local.ExpensePrepaidLinkRecord
+import com.warun.accounting.data.local.PrepaidTransactionRecord
+import com.warun.accounting.data.prepaid.PrepaidExpensePurchaseInput
 import com.warun.accounting.data.prepaid.PrepaidRepository
 import com.warun.accounting.evidence.EvidenceSaveCoordinator
 import com.warun.accounting.evidence.EvidenceFileReference
@@ -29,6 +34,7 @@ import com.warun.accounting.ui.model.normalizeSupplierCandidateName
 import com.warun.accounting.ui.util.todayString
 import com.warun.accounting.util.isSupportedPaymentMethod
 import com.warun.accounting.util.normalizePaymentMethod
+import com.warun.accounting.util.PaymentMethodPrepaid
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.util.UUID
 import javax.inject.Inject
@@ -58,6 +64,12 @@ class DashboardViewModel @Inject constructor(
         val submissions: List<MonthlySubmission>,
         val settings: AppSettings?
     )
+    private data class PrepaidUiStateParts(
+        val accounts: List<PrepaidAccountRecord>,
+        val balances: List<PrepaidAccountBalance>,
+        val transactions: List<PrepaidTransactionRecord>,
+        val links: List<ExpensePrepaidLinkRecord>
+    )
 
     private val baseUiStateParts = combine(
         repository.observeDailyReports(),
@@ -74,13 +86,21 @@ class DashboardViewModel @Inject constructor(
             settings = settings
         )
     }
+    private val prepaidUiStateParts = combine(
+        prepaidRepository.observeAllAccounts(),
+        prepaidRepository.observeAllAccountBalances(),
+        prepaidRepository.observeAllTransactions(),
+        prepaidRepository.observeAllExpenseLinks()
+    ) { accounts, balances, transactions, links ->
+        PrepaidUiStateParts(accounts, balances, transactions, links)
+    }
 
     val uiState: StateFlow<DashboardUiState> = combine(
         baseUiStateParts,
         repository.observeSupplierCandidates(),
         repository.observeStoredExpenseEvidence(),
-        prepaidRepository.observeAllTransactions()
-    ) { parts, supplierCandidates, expenseEvidence, prepaidTransactions ->
+        prepaidUiStateParts
+    ) { parts, supplierCandidates, expenseEvidence, prepaid ->
         DashboardUiState(
             reports = parts.reports,
             receipts = parts.receipts,
@@ -89,7 +109,10 @@ class DashboardViewModel @Inject constructor(
             monthlySubmissions = parts.submissions,
             supplierCandidates = supplierCandidates,
             appSettings = parts.settings,
-            prepaidTransactions = prepaidTransactions
+            prepaidTransactions = prepaid.transactions,
+            prepaidAccounts = prepaid.accounts,
+            prepaidBalances = prepaid.balances,
+            expensePrepaidLinks = prepaid.links
         )
     }.stateIn(
         scope = viewModelScope,
@@ -162,6 +185,9 @@ class DashboardViewModel @Inject constructor(
                 val now = System.currentTimeMillis()
                 val report = input.toDailyReport(now)
                 val expense = expenseInput?.toExpenseRecord(now)
+                check(expense?.paymentMethod != PaymentMethodPrepaid) {
+                    "プリペイド支出は支出フォームから個別保存してください"
+                }
                 evidenceSaveCoordinator.saveDailyReportWithExpenseAndLinkEvidence(
                     expense = expense,
                     expenseDraftId = expenseInput?.id,
@@ -236,7 +262,27 @@ class DashboardViewModel @Inject constructor(
                     findSavedExpense = ::findSavedExpense,
                     hasPersistedEvidenceLink = repository::hasExpenseEvidenceLink,
                     saveAccounting = { inspectedEvidence ->
-                        if (inspectedEvidence == null) {
+                        if (expense.paymentMethod == PaymentMethodPrepaid) {
+                            val now = System.currentTimeMillis()
+                            prepaidRepository.savePurchaseExpense(
+                                PrepaidExpensePurchaseInput(
+                                    expense = expense,
+                                    accountId = input.prepaidAccountId,
+                                    operationKey = input.prepaidOperationKey,
+                                    linkedAt = now,
+                                    evidence = inspectedEvidence?.toEvidenceRecord(
+                                        state = EvidenceRecordState.Pending,
+                                        createdAt = pendingCapture?.capturedAt ?: now,
+                                        storedAt = null,
+                                        updatedAt = now
+                                    ),
+                                    evidenceLink = inspectedEvidence?.toExpenseLink(
+                                        expense.id,
+                                        now
+                                    )
+                                )
+                            )
+                        } else if (inspectedEvidence == null) {
                             repository.saveExpenseRecord(expense)
                         } else {
                             val now = System.currentTimeMillis()
@@ -341,6 +387,13 @@ class DashboardViewModel @Inject constructor(
     }
     fun deleteExpense(expense: ExpenseRecord) {
         viewModelScope.launch {
+            if (
+                normalizePaymentMethod(expense.paymentMethod) == PaymentMethodPrepaid ||
+                prepaidRepository.getExpenseLink(expense.id) != null
+            ) {
+                Log.w(LogTag, "Blocked deletion of prepaid expense ${expense.id}")
+                return@launch
+            }
             repository.deleteExpenseRecord(expense)
         }
     }
@@ -519,7 +572,9 @@ data class ExpenseInput(
     val memo: String = "",
     val receiptId: String = "",
     val sourceType: String = ExpenseSourceType.Manual,
-    val createdAt: Long? = null
+    val createdAt: Long? = null,
+    val prepaidAccountId: String = "",
+    val prepaidOperationKey: String = ""
 )
 
 data class AppSettingsInput(

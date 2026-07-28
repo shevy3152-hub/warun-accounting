@@ -1,6 +1,9 @@
 package com.warun.accounting.data.prepaid
 
 import androidx.room.withTransaction
+import com.warun.accounting.data.local.EvidenceRecord
+import com.warun.accounting.data.local.ExpenseEvidenceLinkRecord
+import com.warun.accounting.data.local.ExpenseRecord
 import com.warun.accounting.data.local.ExpensePrepaidLinkDao
 import com.warun.accounting.data.local.ExpensePrepaidLinkRecord
 import com.warun.accounting.data.local.PrepaidAccountBalance
@@ -17,6 +20,8 @@ import java.time.format.DateTimeParseException
 import java.util.UUID
 import javax.inject.Inject
 import kotlinx.coroutines.flow.Flow
+import com.warun.accounting.util.PaymentMethodPrepaid
+import com.warun.accounting.util.normalizePaymentMethod
 
 interface PrepaidRepository {
     fun observeActiveAccounts(): Flow<List<PrepaidAccountRecord>>
@@ -30,7 +35,9 @@ interface PrepaidRepository {
     fun observeTransactionsByExpense(expenseId: String): Flow<List<PrepaidTransactionRecord>>
     fun observeAllAccountBalances(): Flow<List<PrepaidAccountBalance>>
     fun observeAllTransactions(): Flow<List<PrepaidTransactionRecord>>
+    fun observeAllExpenseLinks(): Flow<List<ExpensePrepaidLinkRecord>>
     suspend fun getAccount(accountId: String): PrepaidAccountRecord?
+    suspend fun getExpenseLink(expenseId: String): ExpensePrepaidLinkRecord?
     suspend fun getMajicaAccount(): PrepaidAccountRecord?
     suspend fun getAuPayPrepaidAccount(): PrepaidAccountRecord?
     suspend fun getBalance(accountId: String): Long
@@ -42,6 +49,7 @@ interface PrepaidRepository {
     suspend fun createCharge(input: PrepaidChargeInput): PrepaidWriteResult
     suspend fun createAdjustment(input: PrepaidAdjustmentInput): PrepaidWriteResult
     suspend fun reverseTransaction(input: PrepaidReversalInput): PrepaidWriteResult
+    suspend fun savePurchaseExpense(input: PrepaidExpensePurchaseInput): PrepaidExpenseWriteResult
 }
 
 data class PrepaidChargeInput(
@@ -71,6 +79,23 @@ data class PrepaidReversalInput(
 
 data class PrepaidWriteResult(
     val transaction: PrepaidTransactionRecord,
+    val balance: Long,
+    val wasAlreadyApplied: Boolean
+)
+
+data class PrepaidExpensePurchaseInput(
+    val expense: ExpenseRecord,
+    val accountId: String,
+    val operationKey: String,
+    val linkedAt: Long,
+    val evidence: EvidenceRecord? = null,
+    val evidenceLink: ExpenseEvidenceLinkRecord? = null
+)
+
+data class PrepaidExpenseWriteResult(
+    val expense: ExpenseRecord,
+    val transaction: PrepaidTransactionRecord,
+    val prepaidLink: ExpensePrepaidLinkRecord,
     val balance: Long,
     val wasAlreadyApplied: Boolean
 )
@@ -108,8 +133,14 @@ class OfflinePrepaidRepository @Inject constructor(
     override fun observeAllTransactions(): Flow<List<PrepaidTransactionRecord>> =
         transactionDao.observeAll()
 
+    override fun observeAllExpenseLinks(): Flow<List<ExpensePrepaidLinkRecord>> =
+        linkDao.observeAll()
+
     override suspend fun getAccount(accountId: String): PrepaidAccountRecord? =
         accountDao.getById(accountId)
+
+    override suspend fun getExpenseLink(expenseId: String): ExpensePrepaidLinkRecord? =
+        linkDao.getByExpenseId(expenseId)
 
     override suspend fun getMajicaAccount(): PrepaidAccountRecord? =
         accountDao.getById(PrepaidAccountId.Majica)
@@ -258,6 +289,166 @@ class OfflinePrepaidRepository @Inject constructor(
         insertIdempotently(candidate, ::samePrepaidBusinessOperation)
     }
 
+    override suspend fun savePurchaseExpense(
+        input: PrepaidExpensePurchaseInput
+    ): PrepaidExpenseWriteResult = database.withTransaction {
+        validateDate(input.expense.expenseDate)
+        if (normalizePaymentMethod(input.expense.paymentMethod) != PaymentMethodPrepaid) {
+            throw PrepaidValidationException(PrepaidValidationFailure.PaymentMethodMismatch)
+        }
+        if (
+            input.expense.id.isBlank() ||
+            input.accountId.isBlank() ||
+            input.operationKey.isBlank()
+        ) {
+            throw PrepaidValidationException(PrepaidValidationFailure.BlankIdentifier)
+        }
+        if (input.expense.amount <= 0L) {
+            throw PrepaidValidationException(PrepaidValidationFailure.InvalidBalanceDelta)
+        }
+        if ((input.evidence == null) != (input.evidenceLink == null)) {
+            throw PrepaidValidationException(PrepaidValidationFailure.EvidenceContentMismatch)
+        }
+        input.evidenceLink?.let { link ->
+            if (link.expenseId != input.expense.id || link.evidenceId != input.evidence?.id) {
+                throw PrepaidValidationException(PrepaidValidationFailure.EvidenceContentMismatch)
+            }
+        }
+
+        val candidateTransaction = PrepaidTransactionRecord(
+            id = UUID.randomUUID().toString(),
+            accountId = input.accountId,
+            transactionDate = input.expense.expenseDate,
+            transactionType = PrepaidTransactionType.Purchase,
+            balanceDelta = negateExact(input.expense.amount),
+            expenseId = input.expense.id,
+            chargeSource = null,
+            reversalOfTransactionId = null,
+            operationKey = input.operationKey,
+            memo = input.expense.memo.orEmpty(),
+            createdAt = System.currentTimeMillis()
+        )
+        val existingOperation = transactionDao.getByOperationKey(input.operationKey)
+        if (existingOperation != null) {
+            return@withTransaction validateExistingPurchase(input, existingOperation)
+        }
+
+        val account = accountDao.getById(input.accountId)
+        PrepaidLedgerRules.validateTransaction(
+            account = account,
+            transaction = candidateTransaction,
+            currentBalance = transactionDao.getBalance(input.accountId)
+        )
+        if (warunDao.getExpenseRecord(input.expense.id) != null) {
+            throw PrepaidValidationException(PrepaidValidationFailure.ExpenseAlreadyExists)
+        }
+
+        if (input.evidence == null) {
+            warunDao.insertExpenseRecord(input.expense)
+        } else {
+            warunDao.saveExpenseWithEvidence(
+                expense = input.expense,
+                evidence = input.evidence,
+                link = requireNotNull(input.evidenceLink)
+            )
+        }
+        transactionDao.insert(candidateTransaction)
+        val prepaidLink = ExpensePrepaidLinkRecord(
+            expenseId = input.expense.id,
+            purchaseTransactionId = candidateTransaction.id,
+            linkedAt = input.linkedAt,
+            updatedAt = input.linkedAt
+        )
+        validateLinkForInsert(prepaidLink, input.accountId)
+        linkDao.insert(prepaidLink)
+        PrepaidExpenseWriteResult(
+            expense = input.expense,
+            transaction = candidateTransaction,
+            prepaidLink = prepaidLink,
+            balance = transactionDao.getBalance(input.accountId),
+            wasAlreadyApplied = false
+        )
+    }
+
+    private suspend fun validateExistingPurchase(
+        input: PrepaidExpensePurchaseInput,
+        existingOperation: PrepaidTransactionRecord
+    ): PrepaidExpenseWriteResult {
+        val candidate = PrepaidTransactionRecord(
+            id = existingOperation.id,
+            accountId = input.accountId,
+            transactionDate = input.expense.expenseDate,
+            transactionType = PrepaidTransactionType.Purchase,
+            balanceDelta = negateExact(input.expense.amount),
+            expenseId = input.expense.id,
+            chargeSource = null,
+            reversalOfTransactionId = null,
+            operationKey = input.operationKey,
+            memo = input.expense.memo.orEmpty(),
+            createdAt = existingOperation.createdAt
+        )
+        if (!samePrepaidBusinessOperation(existingOperation, candidate)) {
+            throw PrepaidValidationException(PrepaidValidationFailure.DuplicateOperationKey)
+        }
+        val savedExpense = warunDao.getExpenseRecord(input.expense.id)
+            ?: throw PrepaidValidationException(PrepaidValidationFailure.ExpenseNotFound)
+        if (!sameExpenseBusinessOperation(savedExpense, input.expense)) {
+            throw PrepaidValidationException(PrepaidValidationFailure.ExpenseContentMismatch)
+        }
+        val prepaidLink = linkDao.getByExpenseId(input.expense.id)
+            ?: throw PrepaidValidationException(PrepaidValidationFailure.LinkTransactionNotFound)
+        if (
+            prepaidLink.purchaseTransactionId != existingOperation.id ||
+            linkDao.getByPurchaseTransactionId(existingOperation.id)?.expenseId != input.expense.id
+        ) {
+            throw PrepaidValidationException(PrepaidValidationFailure.DuplicatePurchaseLink)
+        }
+        validateExistingEvidence(input)
+        return PrepaidExpenseWriteResult(
+            expense = savedExpense,
+            transaction = existingOperation,
+            prepaidLink = prepaidLink,
+            balance = transactionDao.getBalance(existingOperation.accountId),
+            wasAlreadyApplied = true
+        )
+    }
+
+    private suspend fun validateExistingEvidence(input: PrepaidExpensePurchaseInput) {
+        val savedLinks = warunDao.getEvidenceLinksForExpense(input.expense.id)
+        val candidateEvidence = input.evidence
+        val candidateLink = input.evidenceLink
+        if (candidateEvidence == null || candidateLink == null) {
+            if (savedLinks.isNotEmpty()) {
+                throw PrepaidValidationException(PrepaidValidationFailure.EvidenceContentMismatch)
+            }
+            return
+        }
+        if (
+            savedLinks.size != 1 ||
+            savedLinks.single().evidenceId != candidateEvidence.id
+        ) {
+            throw PrepaidValidationException(PrepaidValidationFailure.EvidenceContentMismatch)
+        }
+        val savedEvidence = warunDao.getEvidenceRecord(candidateEvidence.id)
+            ?: throw PrepaidValidationException(PrepaidValidationFailure.EvidenceContentMismatch)
+        if (
+            savedEvidence.captureId != candidateEvidence.captureId ||
+            savedEvidence.storedUri != candidateEvidence.storedUri ||
+            savedEvidence.byteSize != candidateEvidence.byteSize ||
+            savedEvidence.sha256 != candidateEvidence.sha256 ||
+            candidateLink.expenseId != input.expense.id ||
+            candidateLink.evidenceId != candidateEvidence.id
+        ) {
+            throw PrepaidValidationException(PrepaidValidationFailure.EvidenceContentMismatch)
+        }
+    }
+
+    private fun negateExact(value: Long): Long = try {
+        Math.negateExact(value)
+    } catch (_: ArithmeticException) {
+        throw PrepaidValidationException(PrepaidValidationFailure.ArithmeticOverflow)
+    }
+
     private suspend fun insertIdempotently(
         candidate: PrepaidTransactionRecord,
         matches: (PrepaidTransactionRecord, PrepaidTransactionRecord) -> Boolean
@@ -292,6 +483,20 @@ class OfflinePrepaidRepository @Inject constructor(
         }
     }
 }
+
+internal fun sameExpenseBusinessOperation(
+    existing: ExpenseRecord,
+    candidate: ExpenseRecord
+): Boolean =
+    existing.id == candidate.id &&
+        existing.expenseDate == candidate.expenseDate &&
+        existing.category == candidate.category &&
+        existing.supplierName == candidate.supplierName &&
+        existing.amount == candidate.amount &&
+        existing.paymentMethod == candidate.paymentMethod &&
+        existing.memo == candidate.memo &&
+        existing.receiptId == candidate.receiptId &&
+        existing.sourceType == candidate.sourceType
 
 internal fun samePrepaidBusinessOperation(
     existing: PrepaidTransactionRecord,

@@ -10,6 +10,9 @@ import com.warun.accounting.data.local.MonthlySubmission
 import com.warun.accounting.data.local.MonthlySubmissionStatus
 import com.warun.accounting.data.local.ReceiptRecord
 import com.warun.accounting.data.local.SupplierCandidateRecord
+import com.warun.accounting.data.local.PrepaidAccountBalance
+import com.warun.accounting.data.local.PrepaidAccountRecord
+import com.warun.accounting.data.local.ExpensePrepaidLinkRecord
 import com.warun.accounting.data.local.PrepaidTransactionRecord
 import com.warun.accounting.data.prepaid.netCashChargeAmount
 import com.warun.accounting.ui.util.currentMonthString
@@ -29,7 +32,10 @@ data class DashboardUiState(
     val monthlySubmissions: List<MonthlySubmission> = emptyList(),
     val supplierCandidates: List<SupplierCandidateRecord> = emptyList(),
     val appSettings: AppSettings? = null,
-    val prepaidTransactions: List<PrepaidTransactionRecord> = emptyList()
+    val prepaidTransactions: List<PrepaidTransactionRecord> = emptyList(),
+    val prepaidAccounts: List<PrepaidAccountRecord> = emptyList(),
+    val prepaidBalances: List<PrepaidAccountBalance> = emptyList(),
+    val expensePrepaidLinks: List<ExpensePrepaidLinkRecord> = emptyList()
 ) {
     private val today = todayString()
     private val currentMonth = currentMonthString()
@@ -117,6 +123,18 @@ data class DashboardUiState(
         ?.takeIf { it.customerCount > 0 }
         ?.let { it.salesTotal() / it.customerCount }
         ?: 0L
+
+    fun prepaidAccountForExpense(expenseId: String): PrepaidAccountRecord? {
+        val purchaseId = expensePrepaidLinks
+            .firstOrNull { it.expenseId == expenseId }
+            ?.purchaseTransactionId
+            ?: return null
+        val accountId = prepaidTransactions
+            .firstOrNull { it.id == purchaseId }
+            ?.accountId
+            ?: return null
+        return prepaidAccounts.firstOrNull { it.id == accountId }
+    }
 }
 
 private fun expensesWithoutReportsTotal(reports: List<DailyReport>, expenses: List<ExpenseRecord>): Long {

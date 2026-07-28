@@ -113,6 +113,9 @@ interface PrepaidTransactionDao {
 
 @Dao
 interface ExpensePrepaidLinkDao {
+    @Query("SELECT * FROM expense_prepaid_links ORDER BY linkedAt ASC, expenseId ASC")
+    fun observeAll(): Flow<List<ExpensePrepaidLinkRecord>>
+
     @Query("SELECT * FROM expense_prepaid_links WHERE expenseId = :expenseId")
     suspend fun getByExpenseId(expenseId: String): ExpensePrepaidLinkRecord?
 

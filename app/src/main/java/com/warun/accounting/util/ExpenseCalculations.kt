@@ -5,7 +5,7 @@ import com.warun.accounting.data.local.ExpenseRecord
 fun Iterable<ExpenseRecord>.expenseAmount(): Long = sumOf { it.amount }
 
 fun Iterable<ExpenseRecord>.cashExpenseAmount(): Long =
-    filter { it.paymentMethod == PaymentMethodCash }.sumOf { it.amount }
+    filter { isCashPaymentMethod(it.paymentMethod) }.sumOf { it.amount }
 
 fun calculateCashBalance(openingCash: Long, cashSales: Long, cashExpense: Long): Long =
     openingCash + cashSales - cashExpense

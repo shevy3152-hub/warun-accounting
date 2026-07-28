@@ -7,6 +7,7 @@ import com.warun.accounting.data.local.ExpenseRecord
 import com.warun.accounting.data.local.ExpenseSourceType
 import com.warun.accounting.util.PaymentMethodCash
 import com.warun.accounting.util.PaymentMethodCredit
+import com.warun.accounting.util.PaymentMethodPrepaid
 import com.warun.accounting.ui.util.todayString
 import com.warun.accounting.data.local.PrepaidAccountId
 import com.warun.accounting.data.local.PrepaidChargeSource
@@ -93,6 +94,36 @@ class DashboardUiStateCashTest {
         assertEquals(5_000L, state.todayCashOutflow)
         assertEquals(5_000L, state.todayCashFlow)
         assertEquals(2_000L, state.todayExpensesTotal)
+    }
+
+    @Test
+    fun prepaidPurchaseCountsAsExpenseOnceAndDoesNotReduceCashAgain() {
+        val today = todayString()
+        val prepaidExpense = expense("prepaid-expense", 1_500, PaymentMethodPrepaid)
+            .copy(expenseDate = today)
+        val purchase = PrepaidTransactionRecord(
+            id = "purchase",
+            accountId = PrepaidAccountId.Majica,
+            transactionDate = today,
+            transactionType = PrepaidTransactionType.Purchase,
+            balanceDelta = -1_500,
+            expenseId = prepaidExpense.id,
+            chargeSource = null,
+            reversalOfTransactionId = null,
+            operationKey = "operation-purchase",
+            memo = "",
+            createdAt = 1
+        )
+        val state = DashboardUiState(
+            reports = listOf(report(cashSales = 10_000).copy(reportDate = today)),
+            expenses = listOf(prepaidExpense),
+            prepaidTransactions = listOf(purchase)
+        )
+
+        assertEquals(1_500L, state.todayExpensesTotal)
+        assertEquals(0L, state.todayCashExpenses)
+        assertEquals(0L, state.todayCashCharges)
+        assertEquals(10_000L, state.todayCashFlow)
     }
 
     private fun prepaid(id: String, date: String, amount: Long, source: String) =

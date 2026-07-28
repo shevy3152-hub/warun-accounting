@@ -4,13 +4,20 @@ import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.warun.accounting.data.OfflineAccountingRepository
 import com.warun.accounting.data.prepaid.OfflinePrepaidRepository
 import com.warun.accounting.data.prepaid.PrepaidAdjustmentInput
 import com.warun.accounting.data.prepaid.PrepaidChargeInput
+import com.warun.accounting.data.prepaid.PrepaidExpensePurchaseInput
 import com.warun.accounting.data.prepaid.PrepaidReversalInput
 import com.warun.accounting.data.prepaid.PrepaidValidationException
 import com.warun.accounting.data.prepaid.PrepaidValidationFailure
 import com.warun.accounting.di.DatabaseModule
+import com.warun.accounting.util.PaymentMethodCash
+import com.warun.accounting.util.PaymentMethodCredit
+import com.warun.accounting.util.PaymentMethodCreditPurchase
+import com.warun.accounting.util.PaymentMethodElectronicMoney
+import com.warun.accounting.util.PaymentMethodPrepaid
 import java.util.UUID
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -132,6 +139,100 @@ class PrepaidPersistenceTest {
         val retainedTransaction = database.prepaidTransactionDao().getById(purchase.id)
         assertEquals(purchase.id, retainedTransaction?.id)
         assertNull(retainedTransaction?.expenseId)
+    }
+
+    @Test
+    fun accountingRepositoryRejectsDirectDeletionOfLinkedPrepaidExpense() = runBlocking {
+        val expense = prepaidExpense("expense-delete-blocked", 100L)
+        database.warunDao().insertExpenseRecord(expense)
+        val purchase = transaction(
+            id = "purchase-delete-blocked",
+            accountId = PrepaidAccountId.Majica,
+            type = PrepaidTransactionType.Purchase,
+            delta = -100L,
+            expenseId = expense.id
+        )
+        database.prepaidTransactionDao().insert(purchase)
+        database.expensePrepaidLinkDao().insert(
+            ExpensePrepaidLinkRecord(
+                expenseId = expense.id,
+                purchaseTransactionId = purchase.id,
+                linkedAt = 2L,
+                updatedAt = 2L
+            )
+        )
+        assertFailure {
+            accountingRepository().deleteExpenseRecord(expense)
+        }
+
+        assertEquals(expense, database.warunDao().getExpenseRecord(expense.id))
+        assertEquals(
+            purchase.id,
+            database.expensePrepaidLinkDao()
+                .getByExpenseId(expense.id)
+                ?.purchaseTransactionId
+        )
+        assertEquals(
+            purchase.id,
+            database.prepaidTransactionDao().getById(purchase.id)?.id
+        )
+
+        val unlinkedPrepaidExpense = prepaidExpense(
+            id = "expense-delete-blocked-without-link",
+            amount = 50L
+        )
+        database.warunDao().insertExpenseRecord(unlinkedPrepaidExpense)
+        assertFailure {
+            accountingRepository().deleteExpenseRecord(unlinkedPrepaidExpense)
+        }
+        assertEquals(
+            unlinkedPrepaidExpense,
+            database.warunDao().getExpenseRecord(unlinkedPrepaidExpense.id)
+        )
+    }
+
+    @Test
+    fun accountingRepositoryRejectsPrepaidSaveOutsidePurchaseTransaction() = runBlocking {
+        val expense = prepaidExpense("expense-direct-save-blocked", 100L)
+        val evidence = evidence("evidence-direct-save-blocked")
+
+        assertFailure {
+            accountingRepository().saveExpenseWithEvidence(
+                expense = expense,
+                evidence = evidence,
+                link = ExpenseEvidenceLinkRecord(
+                    expenseId = expense.id,
+                    evidenceId = evidence.id,
+                    linkedAt = 2L
+                )
+            )
+        }
+
+        assertNull(database.warunDao().getExpenseRecord(expense.id))
+        assertNull(database.warunDao().getEvidenceRecord(evidence.id))
+        assertNull(database.warunDao().getExpenseIdForEvidence(evidence.id))
+        assertEquals(0, database.prepaidTransactionDao().observeAll().first().size)
+        assertEquals(0, database.expensePrepaidLinkDao().observeAll().first().size)
+    }
+
+    @Test
+    fun accountingRepositoryKeepsExistingNonPrepaidSavePathWithoutLedgerRows() = runBlocking {
+        listOf(
+            PaymentMethodCash,
+            PaymentMethodCredit,
+            PaymentMethodElectronicMoney,
+            PaymentMethodCreditPurchase
+        ).forEachIndexed { index, paymentMethod ->
+            accountingRepository().saveExpenseRecord(
+                expense("expense-non-prepaid-$index").copy(
+                    paymentMethod = paymentMethod
+                )
+            )
+        }
+
+        assertEquals(4, database.warunDao().observeExpenseRecords().first().size)
+        assertEquals(0, database.prepaidTransactionDao().observeAll().first().size)
+        assertEquals(0, database.expensePrepaidLinkDao().observeAll().first().size)
     }
 
     @Test
@@ -316,12 +417,220 @@ class PrepaidPersistenceTest {
         assertEquals(0, database.prepaidTransactionDao().observeAll().first().size)
     }
 
+    @Test
+    fun savesMajicaAndAuPayExpensesWithPurchaseLinksAndBalances() = runBlocking {
+        val repository = repository()
+        repository.createCharge(
+            PrepaidChargeInput(
+                accountId = PrepaidAccountId.Majica,
+                transactionDate = "2026-07-28",
+                amount = 10_000,
+                chargeSource = PrepaidChargeSource.Cash,
+                memo = "",
+                operationKey = "charge-majica"
+            )
+        )
+        repository.createCharge(
+            PrepaidChargeInput(
+                accountId = PrepaidAccountId.AuPayPrepaid,
+                transactionDate = "2026-07-28",
+                amount = 5_000,
+                chargeSource = PrepaidChargeSource.CreditCard,
+                memo = "",
+                operationKey = "charge-au-pay"
+            )
+        )
+
+        val majica = repository.savePurchaseExpense(
+            purchaseInput(
+                expense = prepaidExpense("expense-majica", 1_500),
+                accountId = PrepaidAccountId.Majica,
+                operationKey = "purchase-majica"
+            )
+        )
+        val auPay = repository.savePurchaseExpense(
+            purchaseInput(
+                expense = prepaidExpense("expense-au-pay", 1_000),
+                accountId = PrepaidAccountId.AuPayPrepaid,
+                operationKey = "purchase-au-pay"
+            )
+        )
+
+        assertEquals(8_500L, majica.balance)
+        assertEquals(4_000L, auPay.balance)
+        assertEquals(PrepaidTransactionType.Purchase, majica.transaction.transactionType)
+        assertEquals(-1_500L, majica.transaction.balanceDelta)
+        assertEquals(majica.expense.id, majica.transaction.expenseId)
+        assertEquals(majica.expense.id, majica.prepaidLink.expenseId)
+        assertEquals(
+            majica.transaction.id,
+            database.expensePrepaidLinkDao()
+                .getByExpenseId(majica.expense.id)
+                ?.purchaseTransactionId
+        )
+        assertEquals(2, database.expensePrepaidLinkDao().observeAll().first().size)
+    }
+
+    @Test
+    fun purchaseRetryIsIdempotentAndConflictingContentIsRejected() = runBlocking {
+        val repository = repository()
+        repository.createCharge(
+            PrepaidChargeInput(
+                accountId = PrepaidAccountId.Majica,
+                transactionDate = "2026-07-28",
+                amount = 10_000,
+                chargeSource = PrepaidChargeSource.Cash,
+                memo = "",
+                operationKey = "charge-idempotent"
+            )
+        )
+        val input = purchaseInput(
+            expense = prepaidExpense("expense-idempotent", 1_500),
+            accountId = PrepaidAccountId.Majica,
+            operationKey = "purchase-idempotent"
+        )
+
+        val first = repository.savePurchaseExpense(input)
+        val retry = repository.savePurchaseExpense(input)
+
+        assertEquals(false, first.wasAlreadyApplied)
+        assertEquals(true, retry.wasAlreadyApplied)
+        assertEquals(first.transaction.id, retry.transaction.id)
+        assertEquals(8_500L, retry.balance)
+        assertEquals(2, database.prepaidTransactionDao().observeAll().first().size)
+        assertEquals(1, database.expensePrepaidLinkDao().observeAll().first().size)
+        assertValidationFailure(PrepaidValidationFailure.DuplicateOperationKey) {
+            repository.savePurchaseExpense(
+                input.copy(expense = input.expense.copy(amount = 1_600))
+            )
+        }
+        assertEquals(8_500L, repository.getBalance(PrepaidAccountId.Majica))
+    }
+
+    @Test
+    fun insufficientPurchaseRollsBackExpensePurchaseLinkAndEvidence() = runBlocking {
+        val repository = repository()
+        repository.createCharge(
+            PrepaidChargeInput(
+                accountId = PrepaidAccountId.Majica,
+                transactionDate = "2026-07-28",
+                amount = 999,
+                chargeSource = PrepaidChargeSource.Cash,
+                memo = "",
+                operationKey = "charge-insufficient"
+            )
+        )
+        val expense = prepaidExpense("expense-insufficient", 1_000)
+        val evidence = evidence("evidence-insufficient")
+        assertValidationFailure(PrepaidValidationFailure.InsufficientBalance) {
+            repository.savePurchaseExpense(
+                purchaseInput(
+                    expense = expense,
+                    accountId = PrepaidAccountId.Majica,
+                    operationKey = "purchase-insufficient",
+                    evidence = evidence
+                )
+            )
+        }
+
+        assertNull(database.warunDao().getExpenseRecord(expense.id))
+        assertNull(
+            database.prepaidTransactionDao()
+                .getByOperationKey("purchase-insufficient")
+        )
+        assertNull(database.expensePrepaidLinkDao().getByExpenseId(expense.id))
+        assertNull(database.warunDao().getEvidenceRecord(evidence.id))
+        assertNull(database.warunDao().getExpenseIdForEvidence(evidence.id))
+        assertEquals(999L, repository.getBalance(PrepaidAccountId.Majica))
+    }
+
+    @Test
+    fun evidenceConstraintFailureRollsBackExpensePurchaseAndPrepaidLink() = runBlocking {
+        val repository = repository()
+        repository.createCharge(
+            PrepaidChargeInput(
+                accountId = PrepaidAccountId.Majica,
+                transactionDate = "2026-07-28",
+                amount = 2_000,
+                chargeSource = PrepaidChargeSource.Cash,
+                memo = "",
+                operationKey = "charge-evidence-conflict"
+            )
+        )
+        val conflictingEvidence = evidence("evidence-conflict")
+        database.warunDao().insertEvidenceRecord(
+            conflictingEvidence.copy(
+                captureId = "another-capture",
+                sha256 = "b".repeat(64)
+            )
+        )
+        val expense = prepaidExpense("expense-evidence-conflict", 500)
+
+        assertFailure {
+            repository.savePurchaseExpense(
+                purchaseInput(
+                    expense = expense,
+                    accountId = PrepaidAccountId.Majica,
+                    operationKey = "purchase-evidence-conflict",
+                    evidence = conflictingEvidence
+                )
+            )
+        }
+
+        assertNull(database.warunDao().getExpenseRecord(expense.id))
+        assertNull(
+            database.prepaidTransactionDao()
+                .getByOperationKey("purchase-evidence-conflict")
+        )
+        assertNull(database.expensePrepaidLinkDao().getByExpenseId(expense.id))
+        assertNull(database.warunDao().getExpenseIdForEvidence(conflictingEvidence.id))
+        assertEquals(2_000L, repository.getBalance(PrepaidAccountId.Majica))
+    }
+
+    @Test
+    fun evidenceMetadataAndLinkShareThePurchaseTransactionAndRetrySafely() = runBlocking {
+        val repository = repository()
+        repository.createCharge(
+            PrepaidChargeInput(
+                accountId = PrepaidAccountId.AuPayPrepaid,
+                transactionDate = "2026-07-28",
+                amount = 5_000,
+                chargeSource = PrepaidChargeSource.CreditCard,
+                memo = "",
+                operationKey = "charge-evidence"
+            )
+        )
+        val expense = prepaidExpense("expense-evidence", 300)
+        val evidence = evidence("evidence-purchase")
+        val input = purchaseInput(
+            expense = expense,
+            accountId = PrepaidAccountId.AuPayPrepaid,
+            operationKey = "purchase-evidence",
+            evidence = evidence
+        )
+
+        val first = repository.savePurchaseExpense(input)
+        val retry = repository.savePurchaseExpense(input)
+
+        assertEquals(true, retry.wasAlreadyApplied)
+        assertEquals(first.transaction.id, retry.transaction.id)
+        assertEquals(expense.id, database.warunDao().getExpenseIdForEvidence(evidence.id))
+        assertEquals(evidence.sha256, database.warunDao().getEvidenceRecord(evidence.id)?.sha256)
+        assertEquals(1, database.warunDao().getEvidenceLinksForExpense(expense.id).size)
+        assertEquals(4_700L, repository.getBalance(PrepaidAccountId.AuPayPrepaid))
+    }
+
     private fun repository() = OfflinePrepaidRepository(
         database = database,
         accountDao = database.prepaidAccountDao(),
         transactionDao = database.prepaidTransactionDao(),
         linkDao = database.expensePrepaidLinkDao(),
         warunDao = database.warunDao()
+    )
+
+    private fun accountingRepository() = OfflineAccountingRepository(
+        dao = database.warunDao(),
+        expensePrepaidLinkDao = database.expensePrepaidLinkDao()
     )
 
     private fun transaction(
@@ -358,6 +667,40 @@ class PrepaidPersistenceTest {
         sourceType = ExpenseSourceType.Manual,
         createdAt = 1L,
         updatedAt = 1L
+    )
+
+    private fun prepaidExpense(id: String, amount: Long) = expense(id).copy(
+        amount = amount,
+        paymentMethod = PaymentMethodPrepaid,
+        memo = "prepaid purchase"
+    )
+
+    private fun evidence(id: String) = EvidenceRecord(
+        id = id,
+        captureId = id,
+        storedUri = "file:/pending/$id.jpg",
+        byteSize = 123L,
+        sha256 = "a".repeat(64),
+        state = EvidenceRecordState.Pending,
+        createdAt = 1L,
+        storedAt = null,
+        updatedAt = 1L
+    )
+
+    private fun purchaseInput(
+        expense: ExpenseRecord,
+        accountId: String,
+        operationKey: String,
+        evidence: EvidenceRecord? = null
+    ) = PrepaidExpensePurchaseInput(
+        expense = expense,
+        accountId = accountId,
+        operationKey = operationKey,
+        linkedAt = 2L,
+        evidence = evidence,
+        evidenceLink = evidence?.let {
+            ExpenseEvidenceLinkRecord(expense.id, it.id, 2L)
+        }
     )
 
     private suspend fun assertFailure(block: suspend () -> Unit) {

@@ -86,6 +86,9 @@ interface WarunDao {
     @Query("SELECT expenseId FROM expense_evidence_links WHERE evidenceId = :evidenceId")
     suspend fun getExpenseIdForEvidence(evidenceId: String): String?
 
+    @Query("SELECT * FROM expense_evidence_links WHERE expenseId = :expenseId ORDER BY linkedAt ASC")
+    suspend fun getEvidenceLinksForExpense(expenseId: String): List<ExpenseEvidenceLinkRecord>
+
     @Query(
         """
         SELECT EXISTS(

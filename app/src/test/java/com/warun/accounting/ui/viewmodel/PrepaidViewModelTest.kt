@@ -14,6 +14,8 @@ import com.warun.accounting.data.prepaid.PrepaidChargeInput
 import com.warun.accounting.data.prepaid.PrepaidRepository
 import com.warun.accounting.data.prepaid.PrepaidReversalInput
 import com.warun.accounting.data.prepaid.PrepaidWriteResult
+import com.warun.accounting.data.prepaid.PrepaidExpensePurchaseInput
+import com.warun.accounting.data.prepaid.PrepaidExpenseWriteResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -167,8 +169,11 @@ private class FakePrepaidRepository : PrepaidRepository {
             accounts.map { PrepaidAccountBalance(it.id, 0) }
         )
     override fun observeAllTransactions(): Flow<List<PrepaidTransactionRecord>> = transactionFlow
+    override fun observeAllExpenseLinks(): Flow<List<ExpensePrepaidLinkRecord>> =
+        MutableStateFlow(emptyList())
     override suspend fun getAccount(accountId: String): PrepaidAccountRecord? =
         accounts.firstOrNull { it.id == accountId }
+    override suspend fun getExpenseLink(expenseId: String): ExpensePrepaidLinkRecord? = null
     override suspend fun getMajicaAccount(): PrepaidAccountRecord = accounts.first()
     override suspend fun getAuPayPrepaidAccount(): PrepaidAccountRecord = accounts.last()
     override suspend fun getBalance(accountId: String): Long = 0
@@ -203,6 +208,9 @@ private class FakePrepaidRepository : PrepaidRepository {
             0,
             false
         )
+    override suspend fun savePurchaseExpense(
+        input: PrepaidExpensePurchaseInput
+    ): PrepaidExpenseWriteResult = error("Not used by PrepaidViewModel")
 
     private fun transaction(
         type: String,

@@ -6,15 +6,19 @@ import com.warun.accounting.data.local.ExpenseRecord
 import com.warun.accounting.data.local.EvidenceRecord
 import com.warun.accounting.data.local.ExpenseEvidenceLinkRecord
 import com.warun.accounting.data.local.ExpenseEvidenceRecord
+import com.warun.accounting.data.local.ExpensePrepaidLinkDao
 import com.warun.accounting.data.local.MonthlySubmission
 import com.warun.accounting.data.local.ReceiptRecord
 import com.warun.accounting.data.local.SupplierCandidateRecord
 import com.warun.accounting.data.local.WarunDao
+import com.warun.accounting.util.PaymentMethodPrepaid
+import com.warun.accounting.util.normalizePaymentMethod
 import javax.inject.Inject
 import kotlinx.coroutines.flow.Flow
 
 class OfflineAccountingRepository @Inject constructor(
-    private val dao: WarunDao
+    private val dao: WarunDao,
+    private val expensePrepaidLinkDao: ExpensePrepaidLinkDao
 ) : AccountingRepository {
     override fun observeDailyReports(): Flow<List<DailyReport>> = dao.observeDailyReports()
 
@@ -42,28 +46,41 @@ class OfflineAccountingRepository @Inject constructor(
 
     override suspend fun saveDailyReport(report: DailyReport) = dao.insertDailyReport(report)
 
-    override suspend fun saveDailyReportWithExpense(report: DailyReport, expense: ExpenseRecord?) =
+    override suspend fun saveDailyReportWithExpense(report: DailyReport, expense: ExpenseRecord?) {
+        requireNonPrepaidExpense(expense)
         dao.saveDailyReportWithExpense(report, expense)
+    }
 
     override suspend fun saveReceipt(receipt: ReceiptRecord) = dao.insertReceipt(receipt)
 
-    override suspend fun saveReceiptWithExpense(receipt: ReceiptRecord, expense: ExpenseRecord?) =
+    override suspend fun saveReceiptWithExpense(receipt: ReceiptRecord, expense: ExpenseRecord?) {
+        requireNonPrepaidExpense(expense)
         dao.saveReceiptWithExpense(receipt, expense)
+    }
 
-    override suspend fun saveExpenseRecord(expense: ExpenseRecord) = dao.insertExpenseRecord(expense)
+    override suspend fun saveExpenseRecord(expense: ExpenseRecord) {
+        requireNonPrepaidExpense(expense)
+        dao.insertExpenseRecord(expense)
+    }
 
     override suspend fun saveExpenseWithEvidence(
         expense: ExpenseRecord,
         evidence: EvidenceRecord,
         link: ExpenseEvidenceLinkRecord
-    ) = dao.saveExpenseWithEvidence(expense, evidence, link)
+    ) {
+        requireNonPrepaidExpense(expense)
+        dao.saveExpenseWithEvidence(expense, evidence, link)
+    }
 
     override suspend fun saveDailyReportWithExpenseAndEvidence(
         report: DailyReport,
         expense: ExpenseRecord,
         evidence: EvidenceRecord,
         link: ExpenseEvidenceLinkRecord
-    ) = dao.saveDailyReportWithExpenseAndEvidence(report, expense, evidence, link)
+    ) {
+        requireNonPrepaidExpense(expense)
+        dao.saveDailyReportWithExpenseAndEvidence(report, expense, evidence, link)
+    }
 
     override suspend fun finalizeExpenseEvidence(
         expenseId: String,
@@ -77,7 +94,15 @@ class OfflineAccountingRepository @Inject constructor(
         captureId: String
     ): Boolean = dao.hasExpenseEvidenceLink(expenseId, evidenceId, captureId)
 
-    override suspend fun deleteExpenseRecord(expense: ExpenseRecord) = dao.deleteExpenseRecord(expense)
+    override suspend fun deleteExpenseRecord(expense: ExpenseRecord) {
+        check(
+            normalizePaymentMethod(expense.paymentMethod) != PaymentMethodPrepaid &&
+                expensePrepaidLinkDao.getByExpenseId(expense.id) == null
+        ) {
+            "Prepaid expense deletion is not supported"
+        }
+        dao.deleteExpenseRecord(expense)
+    }
 
     override suspend fun deleteReceipt(receipt: ReceiptRecord) = dao.deleteReceipt(receipt)
 
@@ -88,4 +113,13 @@ class OfflineAccountingRepository @Inject constructor(
     override suspend fun saveAppSettings(settings: AppSettings) = dao.upsertAppSettings(settings)
 
     override suspend fun deleteDailyReport(report: DailyReport) = dao.deleteDailyReport(report)
+
+    private fun requireNonPrepaidExpense(expense: ExpenseRecord?) {
+        check(
+            expense == null ||
+                normalizePaymentMethod(expense.paymentMethod) != PaymentMethodPrepaid
+        ) {
+            "Prepaid expenses must use the prepaid purchase transaction"
+        }
+    }
 }
