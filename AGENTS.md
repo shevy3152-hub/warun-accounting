@@ -24,7 +24,7 @@
 - 言語／UI: Kotlin 2.0.21、Jetpack Compose、Material 3
 - Android: AGP 8.7.3、compileSdk/targetSdk 35、minSdk 26、Java/JVM 17
 - DI／状態管理: Hilt 2.52、ViewModel、Coroutines/Flow、SavedStateHandle
-- DB: Room 2.6.1、KSP、DB名 `warun-accounting.db`、schema version 12
+- DB: Room 2.6.1、KSP、DB名 `warun-accounting.db`、schema version 13
 - カメラ: CameraX 1.5.3
 - OCR: ML Kit Japanese Text Recognition 16.0.1
 - Gradle Wrapper: 9.3.0
@@ -46,7 +46,7 @@
 - `ExpenseRecord` による支出明細、支払先候補、支払方法、個別保存
 - 日報と支出のTransaction保存、および未保存入力の画面遷移ガード
 - 支出日と日報日が異なる未保存支出を一括保存せず、個別保存へ誘導する安全ガード
-- Roomによる端末内永続化と、schema 6〜12のMigration
+- Roomによる端末内永続化と、schema 6〜13のMigration
 - CameraXによる支出レシート撮影、内部pending領域へのJPEG保存、再撮影／破棄時の清掃
 - ML Kitによる日本語OCR全文取得
 - OCR全文から店舗名、購入日時、合計金額の候補抽出
@@ -208,13 +208,14 @@ Safety, correctness, data integrity, and auditability take priority over speed a
 
 ## Room、Migration、保存仕様
 
-- 現在のRoom schema versionは12。schema JSONは `app/schemas/com.warun.accounting.data.local.WarunDatabase/` の6〜12。
+- 現在のRoom schema versionは13。schema JSONは `app/schemas/com.warun.accounting.data.local.WarunDatabase/` の6〜13。
 - 過去Migrationは既存ユーザーデータの契約である。既存Migrationや既存schema JSONを後から書き換えない。
 - schema変更が承認された場合は、Database versionを1つ上げ、新しいMigrationを追加し、新schema JSONを生成し、Migrationテストを追加する。
 - `fallbackToDestructiveMigration`を導入しない。
 - Entity変更だけ、version変更だけ、Migrationなしの状態を作らない。
 - 保存処理をComposeへ直接追加せず、ViewModel → AccountingRepository → DAOの経路を維持する。
 - 複数レコードを一体として保存する処理はTransactionとし、途中成功を許さない。
+- 保存済み支出編集は編集操作記録と編集本体を同一Room Transactionで処理し、同一operationKeyの異なるrequest fingerprintを拒否する。完了済み編集操作記録を上書きしない。
 - ReceiptRecord、ExpenseRecord、pending画像、`EvidenceRecord`は同一物として扱わない。ExpenseRecordとの関連は`ExpenseEvidenceLinkRecord`を通し、将来の証憑種別・複数ページ構造は未確定である。
 - OCRのrawText・抽出候補・編集途中の値と、`receipt-images/pending` 配下の画像は一時状態であり、正式保存済みの会計データまたは正式証憑として扱わない。将来承認される正式化処理を経るまでは、Room保存や証憑保存が完了したと表示・報告しない。
 

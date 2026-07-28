@@ -14,6 +14,7 @@ import com.warun.accounting.data.prepaid.PrepaidRepository
 import com.warun.accounting.camera.ReceiptImageImportGateway
 import com.warun.accounting.camera.ReceiptPendingImageImporter
 import com.warun.accounting.data.local.ExpensePrepaidLinkDao
+import com.warun.accounting.data.local.ExpenseEditOperationDao
 import com.warun.accounting.data.local.InitialPrepaidAccounts
 import com.warun.accounting.data.local.PrepaidAccountDao
 import com.warun.accounting.data.local.PrepaidTransactionDao
@@ -145,6 +146,34 @@ object DatabaseModule {
         override fun migrate(db: SupportSQLiteDatabase) {
             db.createPrepaidTables()
             db.insertInitialPrepaidAccounts()
+        }
+    }
+
+    internal val MIGRATION_12_13 = object : Migration(12, 13) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS expense_edit_operations (
+                    operationKey TEXT NOT NULL,
+                    expenseId TEXT NOT NULL,
+                    requestFingerprint TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    createdAt INTEGER NOT NULL,
+                    updatedAt INTEGER NOT NULL,
+                    completedAt INTEGER,
+                    resultPaymentMethod TEXT,
+                    resultPrepaidAccountId TEXT,
+                    resultAmount INTEGER,
+                    PRIMARY KEY(operationKey)
+                )
+                """.trimIndent()
+            )
+            db.execSQL(
+                """
+                CREATE INDEX IF NOT EXISTS index_expense_edit_operations_expenseId
+                ON expense_edit_operations(expenseId)
+                """.trimIndent()
+            )
         }
     }
 
@@ -349,7 +378,8 @@ object DatabaseModule {
                 MIGRATION_8_9,
                 MIGRATION_9_10,
                 MIGRATION_10_11,
-                MIGRATION_11_12
+                MIGRATION_11_12,
+                MIGRATION_12_13
             )
             .addCallback(PREPAID_DATABASE_CALLBACK)
             .build()
@@ -369,6 +399,10 @@ object DatabaseModule {
     @Provides
     fun provideExpensePrepaidLinkDao(database: WarunDatabase): ExpensePrepaidLinkDao =
         database.expensePrepaidLinkDao()
+
+    @Provides
+    fun provideExpenseEditOperationDao(database: WarunDatabase): ExpenseEditOperationDao =
+        database.expenseEditOperationDao()
 }
 
 private fun SupportSQLiteDatabase.createPrepaidTables() {
