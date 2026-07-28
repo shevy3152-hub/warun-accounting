@@ -16,9 +16,10 @@ import androidx.room.RoomDatabase
         PrepaidAccountRecord::class,
         PrepaidTransactionRecord::class,
         ExpensePrepaidLinkRecord::class,
-        ExpenseEditOperationRecord::class
+        ExpenseEditOperationRecord::class,
+        ExpenseCancellationRecord::class
     ],
-    version = 13,
+    version = 14,
     exportSchema = true
 )
 abstract class WarunDatabase : RoomDatabase() {
@@ -27,4 +28,5 @@ abstract class WarunDatabase : RoomDatabase() {
     abstract fun prepaidTransactionDao(): PrepaidTransactionDao
     abstract fun expensePrepaidLinkDao(): ExpensePrepaidLinkDao
     abstract fun expenseEditOperationDao(): ExpenseEditOperationDao
+    abstract fun expenseCancellationDao(): ExpenseCancellationDao
 }

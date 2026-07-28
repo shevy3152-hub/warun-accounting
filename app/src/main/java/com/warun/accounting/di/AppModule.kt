@@ -15,6 +15,7 @@ import com.warun.accounting.camera.ReceiptImageImportGateway
 import com.warun.accounting.camera.ReceiptPendingImageImporter
 import com.warun.accounting.data.local.ExpensePrepaidLinkDao
 import com.warun.accounting.data.local.ExpenseEditOperationDao
+import com.warun.accounting.data.local.ExpenseCancellationDao
 import com.warun.accounting.data.local.InitialPrepaidAccounts
 import com.warun.accounting.data.local.PrepaidAccountDao
 import com.warun.accounting.data.local.PrepaidTransactionDao
@@ -172,6 +173,52 @@ object DatabaseModule {
                 """
                 CREATE INDEX IF NOT EXISTS index_expense_edit_operations_expenseId
                 ON expense_edit_operations(expenseId)
+                """.trimIndent()
+            )
+        }
+    }
+
+    internal val MIGRATION_13_14 = object : Migration(13, 14) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS expense_cancellations (
+                    expenseId TEXT NOT NULL,
+                    operationKey TEXT NOT NULL,
+                    requestFingerprint TEXT NOT NULL,
+                    originalPurchaseTransactionId TEXT NOT NULL,
+                    reversalTransactionId TEXT NOT NULL,
+                    cancellationDate TEXT NOT NULL,
+                    cancelledAt INTEGER NOT NULL,
+                    reason TEXT,
+                    PRIMARY KEY(expenseId),
+                    FOREIGN KEY(expenseId) REFERENCES expense_records(id)
+                        ON UPDATE RESTRICT ON DELETE RESTRICT,
+                    FOREIGN KEY(originalPurchaseTransactionId) REFERENCES prepaid_transactions(id)
+                        ON UPDATE RESTRICT ON DELETE RESTRICT,
+                    FOREIGN KEY(reversalTransactionId) REFERENCES prepaid_transactions(id)
+                        ON UPDATE RESTRICT ON DELETE RESTRICT
+                )
+                """.trimIndent()
+            )
+            db.execSQL(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS index_expense_cancellations_operationKey
+                ON expense_cancellations(operationKey)
+                """.trimIndent()
+            )
+            db.execSQL(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                    index_expense_cancellations_originalPurchaseTransactionId
+                ON expense_cancellations(originalPurchaseTransactionId)
+                """.trimIndent()
+            )
+            db.execSQL(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                    index_expense_cancellations_reversalTransactionId
+                ON expense_cancellations(reversalTransactionId)
                 """.trimIndent()
             )
         }
@@ -379,7 +426,8 @@ object DatabaseModule {
                 MIGRATION_9_10,
                 MIGRATION_10_11,
                 MIGRATION_11_12,
-                MIGRATION_12_13
+                MIGRATION_12_13,
+                MIGRATION_13_14
             )
             .addCallback(PREPAID_DATABASE_CALLBACK)
             .build()
@@ -403,6 +451,10 @@ object DatabaseModule {
     @Provides
     fun provideExpenseEditOperationDao(database: WarunDatabase): ExpenseEditOperationDao =
         database.expenseEditOperationDao()
+
+    @Provides
+    fun provideExpenseCancellationDao(database: WarunDatabase): ExpenseCancellationDao =
+        database.expenseCancellationDao()
 }
 
 private fun SupportSQLiteDatabase.createPrepaidTables() {
