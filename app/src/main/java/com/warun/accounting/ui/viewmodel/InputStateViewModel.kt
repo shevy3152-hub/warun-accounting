@@ -9,6 +9,8 @@ import com.warun.accounting.data.local.DailyReportStatus
 import com.warun.accounting.data.local.ExpenseSourceType
 import com.warun.accounting.ui.receipt.ReceiptOcrApplyResult
 import com.warun.accounting.ui.receipt.planReceiptOcrMerge
+import com.warun.accounting.util.PaymentMethodPrepaid
+import com.warun.accounting.util.normalizePaymentMethod
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.util.UUID
 import javax.inject.Inject
@@ -30,6 +32,8 @@ class InputStateViewModel @Inject constructor(
         const val AppliedOcrCaptureIdKey = "input.expense.appliedOcrCaptureId"
         const val PrepaidOperationKey = "input.expense.prepaidOperationKey"
         const val PrepaidOperationOwnerKey = "input.expense.prepaidOperationOwner"
+        const val ExpenseSaveAttemptSignatureKey = "input.expense.saveAttemptSignature"
+        const val ExpenseSaveAttemptOwnerKey = "input.expense.saveAttemptOwner"
         const val ReceiptInputKey = "input.receipt"
     }
 
@@ -141,6 +145,46 @@ class InputStateViewModel @Inject constructor(
         }
     }
 
+    fun abandonExpenseSaveSession(expenseId: String) {
+        clearPrepaidOperationFor(expenseId)
+    }
+
+    fun prepareExpenseSave(
+        input: ExpenseInput,
+        pendingCapture: ReceiptCaptureResult?
+    ): ExpenseInput {
+        require(input.id.isNotBlank())
+        val normalized = input.copy(
+            paymentMethod = normalizePaymentMethod(input.paymentMethod),
+            prepaidAccountId = input.prepaidAccountId.takeIf {
+                normalizePaymentMethod(input.paymentMethod) == PaymentMethodPrepaid
+            }.orEmpty()
+        )
+        val signature = expenseSaveAttemptSignature(
+            input = normalized,
+            captureId = pendingCapture?.captureId
+        )
+        val savedOwner = savedStateHandle.get<String>(ExpenseSaveAttemptOwnerKey)
+        val savedSignature = savedStateHandle.get<String>(ExpenseSaveAttemptSignatureKey)
+        var operationKey = prepaidOperationKeyFor(normalized.id)
+        if (
+            savedOwner == normalized.id &&
+            savedSignature != null &&
+            savedSignature != signature
+        ) {
+            operationKey = UUID.randomUUID().toString()
+            savedStateHandle[PrepaidOperationOwnerKey] = normalized.id
+            savedStateHandle[PrepaidOperationKey] = operationKey
+        }
+        savedStateHandle[ExpenseSaveAttemptOwnerKey] = normalized.id
+        savedStateHandle[ExpenseSaveAttemptSignatureKey] = signature
+        return normalized.copy(prepaidOperationKey = operationKey).also { prepared ->
+            if (draftExpenseInputState.value?.id == prepared.id) {
+                draftExpenseInputState.value = prepared
+            }
+        }
+    }
+
     fun completeReceiptSave(): ReceiptInput {
         val next = newReceiptInput()
         receiptInputState.value = next
@@ -196,6 +240,13 @@ class InputStateViewModel @Inject constructor(
             savedStateHandle.remove<String>(PrepaidOperationOwnerKey)
             savedStateHandle.remove<String>(PrepaidOperationKey)
         }
+        if (
+            !expenseId.isNullOrBlank() &&
+            savedStateHandle.get<String>(ExpenseSaveAttemptOwnerKey) == expenseId
+        ) {
+            savedStateHandle.remove<String>(ExpenseSaveAttemptOwnerKey)
+            savedStateHandle.remove<String>(ExpenseSaveAttemptSignatureKey)
+        }
     }
 
     private fun newReceiptInput() = ReceiptInput(
@@ -222,6 +273,36 @@ class InputStateViewModel @Inject constructor(
         encode: (T) -> ArrayList<String>
     ): MutableState<T?> = PersistedMutableState(initialValue) { value ->
         if (value == null) savedStateHandle.remove<ArrayList<String>>(key) else savedStateHandle[key] = encode(value)
+    }
+}
+
+internal fun expenseSaveAttemptSignature(
+    input: ExpenseInput,
+    captureId: String?
+): String = buildString {
+    listOf(
+        input.id,
+        input.expenseDate,
+        input.category,
+        input.supplierName,
+        input.amount,
+        normalizePaymentMethod(input.paymentMethod),
+        input.prepaidAccountId.takeIf {
+            normalizePaymentMethod(input.paymentMethod) == PaymentMethodPrepaid
+        },
+        input.memo,
+        input.receiptId,
+        input.sourceType,
+        captureId
+    ).forEach { value ->
+        if (value == null) {
+            append("-1:")
+        } else {
+            append(value.length)
+            append(':')
+            append(value)
+        }
+        append('|')
     }
 }
 

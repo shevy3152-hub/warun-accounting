@@ -78,6 +78,73 @@ class InputStateViewModelTest {
     }
 
     @Test
+    fun expenseSaveOperationRestoresAndRotatesOnlyAfterAttemptedContentChanges() {
+        val handle = SavedStateHandle()
+        val first = InputStateViewModel(handle)
+        val input = ExpenseInput(
+            id = "saved-expense",
+            expenseDate = "2026-07-28",
+            category = "other_expense",
+            supplierName = "supplier",
+            amount = "500",
+            paymentMethod = "プリペイド",
+            memo = "memo",
+            createdAt = 1L,
+            prepaidAccountId = "prepaid-majica",
+            prepaidOperationKey = first.prepaidOperationKeyFor("saved-expense")
+        )
+        first.draftExpenseInputState.value = input
+
+        val firstAttempt = first.prepareExpenseSave(input, null)
+        val restored = InputStateViewModel(handle)
+        val retry = restored.prepareExpenseSave(
+            requireNotNull(restored.draftExpenseInputState.value),
+            null
+        )
+        val changed = restored.prepareExpenseSave(
+            retry.copy(amount = "700"),
+            null
+        )
+
+        assertEquals(firstAttempt.prepaidOperationKey, retry.prepaidOperationKey)
+        assertNotEquals(retry.prepaidOperationKey, changed.prepaidOperationKey)
+        assertEquals(
+            changed.prepaidOperationKey,
+            InputStateViewModel(handle).draftExpenseInputState.value?.prepaidOperationKey
+        )
+    }
+
+    @Test
+    fun failedSaveKeepsOperationAndNonPrepaidPreparationClearsAccountId() {
+        val handle = SavedStateHandle()
+        val state = InputStateViewModel(handle)
+        val input = ExpenseInput(
+            id = "saved-expense",
+            amount = "500",
+            paymentMethod = "現金",
+            createdAt = 1L,
+            prepaidAccountId = "stale-account",
+            prepaidOperationKey = state.prepaidOperationKeyFor("saved-expense")
+        )
+
+        val first = state.prepareExpenseSave(input, null)
+        val retry = state.prepareExpenseSave(first, null)
+
+        assertEquals("", first.prepaidAccountId)
+        assertEquals(first.prepaidOperationKey, retry.prepaidOperationKey)
+    }
+
+    @Test
+    fun abandoningEditSessionCreatesANewOperationKeyWhenReopened() {
+        val state = InputStateViewModel(SavedStateHandle())
+        val first = state.prepaidOperationKeyFor("saved-expense")
+
+        state.abandonExpenseSaveSession("saved-expense")
+
+        assertNotEquals(first, state.prepaidOperationKeyFor("saved-expense"))
+    }
+
+    @Test
     fun ocrMergePreservesPrepaidSelectionAndOperationKey() {
         val state = InputStateViewModel(SavedStateHandle())
         state.draftExpenseInputState.value = ExpenseInput(

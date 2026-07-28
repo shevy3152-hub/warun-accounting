@@ -180,6 +180,18 @@ interface WarunDao {
         check(updated == 1) { "Evidence metadata does not match the stored file" }
     }
 
+    @Transaction
+    suspend fun addEvidenceToExpense(
+        expenseId: String,
+        evidence: EvidenceRecord,
+        link: ExpenseEvidenceLinkRecord
+    ) {
+        check(getExpenseRecord(expenseId) != null) { "Evidence owner expense does not exist" }
+        require(link.expenseId == expenseId && link.evidenceId == evidence.id)
+        ensureEvidence(evidence)
+        ensureEvidenceLink(link)
+    }
+
     private suspend fun ensureEvidence(evidence: EvidenceRecord) {
         insertEvidenceRecord(evidence)
         val existing = getEvidenceRecord(evidence.id)

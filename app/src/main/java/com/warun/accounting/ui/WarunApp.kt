@@ -110,6 +110,10 @@ import com.warun.accounting.data.local.PrepaidAccountBalance
 import com.warun.accounting.data.local.PrepaidAccountRecord
 import com.warun.accounting.data.local.ExpensePrepaidLinkRecord
 import com.warun.accounting.data.local.PrepaidTransactionRecord
+import com.warun.accounting.data.edit.ExpenseEditOperationException
+import com.warun.accounting.data.edit.ExpenseEditOperationFailure
+import com.warun.accounting.data.edit.SavedExpenseEditException
+import com.warun.accounting.data.edit.SavedExpenseEditFailure
 import com.warun.accounting.data.prepaid.netCashChargeAmount
 import com.warun.accounting.data.prepaid.PrepaidValidationException
 import com.warun.accounting.data.prepaid.PrepaidValidationFailure
@@ -1603,18 +1607,19 @@ private fun ReportEntryScreen(
         if (expenseSaveInProgress) return
         expenseSaveInProgress = true
         val evidenceCapture = inputStateViewModel.pendingCaptureFor(input.id)
-        onSaveExpense(input, evidenceCapture) { result ->
+        val preparedInput = inputStateViewModel.prepareExpenseSave(input, evidenceCapture)
+        onSaveExpense(preparedInput, evidenceCapture) { result ->
             expenseSaveInProgress = false
             if (result.isSuccess) {
                 if (evidenceCapture != null) {
                     inputStateViewModel.markPendingEvidenceStored(
-                        expenseId = input.id,
+                        expenseId = preparedInput.id,
                         captureId = evidenceCapture.captureId
                     )
                 }
                 inputStateViewModel.markExpenseSaveSucceeded(
-                    expenseId = input.id,
-                    operationKey = input.prepaidOperationKey
+                    expenseId = preparedInput.id,
+                    operationKey = preparedInput.prepaidOperationKey
                 )
             }
             onResult(result)
@@ -1847,6 +1852,7 @@ private fun ReportEntryScreen(
             supplierCandidates = uiState.supplierCandidates,
             prepaidExpenseUi = prepaidExpenseUi,
             prepaidOperationKeyFor = inputStateViewModel::prepaidOperationKeyFor,
+            onAbandonExpenseSaveSession = inputStateViewModel::abandonExpenseSaveSession,
             enteredReportDates = enteredReportDates,
             onInputChange = { reportInput = it },
             onUtilityInputChange = { nextInput, editedValue ->
@@ -1882,6 +1888,7 @@ private fun DailyReportForm(
     supplierCandidates: List<SupplierCandidateRecord>,
     prepaidExpenseUi: PrepaidExpenseUiSnapshot,
     prepaidOperationKeyFor: (String) -> String,
+    onAbandonExpenseSaveSession: (String) -> Unit,
     enteredReportDates: Set<String>,
     onInputChange: (DailyReportInput) -> Unit,
     onUtilityInputChange: (DailyReportInput, String) -> Unit,
@@ -1924,6 +1931,7 @@ private fun DailyReportForm(
                 supplierCandidates = supplierCandidates,
                 prepaidExpenseUi = prepaidExpenseUi,
                 prepaidOperationKeyFor = prepaidOperationKeyFor,
+                onAbandonExpenseSaveSession = onAbandonExpenseSaveSession,
                 expenseTotal = totals.expenseTotal,
                 todayBalance = totals.todayBalance,
                 onInputChange = onInputChange,
@@ -2216,6 +2224,7 @@ private fun ExpenseCard(
     supplierCandidates: List<SupplierCandidateRecord>,
     prepaidExpenseUi: PrepaidExpenseUiSnapshot,
     prepaidOperationKeyFor: (String) -> String,
+    onAbandonExpenseSaveSession: (String) -> Unit,
     onAddSupplierCandidate: (String, String, String) -> Unit,
     onHideSupplierCandidate: (SupplierCandidateRecord) -> Unit,
     onOpenReceiptCamera: () -> Unit,
@@ -2261,6 +2270,7 @@ private fun ExpenseCard(
                         supplierCandidates = supplierCandidates,
                         prepaidExpenseUi = prepaidExpenseUi,
                         prepaidOperationKeyFor = prepaidOperationKeyFor,
+                        onAbandonExpenseSaveSession = onAbandonExpenseSaveSession,
                         onAddSupplierCandidate = onAddSupplierCandidate,
                         onHideSupplierCandidate = onHideSupplierCandidate,
                         onOpenReceiptCamera = onOpenReceiptCamera,
@@ -2299,6 +2309,7 @@ private fun ExpenseCard(
                         supplierCandidates = supplierCandidates,
                         prepaidExpenseUi = prepaidExpenseUi,
                         prepaidOperationKeyFor = prepaidOperationKeyFor,
+                        onAbandonExpenseSaveSession = onAbandonExpenseSaveSession,
                         onClose = { selectedCategory = null },
                         onSaveExpense = onSaveExpense,
                         onDeleteExpense = onDeleteExpense,
@@ -2346,6 +2357,7 @@ private fun ExpenseCard(
                         supplierCandidates = supplierCandidates,
                         prepaidExpenseUi = prepaidExpenseUi,
                         prepaidOperationKeyFor = prepaidOperationKeyFor,
+                        onAbandonExpenseSaveSession = onAbandonExpenseSaveSession,
                         onClose = { selectedCategory = null },
                         onSaveExpense = onSaveExpense,
                         onDeleteExpense = onDeleteExpense,
@@ -2378,6 +2390,7 @@ private fun ExpenseCard(
                         supplierCandidates = supplierCandidates,
                         prepaidExpenseUi = prepaidExpenseUi,
                         prepaidOperationKeyFor = prepaidOperationKeyFor,
+                        onAbandonExpenseSaveSession = onAbandonExpenseSaveSession,
                         onAddSupplierCandidate = onAddSupplierCandidate,
                         onHideSupplierCandidate = onHideSupplierCandidate,
                         onOpenReceiptCamera = onOpenReceiptCamera,
@@ -2426,6 +2439,7 @@ private fun ExpenseDetailPanel(
     expenseEvidence: List<ExpenseEvidenceRecord>,
     prepaidExpenseUi: PrepaidExpenseUiSnapshot,
     prepaidOperationKeyFor: (String) -> String,
+    onAbandonExpenseSaveSession: (String) -> Unit,
     onClose: () -> Unit,
     onSaveExpense: (ExpenseInput, (Result<Unit>) -> Unit) -> Unit,
     onDeleteExpense: (ExpenseRecord) -> Unit,
@@ -2457,6 +2471,8 @@ private fun ExpenseDetailPanel(
         ) {
             Text("${expenseCategoryLabel(category)} 明細", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
             OutlinedButton(onClick = {
+                (editingExpense?.id ?: restoredDraft?.id)
+                    ?.let(onAbandonExpenseSaveSession)
                 onDirtyChanged(false)
                 onDraftExpenseChanged(null)
                 onClose()
@@ -2480,6 +2496,8 @@ private fun ExpenseDetailPanel(
             }
         }
         Button(onClick = {
+            (editingExpense?.id ?: restoredDraft?.id)
+                ?.let(onAbandonExpenseSaveSession)
             editingExpense = null
             onDirtyChanged(false)
             onDraftExpenseChanged(null)
@@ -2498,6 +2516,7 @@ private fun ExpenseDetailPanel(
                     .orEmpty(),
                 prepaidExpenseUi = prepaidExpenseUi,
                 prepaidOperationKeyFor = prepaidOperationKeyFor,
+                onAbandonExpenseSaveSession = onAbandonExpenseSaveSession,
                 resetKey = formResetKey,
                 supplierCandidates = supplierCandidates,
                 onHideSupplierCandidate = onHideSupplierCandidate,
@@ -2577,8 +2596,30 @@ private fun ExpenseDetailPanel(
     }
 }
 
-internal fun expenseSaveFailureMessage(error: Throwable?): String =
-    when ((error as? PrepaidValidationException)?.failure) {
+internal fun expenseSaveFailureMessage(error: Throwable?): String {
+    (error as? ExpenseEditOperationException)?.let { operationError ->
+        return when (operationError.failure) {
+            ExpenseEditOperationFailure.OperationConflict ->
+                "同じ編集操作で内容が変更されました。入力内容を確認して、もう一度保存してください。"
+            ExpenseEditOperationFailure.OperationStateCorrupted ->
+                "編集操作の状態を確認できません。支出データは変更されていません。"
+            else ->
+                "支出の編集を保存できませんでした。入力内容を確認してください。"
+        }
+    }
+    (error as? SavedExpenseEditException)?.let { editError ->
+        return when (editError.failure) {
+            SavedExpenseEditFailure.ExpenseNotFound ->
+                "編集対象の支出が見つかりません。支出一覧を確認してください。"
+            SavedExpenseEditFailure.ExistingPrepaidStateInconsistent ->
+                "プリペイド履歴との整合性を確認できないため、支出データは変更されていません。"
+            SavedExpenseEditFailure.EvidenceContentMismatch ->
+                "追加するレシート画像を確認できません。画像を選び直してください。"
+            SavedExpenseEditFailure.InvalidRequest ->
+                "編集内容が正しくないため保存できません。"
+        }
+    }
+    return when ((error as? PrepaidValidationException)?.failure) {
         PrepaidValidationFailure.AccountNotFound ->
             "選択したプリペイド口座が見つかりません。口座を選び直してください。"
         PrepaidValidationFailure.AccountInactive ->
@@ -2601,6 +2642,7 @@ internal fun expenseSaveFailureMessage(error: Throwable?): String =
         null -> "支出明細を保存できませんでした。入力内容を確認して、もう一度お試しください。"
         else -> "プリペイド支出を保存できませんでした。入力内容を確認してください。"
     }
+}
 
 @Composable
 private fun ExpenseRecordRow(
@@ -2624,7 +2666,7 @@ private fun ExpenseRecordRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
-                    "プリペイド支出の編集・削除は次の更新で対応予定です",
+                    "プリペイド支出の削除は現在対応していません",
                     color = MaterialTheme.colorScheme.tertiary
                 )
             }
@@ -2633,7 +2675,7 @@ private fun ExpenseRecordRow(
                 EvidenceThumbnailRow(evidence = evidence, onOpenEvidence = onOpenEvidence)
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onEdit, enabled = !isPrepaidExpense) { Text("編集") }
+                OutlinedButton(onClick = onEdit) { Text("編集") }
                 OutlinedButton(onClick = onDelete, enabled = !isPrepaidExpense) { Text("削除") }
             }
         }
@@ -2666,6 +2708,7 @@ private fun ExpenseRecordForm(
     editingEvidence: List<ExpenseEvidenceRecord>,
     prepaidExpenseUi: PrepaidExpenseUiSnapshot,
     prepaidOperationKeyFor: (String) -> String,
+    onAbandonExpenseSaveSession: (String) -> Unit,
     resetKey: Int,
     supplierCandidates: List<SupplierCandidateRecord>,
     onClose: () -> Unit,
@@ -2743,9 +2786,14 @@ private fun ExpenseRecordForm(
     val activePrepaidAccounts = prepaidExpenseUi.accounts.filter { it.isActive }
     val selectedPrepaidAccount =
         activePrepaidAccounts.firstOrNull { it.id == prepaidAccountId }
-    val prepaidProjection = prepaidBalanceProjection(
+    val existingPrepaidAccountId =
+        editingExpense?.let { prepaidExpenseUi.accountForExpense(it.id)?.id }
+    val prepaidProjection = prepaidBalanceProjectionForExpenseEdit(
         currentBalance = selectedPrepaidAccount?.let { prepaidExpenseUi.balanceFor(it.id) },
-        amount = parsedAmount
+        amount = parsedAmount,
+        existingAmount = editingExpense?.amount,
+        existingAccountId = existingPrepaidAccountId,
+        selectedAccountId = selectedPrepaidAccount?.id
     )
     val prepaidSelectionValid = !isPrepaidPayment ||
         (
@@ -2763,7 +2811,7 @@ private fun ExpenseRecordForm(
         receiptId = restoredReceiptId,
         sourceType = restoredInput?.sourceType ?: editingExpense?.sourceType ?: ExpenseSourceType.Manual,
         createdAt = restoredInput?.createdAt ?: editingExpense?.createdAt,
-        prepaidAccountId = prepaidAccountId,
+        prepaidAccountId = prepaidAccountId.takeIf { isPrepaidPayment }.orEmpty(),
         prepaidOperationKey = prepaidOperationKey
     )
     val shouldRetainDraft = shouldRetainExpenseDraft(
@@ -2864,7 +2912,12 @@ private fun ExpenseRecordForm(
                         shape = RoundedCornerShape(8.dp),
                         color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
                         border = BorderStroke(1.dp, if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline),
-                        modifier = Modifier.clickable { paymentMethod = option }
+                        modifier = Modifier.clickable {
+                            paymentMethod = option
+                            if (normalizePaymentMethod(option) != PaymentMethodPrepaid) {
+                                prepaidAccountId = ""
+                            }
+                        }
                     ) {
                         Text(
                             text = option,
@@ -3001,15 +3054,27 @@ private fun ExpenseRecordForm(
                                 receiptId = restoredReceiptId,
                                 sourceType = restoredInput?.sourceType ?: editingExpense?.sourceType ?: ExpenseSourceType.Manual,
                                 createdAt = restoredInput?.createdAt ?: editingExpense?.createdAt,
-                                prepaidAccountId = prepaidAccountId,
+                                prepaidAccountId = prepaidAccountId
+                                    .takeIf { isPrepaidPayment }
+                                    .orEmpty(),
                                 prepaidOperationKey = prepaidOperationKey
                             ),
                             shouldSaveSupplierCandidate
                         )
                     }
                 ) { Text("保存") }
-                OutlinedButton(onClick = onCancel) { Text("キャンセル") }
-                OutlinedButton(onClick = onClose) { Text("閉じる") }
+                OutlinedButton(
+                    onClick = {
+                        onAbandonExpenseSaveSession(expenseId)
+                        onCancel()
+                    }
+                ) { Text("キャンセル") }
+                OutlinedButton(
+                    onClick = {
+                        onAbandonExpenseSaveSession(expenseId)
+                        onClose()
+                    }
+                ) { Text("閉じる") }
             }
         }
     }
@@ -3045,6 +3110,36 @@ internal fun prepaidBalanceProjection(
     } else {
         PrepaidBalanceProjection.Available(projected)
     }
+}
+
+internal fun prepaidBalanceProjectionForExpenseEdit(
+    currentBalance: Long?,
+    amount: Long?,
+    existingAmount: Long?,
+    existingAccountId: String?,
+    selectedAccountId: String?
+): PrepaidBalanceProjection {
+    if (currentBalance == null || amount == null || amount <= 0L) {
+        return PrepaidBalanceProjection.Invalid
+    }
+    val availableBeforePurchase = try {
+        if (
+            existingAmount != null &&
+            existingAmount > 0L &&
+            !existingAccountId.isNullOrBlank() &&
+            existingAccountId == selectedAccountId
+        ) {
+            Math.addExact(currentBalance, existingAmount)
+        } else {
+            currentBalance
+        }
+    } catch (_: ArithmeticException) {
+        return PrepaidBalanceProjection.Overflow
+    }
+    return prepaidBalanceProjection(
+        currentBalance = availableBeforePurchase,
+        amount = amount
+    )
 }
 
 internal data class ReceiptOcrMergeSummary(

@@ -5,6 +5,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.warun.accounting.camera.ReceiptCaptureResult
 import com.warun.accounting.data.AccountingRepository
+import com.warun.accounting.data.edit.ExpenseEditRepository
+import com.warun.accounting.data.edit.SavedExpenseEditRequest
 import com.warun.accounting.data.local.AppSettings
 import com.warun.accounting.data.local.DailyReport
 import com.warun.accounting.data.local.DailyReportStatus
@@ -51,6 +53,7 @@ import kotlinx.coroutines.launch
 class DashboardViewModel @Inject constructor(
     private val repository: AccountingRepository,
     private val prepaidRepository: PrepaidRepository,
+    private val expenseEditRepository: ExpenseEditRepository,
     private val evidenceSaveCoordinator: EvidenceSaveCoordinator,
     private val evidenceRecoveryNoticeController: EvidenceRecoveryNoticeController
 ) : ViewModel() {
@@ -262,39 +265,46 @@ class DashboardViewModel @Inject constructor(
                     findSavedExpense = ::findSavedExpense,
                     hasPersistedEvidenceLink = repository::hasExpenseEvidenceLink,
                     saveAccounting = { inspectedEvidence ->
-                        if (expense.paymentMethod == PaymentMethodPrepaid) {
-                            val now = System.currentTimeMillis()
+                        val now = System.currentTimeMillis()
+                        val evidenceRecord = inspectedEvidence?.toEvidenceRecord(
+                            state = EvidenceRecordState.Pending,
+                            createdAt = pendingCapture?.capturedAt ?: now,
+                            storedAt = null,
+                            updatedAt = now
+                        )
+                        val evidenceLink = inspectedEvidence?.toExpenseLink(
+                            expense.id,
+                            now
+                        )
+                        if (input.createdAt != null) {
+                            expenseEditRepository.editExpense(
+                                SavedExpenseEditRequest(
+                                    operationKey = input.prepaidOperationKey,
+                                    expense = expense,
+                                    prepaidAccountId = input.prepaidAccountId,
+                                    requestedAt = now,
+                                    newEvidence = evidenceRecord,
+                                    newEvidenceLink = evidenceLink
+                                )
+                            )
+                        } else if (expense.paymentMethod == PaymentMethodPrepaid) {
                             prepaidRepository.savePurchaseExpense(
                                 PrepaidExpensePurchaseInput(
                                     expense = expense,
                                     accountId = input.prepaidAccountId,
                                     operationKey = input.prepaidOperationKey,
                                     linkedAt = now,
-                                    evidence = inspectedEvidence?.toEvidenceRecord(
-                                        state = EvidenceRecordState.Pending,
-                                        createdAt = pendingCapture?.capturedAt ?: now,
-                                        storedAt = null,
-                                        updatedAt = now
-                                    ),
-                                    evidenceLink = inspectedEvidence?.toExpenseLink(
-                                        expense.id,
-                                        now
-                                    )
+                                    evidence = evidenceRecord,
+                                    evidenceLink = evidenceLink
                                 )
                             )
                         } else if (inspectedEvidence == null) {
                             repository.saveExpenseRecord(expense)
                         } else {
-                            val now = System.currentTimeMillis()
                             repository.saveExpenseWithEvidence(
                                 expense = expense,
-                                evidence = inspectedEvidence.toEvidenceRecord(
-                                    state = EvidenceRecordState.Pending,
-                                    createdAt = pendingCapture?.capturedAt ?: now,
-                                    storedAt = null,
-                                    updatedAt = now
-                                ),
-                                link = inspectedEvidence.toExpenseLink(expense.id, now)
+                                evidence = requireNotNull(evidenceRecord),
+                                link = requireNotNull(evidenceLink)
                             )
                         }
                     },

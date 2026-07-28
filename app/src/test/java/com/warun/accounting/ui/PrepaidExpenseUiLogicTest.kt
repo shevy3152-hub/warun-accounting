@@ -27,4 +27,28 @@ class PrepaidExpenseUiLogicTest {
                 PrepaidBalanceProjection.Overflow
         )
     }
+
+    @Test
+    fun editProjectionRestoresOldPurchaseBeforeApplyingChangedAmount() {
+        assertEquals(
+            PrepaidBalanceProjection.Available(9_300L),
+            prepaidBalanceProjectionForExpenseEdit(
+                currentBalance = 9_500L,
+                amount = 700L,
+                existingAmount = 500L,
+                existingAccountId = "prepaid-majica",
+                selectedAccountId = "prepaid-majica"
+            )
+        )
+        assertEquals(
+            PrepaidBalanceProjection.Insufficient(-100L),
+            prepaidBalanceProjectionForExpenseEdit(
+                currentBalance = 600L,
+                amount = 700L,
+                existingAmount = 500L,
+                existingAccountId = "prepaid-majica",
+                selectedAccountId = "prepaid-au-pay"
+            )
+        )
+    }
 }
