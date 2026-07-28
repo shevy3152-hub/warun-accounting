@@ -86,6 +86,82 @@
 - 外部サービスへの送信、課金を伴う操作、秘密情報の設定
 - 既存データを変更する手動DB操作
 
+## Safe batching and concise reporting
+
+Within a bounded stage, batch only independent, read-only inspections when the available execution tool supports it.
+
+Parallel execution is allowed only when all operations:
+
+- are read-only,
+- do not modify the Git working tree or index,
+- do not invoke Gradle builds or tests,
+- do not access the same database, generated output directory, cache, or mutable resource,
+- do not install, uninstall, launch, or modify apps on a device,
+- do not use ADB against the same device,
+- do not depend on one another,
+- and cannot affect the next decision.
+
+When partial failures are acceptable and every result remains useful, use a batch mechanism equivalent to Promise.allSettled and inspect every result individually.
+
+Use an all-or-fail batch mechanism equivalent to Promise.all only when any single failure must abort the entire batch.
+
+Do not split otherwise batchable, independent, read-only inspections into repeated outer tool calls without a safety or dependency reason.
+
+Keep the following sequential:
+
+- Git mutations such as add, commit, push, merge, rebase, reset, restore, and clean,
+- code or file modifications,
+- Gradle builds and tests,
+- Room Migration tests,
+- operations using the same database, build directory, cache, generated output, or mutable file,
+- APK installation and device verification,
+- all ADB operations against A90,
+- Evidence, pending, stored, Journal, Recovery, and database operations,
+- approvals, waits, retries, resumes, and adaptive investigations,
+- conflicting or interdependent mutations,
+- any operation whose result determines the next step.
+
+Do not run multiple Gradle invocations concurrently in this repository.
+
+Do not run concurrent operations against A90.
+
+Do not run Git index or working-tree mutations concurrently.
+
+When safety, independence, or shared-resource access is uncertain, run sequentially.
+
+## Token and output efficiency
+
+Keep routine progress updates brief.
+
+Do not restate unchanged repository context, safety rules, previously confirmed facts, or full task requirements.
+
+Report only:
+
+- new findings,
+- failures,
+- decisions,
+- material risks,
+- user actions required,
+- and final results.
+
+Avoid repeating full command output unless it is required to explain an error, prove a safety condition, or support a decision.
+
+Summarize successful routine checks instead of reproducing their full output.
+
+Batch related read-only inspections when safe, rather than repeating separate searches or status checks.
+
+Reuse already confirmed facts within the same task instead of re-reading or re-reporting them without a reason.
+
+Do not repeat file contents, diffs, logs, or test results that have not changed.
+
+For successful routine work, use a compact final report.
+
+For failures or safety incidents, include the relevant evidence and stop condition in sufficient detail.
+
+Never reduce validation, skip required checks, or combine unsafe operations merely to save tokens.
+
+Safety, correctness, data integrity, and auditability take priority over speed and token reduction.
+
 ## ユーザー確認が必要な停止条件
 
 以下に該当する場合は、安全な読み取り調査まで行い、変更を進めずに根拠と選択肢を報告する。
