@@ -50,7 +50,8 @@ class SavedExpenseEditRepositoryTest {
             warunDao = database.warunDao(),
             accountDao = database.prepaidAccountDao(),
             transactionDao = database.prepaidTransactionDao(),
-            prepaidLinkDao = database.expensePrepaidLinkDao()
+            prepaidLinkDao = database.expensePrepaidLinkDao(),
+            cancellationDao = database.expenseCancellationDao()
         )
         insertAccount(PrepaidAccountId.Majica, PrepaidAccountType.Majica)
         insertAccount(PrepaidAccountId.AuPayPrepaid, PrepaidAccountType.AuPayPrepaid)

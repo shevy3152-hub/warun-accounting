@@ -2,6 +2,7 @@ package com.warun.accounting.data.edit
 
 import com.warun.accounting.data.local.EvidenceRecord
 import com.warun.accounting.data.local.ExpenseEvidenceLinkRecord
+import com.warun.accounting.data.local.ExpenseCancellationDao
 import com.warun.accounting.data.local.ExpensePrepaidLinkDao
 import com.warun.accounting.data.local.ExpensePrepaidLinkRecord
 import com.warun.accounting.data.local.ExpenseRecord
@@ -82,12 +83,17 @@ class SavedExpenseEditException(
     val failure: SavedExpenseEditFailure
 ) : IllegalStateException(failure.name)
 
+class CancelledExpenseEditException(
+    val expenseId: String
+) : IllegalStateException("ExpenseCancelled")
+
 class ExpenseEditRepository @Inject constructor(
     private val operationExecutor: ExpenseEditOperationExecutor,
     private val warunDao: WarunDao,
     private val accountDao: PrepaidAccountDao,
     private val transactionDao: PrepaidTransactionDao,
-    private val prepaidLinkDao: ExpensePrepaidLinkDao
+    private val prepaidLinkDao: ExpensePrepaidLinkDao,
+    private val cancellationDao: ExpenseCancellationDao
 ) {
     suspend fun editExpense(request: SavedExpenseEditRequest): SavedExpenseEditResult {
         val normalized = request.normalized()
@@ -96,7 +102,12 @@ class ExpenseEditRepository @Inject constructor(
                 operationKey = normalized.operationKey,
                 fingerprintInput = normalized.fingerprintInput(),
                 createdAt = normalized.requestedAt
-            )
+            ),
+            precondition = {
+                if (cancellationDao.existsByExpenseId(normalized.expense.id)) {
+                    throw CancelledExpenseEditException(normalized.expense.id)
+                }
+            }
         ) {
             applyEdit(normalized)
             ExpenseEditOperationCompletion(

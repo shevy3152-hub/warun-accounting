@@ -206,6 +206,7 @@ class ExpenseEditOperationExecutor @Inject constructor(
 ) {
     suspend fun execute(
         request: ExpenseEditOperationRequest,
+        precondition: suspend () -> Unit = {},
         edit: suspend () -> ExpenseEditOperationCompletion
     ): ExpenseEditOperationExecutionResult {
         val operationKey = request.operationKey.trim()
@@ -219,6 +220,7 @@ class ExpenseEditOperationExecutor @Inject constructor(
         }
         return try {
             database.withTransaction {
+                precondition()
                 val existing = operationDao.getByOperationKey(operationKey)
                 if (existing != null) {
                     return@withTransaction existingResult(
