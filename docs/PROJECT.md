@@ -2,9 +2,9 @@
 
 この文書は、新しく参加した開発者やAIが、現在のシステム構成、データの流れ、実装済み範囲、未実装範囲を短時間で把握するための入口です。詳細な作業規約は `AGENTS.md`、今後の優先順位と完了条件は `docs/ROADMAP.md` を参照してください。
 
-- 基準日: 2026-07-22
+- 基準日: 2026-07-29
 - 基準ブランチ: `feature/ui-foundation`
-- 基準HEAD: `79e2e24 docs: add development roadmap`
+- 基準HEAD: `31fd7ce Add prepaid expense cancellation UI and audit view`
 - Android本体: `app/`
 - ルートの `index.html`、`styles.css`、`app.js` は参考用Webプロトタイプ
 
@@ -43,7 +43,7 @@
 | 言語・UI | Kotlin 2.0.21、Jetpack Compose、Material 3 |
 | Android | AGP 8.7.3、compileSdk/targetSdk 35、minSdk 26、Java/JVM 17 |
 | DI・状態 | Hilt 2.52、ViewModel、Coroutines/Flow、SavedStateHandle |
-| DB | Room 2.6.1、KSP、`warun-accounting.db`、schema version 11 |
+| DB | Room 2.6.1、KSP、`warun-accounting.db`、schema version 14 |
 | カメラ | CameraX 1.5.3 |
 | OCR | ML Kit Japanese Text Recognition 16.0.1 |
 
@@ -101,6 +101,16 @@ CameraX、ML Kit、ReceiptParserはこの保存レイヤーと責務を分離し
 
 通常のReceiptRecord保存、およびReceiptRecordとExpenseRecordのTransaction保存経路は存在します。ただし、現在のOCRレビュー経路はReceiptRecordを保存しません。また、ReceiptRecord自体は正式画像のパスや共通証憑参照を持っていません。
 
+#### プリペイド台帳と取消
+
+- `PrepaidAccountRecord`: プリペイド口座。
+- `PrepaidTransactionRecord`: CHARGE、PURCHASE、REVERSALを記録する不変台帳。
+- `ExpensePrepaidLinkRecord`: ExpenseRecordと現在のPURCHASEを関連付ける。
+- `ExpenseEditOperationRecord`: 保存済み支出編集のoperationKey、fingerprint、完了状態を保持する。
+- `ExpenseCancellationRecord`: 元Expense、元PURCHASE、REVERSAL、取消理由と永続的冪等性情報を関連付ける。
+
+PURCHASEを物理削除・上書きせず、編集・取消はREVERSALと必要な新PURCHASEで履歴を残します。取消時も元Expense、Link、Evidenceを保持し、通常表示と監査表示を分離します。
+
 #### 補助データ
 
 - `SupplierCandidateRecord`: カテゴリ別の支払先候補と既定支払方法。
@@ -109,10 +119,11 @@ CameraX、ML Kit、ReceiptParserはこの保存レイヤーと責務を分離し
 
 ### Room
 
-- `WarunDatabase`の現在versionは10。
-- schema JSONはversion 6、7、8、9、10を保持。
-- `MIGRATION_6_7`、`MIGRATION_7_8`、`MIGRATION_8_9`、`MIGRATION_9_10`を明示登録。
-- destructive migrationは使用しない。
+- `WarunDatabase`の現在versionは14。
+- schema JSONはversion 6〜14を保持。
+- `MIGRATION_6_7`〜`MIGRATION_13_14`を明示登録。
+- 13→14は`expense_cancellations`と一意Indexだけを追加し、既存テーブルへのALTER／UPDATE／backfillは行わない。
+- `fallbackToDestructiveMigration`は使用しない。
 - DAOにはFlowによる監視、単体保存、削除、日報＋支出、ReceiptRecord＋支出のTransactionがある。
 
 既存Migrationと既存schema JSONは変更せず、新しいschema変更には新version、新Migration、新schema JSON、Migrationテストが必要です。
@@ -126,6 +137,8 @@ CameraX、ML Kit、ReceiptParserはこの保存レイヤーと責務を分離し
 - 日報、支出、ReceiptRecord、支払先候補、月別提出状況、設定のFlow監視。
 - 日報、支出、ReceiptRecord、設定等の保存・削除。
 - 日報＋支出、ReceiptRecord＋支出のTransaction経路の維持。
+- プリペイド支出の新規保存、保存済み支出編集、論理取消を、台帳・Link・Evidence・operation記録とともにTransaction処理する。
+- 取消済みExpenseの監査取得と、active Expenseの通常取得を分離する。
 
 ComposeからDAOを直接呼ばず、ViewModelからRepositoryを経由します。
 
@@ -135,6 +148,9 @@ ComposeからDAOを直接呼ばず、ViewModelからRepositoryを経由します
 - `InputStateViewModel`: 日報入力、支出下書き、Receipt入力、OCR反映後のcapture参照をSavedStateHandleで保持する。
 - `ReceiptCameraViewModel`: Idle、Initializing、Previewing、Capturing、Captured、Errorの純粋なカメラUI状態を管理する。
 - `ReceiptOcrViewModel`: OCRの実行、成功・空結果・失敗、多重実行防止、Parser結果、編集レビュー、状態復元を管理する。
+- `PrepaidViewModel`: 口座、残高、チャージ、プリペイド支出入力を管理する。
+- `ExpenseCancellationViewModel`: 取消snapshot、operationKey、理由、保存中状態、失敗分類、再送をSavedStateHandleとともに管理する。
+- `ExpenseCancellationAuditViewModel`: 日付別の取消済み支出と台帳・Evidenceの監査表示を提供する。
 
 Activity、Context、View、PreviewView、LifecycleOwnerはViewModelへ保持しません。
 
@@ -242,8 +258,44 @@ OCR反映時点で保持されるのはcapture参照だけです。「支出入�
 - `EvidenceRecord`と`ExpenseEvidenceLinkRecord`によるExpenseRecordとの永続リンク。
 - 保存済み支出からのレシート件数表示、画像表示、ピンチ拡大・移動。
 - 今日・今月の売上、支出、差額、現金関連値、客単価等の基本表示。
-- Room version 11とschema 6〜11のMigration経路。
+- 新規プリペイド支出のExpense／PURCHASE／Link／EvidenceのTransaction保存。
+- 保存済み支出の金額・口座・プリペイド属性変更、REVERSALと新PURCHASE、Link遷移、Evidence追加、永続的冪等性、SavedState復元。
+- 保存済みプリペイド支出の論理取消、REVERSALによる残高復元、通常一覧・集計からの除外、legacy fallback再計上防止、日報詳細の監査表示。
+- Room version 14とschema 6〜14のMigration経路。
 - JVMテストとAndroidテストによる計算、状態保持、OCR、Parser、Transaction、Migrationの検証基盤。
+
+## Phase C-3 完了記録
+
+### C-3A 新規プリペイド支出
+
+- 新規ExpenseRecord、PURCHASE、ExpensePrepaidLinkを作成する。
+- Expense、Evidence、プリペイド台帳を同一の保存経路でTransaction処理する。
+
+### C-3B 保存済み支出編集
+
+- 金額変更、プリペイド口座変更、プリペイドから非プリペイド、非プリペイドからプリペイドへの変更に対応する。
+- 元PURCHASEを不変に保ち、REVERSALと必要な新PURCHASEを追加してExpensePrepaidLinkを遷移させる。
+- Evidence追加、operationKey／request fingerprintによる永続的冪等性、SavedState復元に対応する。
+
+### C-3C 保存済みプリペイド支出の論理取消
+
+- `ExpenseCancellationRecord`で元Expense、元PURCHASE、REVERSALを追跡する。
+- 元Expense、元PURCHASE、ExpensePrepaidLink、Evidenceを保持し、REVERSALで残高を復元する。
+- 同一operationKey・同一fingerprintの再送を冪等化し、Conflict、AlreadyCancelled、StaleState、台帳不整合、DB失敗を区別する。
+- Expense取消記録、REVERSAL、operation完了を同一Room Transactionで保存し、失敗時はrollbackする。
+- 取消済みExpenseの編集・再取消を拒否し、通常一覧・日次・月次・期間・現金・税理士提出・経営分析から除外する。
+- active Expenseがなく取消済みExpenseだけがある日付・カテゴリでは0円とし、DailyReportのlegacy値を再計上しない。
+- 取消Dialogと日報詳細の読取専用監査表示を実装し、Evidenceサムネイル、stored画像、ズーム、パンを再利用する。
+
+### 最終検証
+
+- JVMテスト328件PASS。
+- Android Roomテストは各対象フェーズで、C-3B 10件、C-3C1 5件、C-3C2 11件、C-3C3A 2件、C-3C3B 3件、C-3C3D 14件PASS。対象が重複するため総数として単純合算しない。
+- Debug APKとinstrumented test APKの生成PASS。
+- A90ではInstrumentationを実行せず、通常版Debug APKの`adb install -r`と手動受入だけを実施した。
+- A90の既存データを保持し、Room version 14、`integrity_check`の`ok`を確認した。
+- A90 1200×1920でDialog表示、スクロール、IME、回転、取消、集計、監査、Evidence、再起動後の保持を確認した。
+- 受入用プリペイド支出300円の取消で、au PAY残高4,700円から5,000円、majica残高5,400円不変、REVERSAL 1件、Cancellation 1件、EvidenceとSHA-256一致、未完了編集operation 0件、クラッシュなしを確認した。
 
 ## 未実装
 
@@ -260,6 +312,10 @@ OCR反映時点で保持されるのはcapture参照だけです。「支出入�
 - 通帳画像管理。
 - クラウドバックアップ、同期、復元。
 - 外部AI API連携。
+- REFUND、部分返金、複数返金。
+- プリペイド口座削除。
+- ExpenseRecordの物理削除を伴う運用。
+- Journal v2とスマホ最適化。
 
 `FutureFeatureContracts.kt`に契約や候補がある機能も、Hilt bindingや実装がなければ実装済みとは扱いません。
 
@@ -284,6 +340,11 @@ OCR反映時点で保持されるのはcapture参照だけです。「支出入�
 - 保存失敗時に入力を消さない。
 - ExpenseRecordとlegacy金額を二重計上しない。
 - `expenseDate`と`reportDate`を無断で揃えない。
+- PURCHASEを物理削除・上書きせず、編集・取消はREVERSALで履歴を残す。
+- プリペイド取消でExpense、ExpensePrepaidLink、Evidenceを削除しない。
+- 取消済みExpenseは通常集計から除外し、編集・再取消を許可しない。
+- プリペイド残高はPURCHASE／REVERSALを含む台帳合計を正とし、複数レコード更新はRoom Transactionで扱う。
+- 永続的冪等性はRoom上のoperation記録とrequest fingerprintを正とする。
 
 ### 推定値と確定値
 

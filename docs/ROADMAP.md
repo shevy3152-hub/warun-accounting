@@ -2,9 +2,9 @@
 
 この文書は、現在の実装と今後の優先順位を、人間とCodexが同じ前提で判断するためのロードマップです。
 
-- 基準日: 2026-07-22
+- 基準日: 2026-07-29
 - 基準ブランチ: `feature/ui-foundation`
-- 基準HEAD: `fa125b9 docs: add project development rules`
+- 基準HEAD: `31fd7ce Add prepaid expense cancellation UI and audit view`
 - Android本体は `app/` 配下。ルートのWebプロトタイプは参考実装として扱う。
 - 現状判断は、ソースコード、テスト、Room schema、Git履歴を優先する。READMEのCameraX・OCRを未実装とする記述は現在の実装と一致しないため、現状判断には採用しない。
 - 将来Phaseは候補と完了条件を示すものであり、モデル名、DB変更、外部サービス、評価基準を確定するものではない。
@@ -59,12 +59,14 @@
 
 ### 2.3 Room・Migration
 
-- **実装済み**: 現在の`WarunDatabase`はversion 11。
-- **実装済み**: schema JSONはversion 6〜11が保存されている。
-- **実装済み**: `MIGRATION_6_7`〜`MIGRATION_10_11`を`Room.databaseBuilder(...).addMigrations(...)`へ登録している。
+- **実装済み**: 現在の`WarunDatabase`はversion 14。
+- **実装済み**: schema JSONはversion 6〜14が保存されている。
+- **実装済み**: `MIGRATION_6_7`〜`MIGRATION_13_14`を`Room.databaseBuilder(...).addMigrations(...)`へ登録している。
 - **実装済み**: 10→11では既存テーブルを変更せず、`evidence_records`と`expense_evidence_links`だけを追加するMigrationテストがある。
+- **実装済み**: 13→14では既存テーブルへのALTER／UPDATE／backfillを行わず、`expense_cancellations`と一意Indexだけを追加する。
 - **実装済み**: version 7→8のlegacy支出移行では、既存`ExpenseRecord`との一致確認、競合時rollback、二重作成防止のAndroidテストがある。
 - **一部実装**: 6→10の全開始versionを通したMigration回帰テストは、現在確認できるテスト構成だけでは網羅されていない。将来schemaを変更するときは、新Migrationとschema JSONに加えて、影響する開始versionからの移行テスト範囲を確認する。
+- `fallbackToDestructiveMigration`は使用しない。
 - 既存Migrationと既存schema JSONは履歴上の契約であり、後から書き換えない。
 
 ### 2.4 既存の経営表示
@@ -74,6 +76,15 @@
 - **一部実装**: 収支確認では日別・月別・期間指定の売上、支出、差額、現金関連値を表示する。
 - 現在の「概算利益」「概算差額」は主に売上から記録済み支出を引いた値であり、棚卸、確定原価、未登録固定費等を反映した会計上の確定利益とは扱わない。
 - 原価率、固定費回収率、損益分岐、目標残額、評価判定を一貫して計算する独立基盤は未実装。
+
+### 2.5 プリペイド管理 Phase C-3
+
+- **実装済み（C-3A）**: 新規プリペイド支出でExpense、PURCHASE、ExpensePrepaidLink、EvidenceをTransaction保存する。
+- **実装済み（C-3B）**: 保存済み支出の金額・口座・プリペイド属性変更に対応し、元PURCHASEを不変に保ってREVERSALと新PURCHASEを追加する。operationKey／fingerprintによる永続的冪等性とSavedState復元を行う。
+- **実装済み（C-3C）**: 保存済みプリペイド支出を論理取消し、元Expense、元PURCHASE、Link、Evidenceを保持したままREVERSALで残高を復元する。
+- **実装済み**: 取消済みExpenseを通常一覧・集計・編集から除外し、legacy fallbackによる再計上を防ぎ、日報詳細の監査表示から台帳とEvidenceを参照できる。
+- **実装済み**: C-3のA90最終手動受入に合格した。A90ではInstrumentationを実行せず、通常版Debug APKの`adb install -r`と手動確認だけを行った。
+- **未実装／別Phase**: REFUND、部分返金、複数返金、プリペイド口座削除、Expense物理削除、Evidence削除・差し替え、Journal v2、スマホ最適化。
 
 ## 3. 現在地
 
@@ -141,7 +152,7 @@ CameraX撮影
 
 ### Phase 4B 証憑モデルと関連付け
 
-**状態: 実装済み。最終実機受入は未完了。**
+**状態: 実装済み。最終実機受入完了。**
 
 実装済みスコープ:
 
@@ -151,6 +162,35 @@ CameraX撮影
 - 同一Evidenceの別支出への関連付け防止と、未関連Evidenceの非表示。
 
 削除、差し替え、複数画像追加UI、通帳等の複数ページ構造は未実装です。Phase 4Aで過去に保存された孤立画像は所有者を安全に特定できないため、自動関連付けしません。
+
+### Phase C-3 プリペイド支出・編集・論理取消
+
+**状態: C-3A〜C-3C3E完了。**
+
+完了スコープ:
+
+- 新規プリペイド支出のPURCHASE・Link・Evidence保存。
+- 保存済み支出の金額、口座、プリペイド属性変更と、REVERSAL・新PURCHASE・Link遷移。
+- `ExpenseCancellationRecord`とREVERSALによる保存済みプリペイド支出の論理取消。
+- 同一operationKey再送の冪等化、異fingerprintのConflict、AlreadyCancelled、StaleState、Transaction rollback。
+- 取消済みExpenseの通常一覧・集計からの除外、legacy fallback再計上防止、編集・再取消拒否。
+- 取消Dialog、日報詳細の読取専用監査表示、Evidenceサムネイル・ズーム・パン。
+
+検証:
+
+- JVMテスト328件PASS。
+- Android Roomテストは、C-3B 10件、C-3C1 5件、C-3C2 11件、C-3C3A 2件、C-3C3B 3件、C-3C3D 14件PASS。対象が重複するため単純合算しない。
+- Debug APK、instrumented test APK生成PASS。
+- A90 1200×1920でDialog、IME、スクロール、回転、取消、集計、残高、監査、Evidence、再起動後保持を確認した。
+- 受入用プリペイド支出300円の取消で、元Expense／Link／PURCHASE／Evidence保持、REVERSAL 1件、Cancellation 1件、残高復元、Evidence SHA-256一致、未完了編集operation 0件、Room `integrity_check`の`ok`を確認した。
+
+会計上の不変条件:
+
+- PURCHASEを物理削除・上書きせず、編集・取消はREVERSALで履歴を残す。
+- プリペイド取消にExpenseの物理削除を使わず、ExpensePrepaidLinkとEvidenceを監査追跡用に保持する。
+- 取消済みExpenseは通常集計から除外し、編集・再取消を許可しない。
+- プリペイド残高はPURCHASE／REVERSALの台帳合計を正とし、複数レコード更新をRoom Transactionで扱う。
+- 永続的冪等性はRoom上のoperation記録を正とする。
 
 ### Phase 5 経営指標の計算基盤
 
@@ -237,13 +277,12 @@ CSV列、文字コード、税理士側の受入形式、ファイル命名、�
 
 現在のデータ消失リスクと依存関係から、次の順を推奨します。
 
-1. **Phase 4Bの実機受入完了**
-2. **Phase 5 経営指標の計算基盤**
-3. **Phase 6 経営ダッシュボードUI**
-4. **Phase 7 税理士向け出力**
-5. **Phase 8 バックアップ・クラウド**
+1. **Phase 5 経営指標の計算基盤**
+2. **Phase 6 経営ダッシュボードUI**
+3. **Phase 7 税理士向け出力**
+4. **Phase 8 バックアップ・クラウド**
 
-Phase 4Aと4Bのコード、自動テスト、Migrationは実装済みです。実機で保存・再起動・画像再表示まで確認して受入を完了した後、Phase 5へ進みます。
+Phase 4A、4B、プリペイド管理Phase C-3は実装・受入済みです。REFUND等の別Phaseは、仕様とデータ影響を確認してから着手します。
 
 ## 6. 各Phaseの完了条件
 
@@ -330,6 +369,10 @@ Phase 4Aと4Bのコード、自動テスト、Migrationは実装済みです。�
 - pending画像の保持期限と、支出保存後に正式化できなかった場合の再開方法。
 - OCR rawText、候補、確認履歴を正式証憑メタデータとして残すか。
 
+### 保守確認
+
+- A90にはPhase C-3最終受入の開始前からpending画像が1件存在する。今回の取消処理による新規pendingではなく、現段階では削除しない。将来、Evidence Journalとの対応関係を読取専用で確認する。
+
 ### 経営指標
 
 - 固定費として扱う科目と、固定費・変動費の按分。
@@ -338,7 +381,7 @@ Phase 4Aと4Bのコード、自動テスト、Migrationは実装済みです。�
 - 棚卸入力の有無、頻度、評価方法。
 - 月間・日次売上目標の登録方法と適用開始日。
 - 経営指標の良好・注意・危険の閾値。
-- 返品、取消、値引、税、未払・前払を指標へどう反映するか。
+- REFUND、部分返金、値引、税、未払・前払を指標へどう反映するか。
 - FL比率を有効化する条件と人件費データの取得方法。
 
 ### 出力・運用

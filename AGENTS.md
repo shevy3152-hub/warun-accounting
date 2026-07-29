@@ -4,9 +4,9 @@
 
 ## 基準時点と情報源
 
-- 基準時点: 2026-07-23
+- 基準時点: 2026-07-29
 - 基準ブランチ: `feature/ui-foundation`
-- 調査時点の最新コミット: `81c659c Complete Phase 4A receipt OCR and resilient evidence persistence`
+- 調査時点の最新コミット: `31fd7ce Add prepaid expense cancellation UI and audit view`
 - 仕様判断は、現在のソースコード、テスト、Room schema JSON、直近コミット、README の順に照合する。
 - `README.md` の「まだ実装しないもの」には、すでに実装済みの CameraX と ML Kit OCR が含まれており、一部が古い。README だけを根拠に現状を後退させない。
 - CI設定、正式なリリース手順、PR規約、コードフォーマッタ／Lintの必須設定は確認できていない。未確定事項として扱い、推測で追加しない。
@@ -24,7 +24,7 @@
 - 言語／UI: Kotlin 2.0.21、Jetpack Compose、Material 3
 - Android: AGP 8.7.3、compileSdk/targetSdk 35、minSdk 26、Java/JVM 17
 - DI／状態管理: Hilt 2.52、ViewModel、Coroutines/Flow、SavedStateHandle
-- DB: Room 2.6.1、KSP、DB名 `warun-accounting.db`、schema version 13
+- DB: Room 2.6.1、KSP、DB名 `warun-accounting.db`、schema version 14
 - カメラ: CameraX 1.5.3
 - OCR: ML Kit Japanese Text Recognition 16.0.1
 - Gradle Wrapper: 9.3.0
@@ -46,13 +46,16 @@
 - `ExpenseRecord` による支出明細、支払先候補、支払方法、個別保存
 - 日報と支出のTransaction保存、および未保存入力の画面遷移ガード
 - 支出日と日報日が異なる未保存支出を一括保存せず、個別保存へ誘導する安全ガード
-- Roomによる端末内永続化と、schema 6〜13のMigration
+- Roomによる端末内永続化と、schema 6〜14のMigration
 - CameraXによる支出レシート撮影、内部pending領域へのJPEG保存、再撮影／破棄時の清掃
 - ML Kitによる日本語OCR全文取得
 - OCR全文から店舗名、購入日時、合計金額の候補抽出
 - OCR候補の確認・編集と、支払先・支出日・金額だけを既存支出下書きへ反映
 - Phase 4AジャーナルとSHA-256検証を用いたpending画像の正式化
 - `EvidenceRecord`と`ExpenseEvidenceLinkRecord`によるExpenseRecordとの永続リンク、および保存済みレシートの再表示
+- プリペイド口座、CHARGE／PURCHASE／REVERSALの不変台帳、ExpenseRecordとの永続リンク
+- 新規プリペイド支出、保存済み支出のプリペイド属性編集、保存済みプリペイド支出の論理取消
+- 取消済み支出の通常一覧・集計からの除外、legacy fallback再計上防止、日報詳細の監査表示
 
 現時点では、OCRフローからのExpenseRecord自動保存およびReceiptRecord保存、正式Evidenceの削除・差し替え、複数画像追加UI、通帳画像管理、カテゴリ／支払方法の自動判定は未実装です。Phase 4Aで過去に正式化済みでも永続リンクがない孤立画像は自動関連付けしません。通常のReceiptRecord保存経路は既に存在するため、OCRフローの未実装事項と混同しないでください。
 
@@ -208,7 +211,8 @@ Safety, correctness, data integrity, and auditability take priority over speed a
 
 ## Room、Migration、保存仕様
 
-- 現在のRoom schema versionは13。schema JSONは `app/schemas/com.warun.accounting.data.local.WarunDatabase/` の6〜13。
+- 現在のRoom schema versionは14。schema JSONは `app/schemas/com.warun.accounting.data.local.WarunDatabase/` の6〜14。
+- `MIGRATION_13_14`は`expense_cancellations`と一意Indexを追加し、既存テーブルへのALTER／UPDATE／backfillは行わない。
 - 過去Migrationは既存ユーザーデータの契約である。既存Migrationや既存schema JSONを後から書き換えない。
 - schema変更が承認された場合は、Database versionを1つ上げ、新しいMigrationを追加し、新schema JSONを生成し、Migrationテストを追加する。
 - `fallbackToDestructiveMigration`を導入しない。
@@ -216,6 +220,10 @@ Safety, correctness, data integrity, and auditability take priority over speed a
 - 保存処理をComposeへ直接追加せず、ViewModel → AccountingRepository → DAOの経路を維持する。
 - 複数レコードを一体として保存する処理はTransactionとし、途中成功を許さない。
 - 保存済み支出編集は編集操作記録と編集本体を同一Room Transactionで処理し、同一operationKeyの異なるrequest fingerprintを拒否する。完了済み編集操作記録を上書きしない。
+- プリペイド台帳のPURCHASEは物理削除・上書きしない。編集と取消はREVERSALを追加して履歴を残し、残高はPURCHASE／REVERSALを含む台帳合計を正とする。
+- プリペイド支出の取消にExpenseRecordの物理削除を使わない。元Expense、`ExpensePrepaidLinkRecord`、元PURCHASE、EvidenceとそのLinkを監査追跡用に保持する。
+- 取消済みExpenseは通常一覧・集計から除外し、編集・再取消を許可しない。監査取得と通常取得を分離する。
+- プリペイドの複数レコード更新はRoom Transactionで扱い、永続的冪等性はRoom上のoperation記録とrequest fingerprintを正とする。
 - ReceiptRecord、ExpenseRecord、pending画像、`EvidenceRecord`は同一物として扱わない。ExpenseRecordとの関連は`ExpenseEvidenceLinkRecord`を通し、将来の証憑種別・複数ページ構造は未確定である。
 - OCRのrawText・抽出候補・編集途中の値と、`receipt-images/pending` 配下の画像は一時状態であり、正式保存済みの会計データまたは正式証憑として扱わない。将来承認される正式化処理を経るまでは、Room保存や証憑保存が完了したと表示・報告しない。
 
@@ -308,6 +316,8 @@ git diff --check
 - Phase 4Aで過去に保存された孤立画像を安全に関連付ける方針
 - リリース署名、配布、バックアップ、復元、production DBの運用手順
 - CI、必須Lint／フォーマット、コードレビュー、PRの正式ルール
+- REFUND、部分返金、複数返金、プリペイド口座削除、Expense物理削除、Journal v2、スマホ最適化はPhase C-3の実装範囲外。
+- A90には受入開始前から未関連のpending画像が1件ある。今回の取消処理で作成されたものではなく、現段階では削除せず、将来Evidence Journalとの対応関係を読取専用で確認する。
 - READMEの実装状況を更新する時期と範囲
 
 これらを必要とするタスクでは、既存コードから推測して契約を固定せず、設計案と影響範囲を提示してユーザー確認を待つ。
