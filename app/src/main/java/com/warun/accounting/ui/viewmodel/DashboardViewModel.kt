@@ -131,7 +131,7 @@ class DashboardViewModel @Inject constructor(
         viewModelScope.launch {
             runCatching {
                 evidenceSaveCoordinator.recoverPendingFinalizations(
-                    savedExpenses = repository.observeExpenseRecords().first(),
+                    savedExpenses = repository.getAllExpenseRecordsForEvidenceRecovery(),
                     hasPersistedEvidenceLink = repository::hasExpenseEvidenceLink,
                     onPromoted = ::persistPromotedEvidence
                 )
@@ -195,7 +195,7 @@ class DashboardViewModel @Inject constructor(
                     expense = expense,
                     expenseDraftId = expenseInput?.id,
                     pendingCapture = pendingCapture,
-                    findSavedExpense = ::findSavedExpense,
+                    findSavedExpense = ::findExpenseForEvidenceRecovery,
                     hasPersistedEvidenceLink = repository::hasExpenseEvidenceLink,
                     saveAccounting = { inspectedEvidence ->
                         if (inspectedEvidence == null) {
@@ -262,7 +262,7 @@ class DashboardViewModel @Inject constructor(
                     expense = expense,
                     expenseDraftId = input.id,
                     pendingCapture = pendingCapture,
-                    findSavedExpense = ::findSavedExpense,
+                    findSavedExpense = ::findExpenseForEvidenceRecovery,
                     hasPersistedEvidenceLink = repository::hasExpenseEvidenceLink,
                     saveAccounting = { inspectedEvidence ->
                         val now = System.currentTimeMillis()
@@ -316,8 +316,8 @@ class DashboardViewModel @Inject constructor(
         }
     }
 
-    private suspend fun findSavedExpense(expenseId: String): ExpenseRecord? =
-        repository.observeExpenseRecords().first().firstOrNull { it.id == expenseId }
+    private suspend fun findExpenseForEvidenceRecovery(expenseId: String): ExpenseRecord? =
+        repository.getExpenseRecordForAudit(expenseId)
 
     private suspend fun persistPromotedEvidence(
         entry: EvidenceFinalizationEntry,

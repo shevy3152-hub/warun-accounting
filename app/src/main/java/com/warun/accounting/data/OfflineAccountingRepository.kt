@@ -26,6 +26,11 @@ class OfflineAccountingRepository @Inject constructor(
 
     override fun observeExpenseRecords(): Flow<List<ExpenseRecord>> = dao.observeExpenseRecords()
 
+    override fun observeCancelledExpenseRecordsForAuditByDate(
+        expenseDate: String
+    ): Flow<List<ExpenseRecord>> =
+        dao.observeCancelledExpenseRecordsForAuditByDate(expenseDate)
+
     override fun observeStoredExpenseEvidence(): Flow<List<ExpenseEvidenceRecord>> =
         dao.observeStoredExpenseEvidence()
 
@@ -43,6 +48,15 @@ class OfflineAccountingRepository @Inject constructor(
     override fun observeMonthlySubmissions(): Flow<List<MonthlySubmission>> = dao.observeMonthlySubmissions()
 
     override fun observeAppSettings(): Flow<AppSettings?> = dao.observeAppSettings()
+
+    override suspend fun getActiveExpenseRecord(expenseId: String): ExpenseRecord? =
+        dao.getActiveExpenseRecord(expenseId)
+
+    override suspend fun getExpenseRecordForAudit(expenseId: String): ExpenseRecord? =
+        dao.getExpenseRecord(expenseId)
+
+    override suspend fun getAllExpenseRecordsForEvidenceRecovery(): List<ExpenseRecord> =
+        dao.getAllExpenseRecordsForEvidenceRecovery()
 
     override suspend fun saveDailyReport(report: DailyReport) = dao.insertDailyReport(report)
 

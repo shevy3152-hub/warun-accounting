@@ -15,6 +15,7 @@ interface AccountingRepository {
     fun observeDailyReports(): Flow<List<DailyReport>>
     fun observeReceipts(): Flow<List<ReceiptRecord>>
     fun observeExpenseRecords(): Flow<List<ExpenseRecord>>
+    fun observeCancelledExpenseRecordsForAuditByDate(expenseDate: String): Flow<List<ExpenseRecord>>
     fun observeStoredExpenseEvidence(): Flow<List<ExpenseEvidenceRecord>>
     fun observeExpenseRecordsByDateAndCategory(expenseDate: String, category: String): Flow<List<ExpenseRecord>>
     fun observeExpenseTotalByDateAndCategory(expenseDate: String, category: String): Flow<Long>
@@ -22,6 +23,9 @@ interface AccountingRepository {
     fun observeVisibleSupplierCandidatesByCategory(category: String): Flow<List<SupplierCandidateRecord>>
     fun observeMonthlySubmissions(): Flow<List<MonthlySubmission>>
     fun observeAppSettings(): Flow<AppSettings?>
+    suspend fun getActiveExpenseRecord(expenseId: String): ExpenseRecord?
+    suspend fun getExpenseRecordForAudit(expenseId: String): ExpenseRecord?
+    suspend fun getAllExpenseRecordsForEvidenceRecovery(): List<ExpenseRecord>
     suspend fun saveDailyReport(report: DailyReport)
     suspend fun saveDailyReportWithExpense(report: DailyReport, expense: ExpenseRecord?)
     suspend fun saveReceipt(receipt: ReceiptRecord)

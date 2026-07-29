@@ -23,7 +23,18 @@ interface WarunDao {
     @Query("SELECT * FROM receipts ORDER BY COALESCE(purchaseDate, capturedDate, '') DESC, registeredAt DESC")
     fun observeReceipts(): Flow<List<ReceiptRecord>>
 
-    @Query("SELECT * FROM expense_records ORDER BY expenseDate DESC, createdAt DESC")
+    @Query(
+        """
+        SELECT expense.*
+        FROM expense_records AS expense
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM expense_cancellations AS cancellation
+            WHERE cancellation.expenseId = expense.id
+        )
+        ORDER BY expense.expenseDate DESC, expense.createdAt DESC
+        """
+    )
     fun observeExpenseRecords(): Flow<List<ExpenseRecord>>
 
     @Query(
@@ -44,10 +55,35 @@ interface WarunDao {
     )
     fun observeStoredExpenseEvidence(): Flow<List<ExpenseEvidenceRecord>>
 
-    @Query("SELECT * FROM expense_records WHERE expenseDate = :expenseDate AND category = :category ORDER BY createdAt DESC")
+    @Query(
+        """
+        SELECT expense.*
+        FROM expense_records AS expense
+        WHERE expense.expenseDate = :expenseDate
+          AND expense.category = :category
+          AND NOT EXISTS (
+              SELECT 1
+              FROM expense_cancellations AS cancellation
+              WHERE cancellation.expenseId = expense.id
+          )
+        ORDER BY expense.createdAt DESC
+        """
+    )
     fun observeExpenseRecordsByDateAndCategory(expenseDate: String, category: String): Flow<List<ExpenseRecord>>
 
-    @Query("SELECT COALESCE(SUM(amount), 0) FROM expense_records WHERE expenseDate = :expenseDate AND category = :category")
+    @Query(
+        """
+        SELECT COALESCE(SUM(expense.amount), 0)
+        FROM expense_records AS expense
+        WHERE expense.expenseDate = :expenseDate
+          AND expense.category = :category
+          AND NOT EXISTS (
+              SELECT 1
+              FROM expense_cancellations AS cancellation
+              WHERE cancellation.expenseId = expense.id
+          )
+        """
+    )
     fun observeExpenseTotalByDateAndCategory(expenseDate: String, category: String): Flow<Long>
 
     @Query("SELECT * FROM supplier_candidates WHERE isHidden = 0 ORDER BY category ASC, createdAt ASC")
@@ -82,6 +118,42 @@ interface WarunDao {
 
     @Query("SELECT * FROM expense_records WHERE id = :expenseId")
     suspend fun getExpenseRecord(expenseId: String): ExpenseRecord?
+
+    @Query(
+        """
+        SELECT expense.*
+        FROM expense_records AS expense
+        WHERE expense.id = :expenseId
+          AND NOT EXISTS (
+              SELECT 1
+              FROM expense_cancellations AS cancellation
+              WHERE cancellation.expenseId = expense.id
+          )
+        """
+    )
+    suspend fun getActiveExpenseRecord(expenseId: String): ExpenseRecord?
+
+    @Query(
+        """
+        SELECT expense.*
+        FROM expense_records AS expense
+        INNER JOIN expense_cancellations AS cancellation
+          ON cancellation.expenseId = expense.id
+        WHERE expense.expenseDate = :expenseDate
+        ORDER BY cancellation.cancelledAt DESC, expense.createdAt DESC
+        """
+    )
+    fun observeCancelledExpenseRecordsForAuditByDate(
+        expenseDate: String
+    ): Flow<List<ExpenseRecord>>
+
+    @Query(
+        """
+        SELECT * FROM expense_records
+        ORDER BY expenseDate DESC, createdAt DESC
+        """
+    )
+    suspend fun getAllExpenseRecordsForEvidenceRecovery(): List<ExpenseRecord>
 
     @Query("SELECT expenseId FROM expense_evidence_links WHERE evidenceId = :evidenceId")
     suspend fun getExpenseIdForEvidence(evidenceId: String): String?
