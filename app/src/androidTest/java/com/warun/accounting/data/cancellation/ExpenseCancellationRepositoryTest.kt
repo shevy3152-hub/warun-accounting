@@ -65,6 +65,42 @@ class ExpenseCancellationRepositoryTest {
     }
 
     @Test
+    fun loadSnapshotReadsCurrentExpensePurchaseLinkAndAccount() = runBlocking {
+        val fixture = insertFixture("snapshot")
+
+        val snapshot = repository.loadCancellationSnapshot(fixture.expense.id)
+
+        assertEquals(fixture.expense.id, snapshot.expenseId)
+        assertEquals(fixture.expense.updatedAt, snapshot.expectedExpenseUpdatedAt)
+        assertEquals(fixture.purchase.id, snapshot.originalPurchaseTransactionId)
+        assertEquals(fixture.purchase.accountId, snapshot.prepaidAccountId)
+        assertEquals(fixture.expense.amount, snapshot.amount)
+        assertEquals(fixture.purchase.transactionDate, snapshot.purchaseDate)
+    }
+
+    @Test
+    fun loadSnapshotRejectsAlreadyCancelledExpense() = runBlocking {
+        val fixture = insertFixture("snapshot-cancelled")
+        repository.cancelExpense(fixture.request())
+
+        assertEquals(
+            ExpenseCancellationFailure.AlreadyCancelled,
+            failureOf { repository.loadCancellationSnapshot(fixture.expense.id) }
+        )
+    }
+
+    @Test
+    fun loadSnapshotRejectsInconsistentPrepaidRelation() = runBlocking {
+        val fixture = insertFixture("snapshot-inconsistent")
+        database.expensePrepaidLinkDao().deleteByExpenseId(fixture.expense.id)
+
+        assertEquals(
+            ExpenseCancellationFailure.PrepaidStateInconsistent,
+            failureOf { repository.loadCancellationSnapshot(fixture.expense.id) }
+        )
+    }
+
+    @Test
     fun cancellationAddsOneReversalAndRecordWithoutChangingExpenseLinkOrPurchase() =
         runBlocking {
             val fixture = insertFixture("normal")
@@ -88,6 +124,14 @@ class ExpenseCancellationRepositoryTest {
             assertEquals(500L, reversal.balanceDelta)
             assertEquals(1L, count("expense_cancellations"))
             assertEquals(2, transactionsFor(fixture.expense.id).size)
+            assertEquals(
+                fixture.expense.id,
+                database.expenseCancellationDao()
+                    .observeByExpenseDate(fixture.expense.expenseDate)
+                    .first()
+                    .single()
+                    .expenseId
+            )
         }
 
     @Test

@@ -68,6 +68,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -114,10 +115,18 @@ import com.warun.accounting.data.edit.ExpenseEditOperationException
 import com.warun.accounting.data.edit.ExpenseEditOperationFailure
 import com.warun.accounting.data.edit.SavedExpenseEditException
 import com.warun.accounting.data.edit.SavedExpenseEditFailure
+import com.warun.accounting.data.cancellation.ExpenseCancellationAuditItem
 import com.warun.accounting.data.prepaid.netCashChargeAmount
 import com.warun.accounting.data.prepaid.PrepaidValidationException
 import com.warun.accounting.data.prepaid.PrepaidValidationFailure
 import com.warun.accounting.ui.input.DateInputTextField
+import com.warun.accounting.ui.cancellation.ExpenseCancellationDialog
+import com.warun.accounting.ui.cancellation.ExpenseCancellationDialogSummary
+import com.warun.accounting.ui.cancellation.ExpenseCancellationUiAction
+import com.warun.accounting.ui.cancellation.SavedExpenseSecondaryAction
+import com.warun.accounting.ui.cancellation.cancellationFailureMessage
+import com.warun.accounting.ui.cancellation.savedExpenseSecondaryAction
+import com.warun.accounting.ui.cancellation.toUiAction
 import com.warun.accounting.ui.model.BusinessAnalysisSummary
 import com.warun.accounting.ui.model.breakEvenStatusMessage
 import com.warun.accounting.ui.model.buildBusinessAnalysisSummary
@@ -162,6 +171,9 @@ import com.warun.accounting.util.ExpenseDateCategoryKey
 import com.warun.accounting.ui.viewmodel.AppSettingsInput
 import com.warun.accounting.ui.viewmodel.DailyReportInput
 import com.warun.accounting.ui.viewmodel.DashboardViewModel
+import com.warun.accounting.ui.viewmodel.CancellationUiFailure
+import com.warun.accounting.ui.viewmodel.ExpenseCancellationAuditViewModel
+import com.warun.accounting.ui.viewmodel.ExpenseCancellationViewModel
 import com.warun.accounting.evidence.EvidenceFinalizationAfterAccountingSaveException
 import com.warun.accounting.ui.viewmodel.ExpenseInput
 import com.warun.accounting.ui.viewmodel.InputStateViewModel
@@ -675,6 +687,9 @@ private fun AppNavHost(
                 onCaptureCleared = { capturedReceipt = null },
                 navigationGuard = reportEntryNavigationGuard,
                 onRequestBack = onPopBackStack,
+                onOpenCancellationAudit = { reportDate ->
+                    onNavigate(ReportRoutes.detail(reportDate))
+                },
                 onLiveSummaryChange = onReportEntrySummaryChange,
                 inputStateViewModel = inputStateViewModel
             )
@@ -767,6 +782,9 @@ private fun AppNavHost(
                 onCaptureCleared = { capturedReceipt = null },
                 navigationGuard = reportEntryNavigationGuard,
                 onRequestBack = onPopBackStack,
+                onOpenCancellationAudit = { reportDate ->
+                    onNavigate(ReportRoutes.detail(reportDate))
+                },
                 onLiveSummaryChange = onReportEntrySummaryChange,
                 inputStateViewModel = inputStateViewModel
             )
@@ -1326,10 +1344,12 @@ private fun ReportEntryScreen(
     onCaptureCleared: () -> Unit,
     navigationGuard: ReportEntryNavigationGuard? = null,
     onRequestBack: () -> Unit = {},
+    onOpenCancellationAudit: (String) -> Unit = {},
     onLiveSummaryChange: (SidebarSummaryOverride?) -> Unit = {},
     inputStateViewModel: InputStateViewModel = hiltViewModel(),
     receiptOcrViewModel: ReceiptOcrViewModel = hiltViewModel(),
-    receiptImageImportViewModel: ReceiptImageImportViewModel = hiltViewModel()
+    receiptImageImportViewModel: ReceiptImageImportViewModel = hiltViewModel(),
+    expenseCancellationViewModel: ExpenseCancellationViewModel = hiltViewModel()
 ) {
     val initialReportDate = remember(initialDate) { initialDate ?: DailyReportInput().reportDate }
 
@@ -1347,6 +1367,7 @@ private fun ReportEntryScreen(
     val pendingExpenseCapture by inputStateViewModel.pendingExpenseCaptureState
     var savingStatus by inputStateViewModel.reportSavingStatusState
     val imageImportState by receiptImageImportViewModel.uiState.collectAsStateWithLifecycle()
+    val cancellationState by expenseCancellationViewModel.state.collectAsStateWithLifecycle()
     var saveFeedback by remember { mutableStateOf<SaveFeedback?>(null) }
     var expenseSaveInProgress by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -1496,6 +1517,49 @@ private fun ReportEntryScreen(
         draftExpense = draftExpenseInput,
         expenseFormDirty = expenseFormDirty
     )
+    val currentCancellationReportDate by rememberUpdatedState(reportInput.reportDate)
+
+    LaunchedEffect(expenseCancellationViewModel) {
+        expenseCancellationViewModel.events.collect { event ->
+            when (val action = event.toUiAction()) {
+                is ExpenseCancellationUiAction.ShowSuccess -> {
+                    saveFeedback = SaveFeedback(
+                        title = "プリペイド支出を取り消しました",
+                        body = "支出とレシートは取消済みの記録として保持されています。",
+                        isError = false
+                    )
+                }
+                ExpenseCancellationUiAction.Reload -> {
+                    saveFeedback = SaveFeedback(
+                        title = "画面を更新してください",
+                        body = "最新の支出内容を確認して、もう一度操作してください。",
+                        isError = true
+                    )
+                }
+                is ExpenseCancellationUiAction.OpenAudit -> {
+                    onOpenCancellationAudit(currentCancellationReportDate)
+                }
+            }
+        }
+    }
+    LaunchedEffect(cancellationState.failure, cancellationState.dialogVisible) {
+        val failure = cancellationState.failure ?: return@LaunchedEffect
+        if (
+            cancellationState.dialogVisible ||
+            failure == CancellationUiFailure.Conflict ||
+            failure == CancellationUiFailure.StaleState ||
+            failure == CancellationUiFailure.ExpenseNotFound ||
+            failure == CancellationUiFailure.AlreadyCancelled
+        ) {
+            return@LaunchedEffect
+        }
+        saveFeedback = SaveFeedback(
+            title = "プリペイド支出を取り消せませんでした",
+            body = cancellationFailureMessage(failure),
+            isError = true
+        )
+        expenseCancellationViewModel.clearOutcome()
+    }
 
     LaunchedEffect(reportInput.reportDate, totals) {
         onLiveSummaryChange(
@@ -1745,6 +1809,31 @@ private fun ReportEntryScreen(
     saveFeedback?.let { feedback ->
         SaveFeedbackOverlay(feedback = feedback, onDismiss = { saveFeedback = null })
     }
+    if (cancellationState.dialogVisible) {
+        val expense = uiState.expenses.firstOrNull {
+            it.id == cancellationState.expenseId
+        }
+        val account = uiState.prepaidAccounts.firstOrNull {
+            it.id == cancellationState.prepaidAccountId
+        }
+        if (expense != null) {
+            ExpenseCancellationDialog(
+                state = cancellationState,
+                summary = ExpenseCancellationDialogSummary(
+                    supplierName = expense.supplierName.orEmpty(),
+                    expenseDate = expense.expenseDate,
+                    amount = expense.amount,
+                    prepaidAccountName = account?.name ?: "関連口座を確認できません",
+                    evidenceCount = uiState.expenseEvidence.count {
+                        it.expenseId == expense.id
+                    }
+                ),
+                onReasonChanged = expenseCancellationViewModel::updateReason,
+                onConfirm = expenseCancellationViewModel::confirmCancellation,
+                onDismiss = expenseCancellationViewModel::cancelDialog
+            )
+        }
+    }
 
     ScreenColumn {
         if (shouldShowDatedReportBack(initialDate)) {
@@ -1865,6 +1954,10 @@ private fun ReportEntryScreen(
             onCalendarDateSelected = { requestOpenReportDate(it) },
             onSaveExpense = ::saveExpenseWithPendingEvidence,
             onDeleteExpense = onDeleteExpense,
+            onCancelExpense = expenseCancellationViewModel::startCancellation,
+            cancellationBusyExpenseId = cancellationState.expenseId.takeIf {
+                cancellationState.isLoading || cancellationState.isSaving
+            },
             onAddSupplierCandidate = onAddSupplierCandidate,
             onHideSupplierCandidate = onHideSupplierCandidate,
             onOpenReceiptCamera = ::startNewReceiptCapture,
@@ -1899,6 +1992,8 @@ private fun DailyReportForm(
     onCalendarDateSelected: (String) -> Unit,
     onSaveExpense: (ExpenseInput, (Result<Unit>) -> Unit) -> Unit,
     onDeleteExpense: (ExpenseRecord) -> Unit,
+    onCancelExpense: (String) -> Unit,
+    cancellationBusyExpenseId: String?,
     onAddSupplierCandidate: (String, String, String) -> Unit,
     onHideSupplierCandidate: (SupplierCandidateRecord) -> Unit,
     onOpenReceiptCamera: () -> Unit,
@@ -1943,6 +2038,8 @@ private fun DailyReportForm(
                 onUtilityInputChange = onUtilityInputChange,
                 onSaveExpense = onSaveExpense,
                 onDeleteExpense = onDeleteExpense,
+                onCancelExpense = onCancelExpense,
+                cancellationBusyExpenseId = cancellationBusyExpenseId,
                 onAddSupplierCandidate = onAddSupplierCandidate,
                 onHideSupplierCandidate = onHideSupplierCandidate,
                 onOpenReceiptCamera = onOpenReceiptCamera,
@@ -2227,6 +2324,8 @@ private fun ExpenseCard(
     onUtilityInputChange: (DailyReportInput, String) -> Unit,
     onSaveExpense: (ExpenseInput, (Result<Unit>) -> Unit) -> Unit,
     onDeleteExpense: (ExpenseRecord) -> Unit,
+    onCancelExpense: (String) -> Unit,
+    cancellationBusyExpenseId: String?,
     supplierCandidates: List<SupplierCandidateRecord>,
     prepaidExpenseUi: PrepaidExpenseUiSnapshot,
     prepaidOperationKeyFor: (String) -> String,
@@ -2273,6 +2372,8 @@ private fun ExpenseCard(
                         onClose = { selectedCategory = null },
                         onSaveExpense = onSaveExpense,
                         onDeleteExpense = onDeleteExpense,
+                        onCancelExpense = onCancelExpense,
+                        cancellationBusyExpenseId = cancellationBusyExpenseId,
                         supplierCandidates = supplierCandidates,
                         prepaidExpenseUi = prepaidExpenseUi,
                         prepaidOperationKeyFor = prepaidOperationKeyFor,
@@ -2324,6 +2425,8 @@ private fun ExpenseCard(
                         onClose = { selectedCategory = null },
                         onSaveExpense = onSaveExpense,
                         onDeleteExpense = onDeleteExpense,
+                        onCancelExpense = onCancelExpense,
+                        cancellationBusyExpenseId = cancellationBusyExpenseId,
                         onAddSupplierCandidate = onAddSupplierCandidate,
                         onHideSupplierCandidate = onHideSupplierCandidate,
                         onOpenReceiptCamera = onOpenReceiptCamera,
@@ -2372,6 +2475,8 @@ private fun ExpenseCard(
                         onClose = { selectedCategory = null },
                         onSaveExpense = onSaveExpense,
                         onDeleteExpense = onDeleteExpense,
+                        onCancelExpense = onCancelExpense,
+                        cancellationBusyExpenseId = cancellationBusyExpenseId,
                         onAddSupplierCandidate = onAddSupplierCandidate,
                         onHideSupplierCandidate = onHideSupplierCandidate,
                         onOpenReceiptCamera = onOpenReceiptCamera,
@@ -2398,6 +2503,8 @@ private fun ExpenseCard(
                         onClose = { selectedCategory = null },
                         onSaveExpense = onSaveExpense,
                         onDeleteExpense = onDeleteExpense,
+                        onCancelExpense = onCancelExpense,
+                        cancellationBusyExpenseId = cancellationBusyExpenseId,
                         supplierCandidates = supplierCandidates,
                         prepaidExpenseUi = prepaidExpenseUi,
                         prepaidOperationKeyFor = prepaidOperationKeyFor,
@@ -2454,6 +2561,8 @@ private fun ExpenseDetailPanel(
     onClose: () -> Unit,
     onSaveExpense: (ExpenseInput, (Result<Unit>) -> Unit) -> Unit,
     onDeleteExpense: (ExpenseRecord) -> Unit,
+    onCancelExpense: (String) -> Unit,
+    cancellationBusyExpenseId: String?,
     supplierCandidates: List<SupplierCandidateRecord>,
     onAddSupplierCandidate: (String, String, String) -> Unit,
     onHideSupplierCandidate: (SupplierCandidateRecord) -> Unit,
@@ -2502,7 +2611,9 @@ private fun ExpenseDetailPanel(
                         editingExpense = expense
                         showForm = true
                     },
-                    onDelete = { onDeleteExpense(expense) }
+                    onDelete = { onDeleteExpense(expense) },
+                    onCancel = { onCancelExpense(expense.id) },
+                    cancellationInProgress = cancellationBusyExpenseId == expense.id
                 )
             }
         }
@@ -2662,7 +2773,9 @@ private fun ExpenseRecordRow(
     prepaidAccount: PrepaidAccountRecord?,
     onOpenEvidence: (ExpenseEvidenceRecord) -> Unit,
     onEdit: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onCancel: () -> Unit,
+    cancellationInProgress: Boolean
 ) {
     val isPrepaidExpense =
         normalizePaymentMethod(expense.paymentMethod) == PaymentMethodPrepaid ||
@@ -2676,10 +2789,6 @@ private fun ExpenseRecordRow(
                     "使用口座: ${prepaidAccount?.name ?: "関連口座を確認できません"}",
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                Text(
-                    "プリペイド支出の削除は現在対応していません",
-                    color = MaterialTheme.colorScheme.tertiary
-                )
             }
             if (evidence.isNotEmpty()) {
                 Text("保存済みレシート ${evidence.size}件", color = MaterialTheme.colorScheme.primary)
@@ -2687,7 +2796,19 @@ private fun ExpenseRecordRow(
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = onEdit) { Text("編集") }
-                OutlinedButton(onClick = onDelete, enabled = !isPrepaidExpense) { Text("削除") }
+                if (
+                    savedExpenseSecondaryAction(isPrepaidExpense) ==
+                    SavedExpenseSecondaryAction.Cancel
+                ) {
+                    OutlinedButton(
+                        onClick = onCancel,
+                        enabled = !cancellationInProgress
+                    ) {
+                        Text(if (cancellationInProgress) "確認中…" else "取消")
+                    }
+                } else {
+                    OutlinedButton(onClick = onDelete) { Text("削除") }
+                }
             }
         }
     }
@@ -3780,9 +3901,11 @@ private fun ReportDetailScreen(
     uiState: DashboardUiState,
     reportDate: String,
     onBack: () -> Unit,
-    onEntry: () -> Unit
+    onEntry: () -> Unit,
+    auditViewModel: ExpenseCancellationAuditViewModel = hiltViewModel()
 ) {
     var selectedEvidence by remember { mutableStateOf<ExpenseEvidenceRecord?>(null) }
+    val cancelledExpenses by auditViewModel.items.collectAsStateWithLifecycle()
     val dayReports = remember(uiState.reports, reportDate) {
         uiState.reports.filter { it.reportDate == reportDate }
     }
@@ -3875,6 +3998,12 @@ private fun ReportDetailScreen(
                 }
             }
         }
+        if (cancelledExpenses.isNotEmpty()) {
+            CancelledExpenseAuditSection(
+                items = cancelledExpenses,
+                onOpenEvidence = { selectedEvidence = it }
+            )
+        }
         if (registeredEvidence.isNotEmpty()) {
             RegisteredReceiptSection(
                 expenses = dayExpenses,
@@ -3888,6 +4017,97 @@ private fun ReportDetailScreen(
             evidence = evidence,
             onDismiss = { selectedEvidence = null }
         )
+    }
+}
+
+@Composable
+private fun CancelledExpenseAuditSection(
+    items: List<ExpenseCancellationAuditItem>,
+    onOpenEvidence: (ExpenseEvidenceRecord) -> Unit
+) {
+    DashboardCard {
+        Text(
+            "取消済み支出",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold
+        )
+        items.forEach { item ->
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.padding(12.dp)
+                ) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.tertiaryContainer,
+                        shape = RoundedCornerShape(50)
+                    ) {
+                        Text(
+                            "取消済み",
+                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
+                    }
+                    Text(
+                        item.expense.supplierName.orEmpty().ifBlank { "支払先未入力" },
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text("元支出日: ${item.expense.expenseDate}")
+                    Text("元金額: ${item.expense.amount.toYen()}")
+                    Text(
+                        "プリペイド口座: ${
+                            item.prepaidAccount?.name ?: "関連口座を確認できません"
+                        }"
+                    )
+                    Text("取消日: ${item.cancellation.cancellationDate}")
+                    item.cancellation.reason?.takeIf { it.isNotBlank() }?.let { reason ->
+                        Text("取消理由: $reason")
+                    }
+                    Text(
+                        "元PURCHASE: ${
+                            item.originalPurchase?.takeIf {
+                                item.hasCompleteLedgerRelation
+                            }?.let {
+                                "${it.transactionDate} / ${it.balanceDelta.toYen()}"
+                            } ?: "確認できません"
+                        }",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        "REVERSAL: ${
+                            item.reversal?.takeIf {
+                                item.hasCompleteLedgerRelation
+                            }?.let {
+                                "${it.transactionDate} / ${it.balanceDelta.toYen()}"
+                            } ?: "確認できません"
+                        }",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (!item.hasCompleteLedgerRelation) {
+                        Text(
+                            "プリペイド履歴の関連を確認できません。",
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                    Text(
+                        "保存済みレシート ${item.evidence.size}件",
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    if (item.evidence.isNotEmpty()) {
+                        EvidenceThumbnailRow(
+                            evidence = item.evidence,
+                            onOpenEvidence = onOpenEvidence
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 

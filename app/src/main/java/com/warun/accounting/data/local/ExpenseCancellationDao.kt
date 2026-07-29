@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface ExpenseCancellationDao {
@@ -43,4 +44,16 @@ interface ExpenseCancellationDao {
         """
     )
     suspend fun existsByOperationKey(operationKey: String): Boolean
+
+    @Query(
+        """
+        SELECT cancellation.*
+        FROM expense_cancellations AS cancellation
+        INNER JOIN expense_records AS expense
+          ON expense.id = cancellation.expenseId
+        WHERE expense.expenseDate = :expenseDate
+        ORDER BY cancellation.cancelledAt DESC, cancellation.expenseId ASC
+        """
+    )
+    fun observeByExpenseDate(expenseDate: String): Flow<List<ExpenseCancellationRecord>>
 }

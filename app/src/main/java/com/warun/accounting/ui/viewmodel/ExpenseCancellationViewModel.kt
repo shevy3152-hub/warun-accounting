@@ -262,6 +262,10 @@ class ExpenseCancellationViewModel internal constructor(
         }
     }
 
+    fun confirmCancellation() {
+        saveCancellation()
+    }
+
     private fun buildRequest(
         state: CancellationUiState,
         operationKey: String
