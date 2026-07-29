@@ -6,6 +6,7 @@ import com.warun.accounting.data.local.ExpenseRecord
 import com.warun.accounting.data.local.EvidenceRecord
 import com.warun.accounting.data.local.ExpenseEvidenceLinkRecord
 import com.warun.accounting.data.local.ExpenseEvidenceRecord
+import com.warun.accounting.data.local.ExpenseVisibilityRecord
 import com.warun.accounting.data.local.MonthlySubmission
 import com.warun.accounting.data.local.ReceiptRecord
 import com.warun.accounting.data.local.SupplierCandidateRecord
@@ -15,6 +16,7 @@ interface AccountingRepository {
     fun observeDailyReports(): Flow<List<DailyReport>>
     fun observeReceipts(): Flow<List<ReceiptRecord>>
     fun observeExpenseRecords(): Flow<List<ExpenseRecord>>
+    fun observeExpenseVisibilityRecords(): Flow<List<ExpenseVisibilityRecord>>
     fun observeCancelledExpenseRecordsForAuditByDate(expenseDate: String): Flow<List<ExpenseRecord>>
     fun observeStoredExpenseEvidence(): Flow<List<ExpenseEvidenceRecord>>
     fun observeExpenseRecordsByDateAndCategory(expenseDate: String, category: String): Flow<List<ExpenseRecord>>

@@ -39,6 +39,20 @@ interface WarunDao {
 
     @Query(
         """
+        SELECT expense.*,
+               EXISTS(
+                   SELECT 1
+                   FROM expense_cancellations AS cancellation
+                   WHERE cancellation.expenseId = expense.id
+               ) AS isCancelled
+        FROM expense_records AS expense
+        ORDER BY expense.expenseDate DESC, expense.createdAt DESC
+        """
+    )
+    fun observeExpenseVisibilityRecords(): Flow<List<ExpenseVisibilityRecord>>
+
+    @Query(
+        """
         SELECT link.expenseId AS expenseId,
                evidence.id AS evidenceId,
                evidence.captureId AS captureId,

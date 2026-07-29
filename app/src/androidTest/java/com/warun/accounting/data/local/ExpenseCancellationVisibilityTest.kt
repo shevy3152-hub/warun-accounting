@@ -178,6 +178,44 @@ class ExpenseCancellationVisibilityTest {
         assertEquals(1_000L, database.prepaidTransactionDao().getBalance(PrepaidAccountId.Majica))
     }
 
+    @Test
+    fun visibilitySnapshotReemitsActiveAndCancelledStateAtomically() = runBlocking {
+        val cancelledFixture = insertFixture("cancelled-snapshot", amount = 400L)
+        val activeFixture = insertFixture("active-snapshot", amount = 600L)
+        val firstEmission = CompletableDeferred<List<ExpenseVisibilityRecord>>()
+        val emissions = async(start = CoroutineStart.UNDISPATCHED) {
+            withTimeout(5_000L) {
+                repository.observeExpenseVisibilityRecords()
+                    .onEach { records ->
+                        if (!firstEmission.isCompleted) {
+                            firstEmission.complete(records)
+                        }
+                    }
+                    .take(2)
+                    .toList()
+            }
+        }
+
+        assertEquals(
+            mapOf(
+                cancelledFixture.expense.id to false,
+                activeFixture.expense.id to false
+            ),
+            withTimeout(5_000L) { firstEmission.await() }
+                .associate { it.expense.id to it.isCancelled }
+        )
+
+        cancel(cancelledFixture)
+
+        assertEquals(
+            mapOf(
+                cancelledFixture.expense.id to true,
+                activeFixture.expense.id to false
+            ),
+            emissions.await().last().associate { it.expense.id to it.isCancelled }
+        )
+    }
+
     private suspend fun insertFixture(
         suffix: String,
         amount: Long,

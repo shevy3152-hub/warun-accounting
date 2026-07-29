@@ -13,20 +13,35 @@ fun calculateCashBalance(openingCash: Long, cashSales: Long, cashExpense: Long):
 fun calculateCashFlow(cashSales: Long, cashExpense: Long): Long =
     cashSales - cashExpense
 
+data class ExpenseDateCategoryKey(
+    val expenseDate: String,
+    val category: String
+)
+
 fun Iterable<ExpenseRecord>.preferredExpenseAmount(
     reportDate: String,
     category: String,
-    legacyAmount: Long
+    legacyAmount: Long,
+    cancelledExpenseKeys: Set<ExpenseDateCategoryKey> = emptySet()
 ): Long {
     val records = filter { it.expenseDate == reportDate && it.category == category }
-    return if (records.isNotEmpty()) records.expenseAmount() else legacyAmount
+    return when {
+        records.isNotEmpty() -> records.expenseAmount()
+        ExpenseDateCategoryKey(reportDate, category) in cancelledExpenseKeys -> 0L
+        else -> legacyAmount
+    }
 }
 
 fun Iterable<ExpenseRecord>.preferredCashExpenseAmount(
     reportDate: String,
     category: String,
-    legacyAmount: Long
+    legacyAmount: Long,
+    cancelledExpenseKeys: Set<ExpenseDateCategoryKey> = emptySet()
 ): Long {
     val records = filter { it.expenseDate == reportDate && it.category == category }
-    return if (records.isNotEmpty()) records.cashExpenseAmount() else legacyAmount
+    return when {
+        records.isNotEmpty() -> records.cashExpenseAmount()
+        ExpenseDateCategoryKey(reportDate, category) in cancelledExpenseKeys -> 0L
+        else -> legacyAmount
+    }
 }

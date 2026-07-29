@@ -35,6 +35,7 @@ import com.warun.accounting.ui.model.DashboardUiState
 import com.warun.accounting.ui.model.normalizeSupplierCandidateName
 import com.warun.accounting.ui.util.todayString
 import com.warun.accounting.util.isSupportedPaymentMethod
+import com.warun.accounting.util.ExpenseDateCategoryKey
 import com.warun.accounting.util.normalizePaymentMethod
 import com.warun.accounting.util.PaymentMethodPrepaid
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -64,6 +65,7 @@ class DashboardViewModel @Inject constructor(
         val reports: List<DailyReport>,
         val receipts: List<ReceiptRecord>,
         val expenses: List<ExpenseRecord>,
+        val cancelledExpenseKeys: Set<ExpenseDateCategoryKey>,
         val submissions: List<MonthlySubmission>,
         val settings: AppSettings?
     )
@@ -77,14 +79,19 @@ class DashboardViewModel @Inject constructor(
     private val baseUiStateParts = combine(
         repository.observeDailyReports(),
         repository.observeReceipts(),
-        repository.observeExpenseRecords(),
+        repository.observeExpenseVisibilityRecords(),
         repository.observeMonthlySubmissions(),
         repository.observeAppSettings()
-    ) { reports, receipts, expenses, submissions, settings ->
+    ) { reports, receipts, expenseVisibility, submissions, settings ->
         BaseUiStateParts(
             reports = reports,
             receipts = receipts,
-            expenses = expenses,
+            expenses = expenseVisibility.filterNot { it.isCancelled }.map { it.expense },
+            cancelledExpenseKeys = expenseVisibility
+                .asSequence()
+                .filter { it.isCancelled }
+                .map { ExpenseDateCategoryKey(it.expense.expenseDate, it.expense.category) }
+                .toSet(),
             submissions = submissions,
             settings = settings
         )
@@ -115,7 +122,8 @@ class DashboardViewModel @Inject constructor(
             prepaidTransactions = prepaid.transactions,
             prepaidAccounts = prepaid.accounts,
             prepaidBalances = prepaid.balances,
-            expensePrepaidLinks = prepaid.links
+            expensePrepaidLinks = prepaid.links,
+            cancelledExpenseKeys = parts.cancelledExpenseKeys
         )
     }.stateIn(
         scope = viewModelScope,

@@ -21,6 +21,7 @@ import com.warun.accounting.util.calculateCashBalance
 import com.warun.accounting.util.calculateCashFlow
 import com.warun.accounting.util.cashExpenseAmount
 import com.warun.accounting.util.expenseAmount
+import com.warun.accounting.util.ExpenseDateCategoryKey
 import com.warun.accounting.util.preferredCashExpenseAmount
 import com.warun.accounting.util.preferredExpenseAmount
 
@@ -35,7 +36,8 @@ data class DashboardUiState(
     val prepaidTransactions: List<PrepaidTransactionRecord> = emptyList(),
     val prepaidAccounts: List<PrepaidAccountRecord> = emptyList(),
     val prepaidBalances: List<PrepaidAccountBalance> = emptyList(),
-    val expensePrepaidLinks: List<ExpensePrepaidLinkRecord> = emptyList()
+    val expensePrepaidLinks: List<ExpensePrepaidLinkRecord> = emptyList(),
+    val cancelledExpenseKeys: Set<ExpenseDateCategoryKey> = emptySet()
 ) {
     private val today = todayString()
     private val currentMonth = currentMonthString()
@@ -61,7 +63,12 @@ data class DashboardUiState(
     private fun DailyReport.expenseTotal(): Long =
         expenseCategoryTotal(reportDate, ExpenseCategory.FoodPurchase) +
             expenseCategoryTotal(reportDate, ExpenseCategory.AlcoholPurchase) +
-            expenses.preferredExpenseAmount(reportDate, ExpenseCategory.Consumables, consumablesExpense) +
+            expenses.preferredExpenseAmount(
+                reportDate,
+                ExpenseCategory.Consumables,
+                consumablesExpense,
+                cancelledExpenseKeys
+            ) +
             expenseCategoryTotal(reportDate, ExpenseCategory.OtherExpense) +
             expenseCategoryTotal(reportDate, ExpenseCategory.VehicleTransport) +
             directExpenseTotal()
@@ -69,7 +76,12 @@ data class DashboardUiState(
     private fun DailyReport.cashExpenseTotal(): Long =
         cashExpenseCategoryTotal(reportDate, ExpenseCategory.FoodPurchase) +
             cashExpenseCategoryTotal(reportDate, ExpenseCategory.AlcoholPurchase) +
-            expenses.preferredCashExpenseAmount(reportDate, ExpenseCategory.Consumables, consumablesExpense) +
+            expenses.preferredCashExpenseAmount(
+                reportDate,
+                ExpenseCategory.Consumables,
+                consumablesExpense,
+                cancelledExpenseKeys
+            ) +
             cashExpenseCategoryTotal(reportDate, ExpenseCategory.OtherExpense) +
             cashExpenseCategoryTotal(reportDate, ExpenseCategory.VehicleTransport) +
             directExpenseTotal()

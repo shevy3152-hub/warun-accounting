@@ -9,6 +9,7 @@ import com.warun.accounting.data.local.PrepaidAccountId
 import com.warun.accounting.data.local.PrepaidChargeSource
 import com.warun.accounting.data.local.PrepaidTransactionRecord
 import com.warun.accounting.data.local.PrepaidTransactionType
+import com.warun.accounting.util.ExpenseDateCategoryKey
 import java.time.LocalDate
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -104,11 +105,40 @@ class BalanceBusinessAnalysisTest {
         assertEquals(35_000L, summary.cashFlow)
     }
 
+    @Test
+    fun cancelledConsumablesDoesNotReappearInPeriodOrBusinessAnalysis() {
+        val date = "2026-07-24"
+        val summary = buildBalanceSummary(
+            reports = listOf(
+                report(
+                    date = date,
+                    sales = 50_000L,
+                    legacyConsumables = 8_000L
+                )
+            ),
+            expenses = emptyList(),
+            period = BalancePeriod(LocalDate.parse(date), LocalDate.parse(date)),
+            cancelledExpenseKeys = setOf(
+                ExpenseDateCategoryKey(date, ExpenseCategory.Consumables)
+            )
+        )
+
+        assertEquals(0L, summary.expenseTotal)
+        assertEquals(0L, summary.cashExpense)
+        assertEquals(0L, summary.businessAnalysis.simpleFixedCost)
+        assertEquals(50_000L, summary.businessAnalysis.estimatedGrossProfit)
+        assertEquals(
+            0L,
+            summary.categoryTotals.first { it.first == "消耗品費" }.second
+        )
+    }
+
     private fun report(
         date: String,
         sales: Long,
         rent: Long = 0,
-        legacyFood: Long = 0
+        legacyFood: Long = 0,
+        legacyConsumables: Long = 0
     ) = DailyReport(
         id = "report-$date",
         reportDate = date,
@@ -121,7 +151,7 @@ class BalanceBusinessAnalysisTest {
         otherSales = 0,
         foodPurchases = legacyFood,
         alcoholPurchases = 0,
-        consumablesExpense = 0,
+        consumablesExpense = legacyConsumables,
         utilitiesExpense = 0,
         electricityExpense = 0,
         gasExpense = 0,

@@ -1,6 +1,7 @@
 package com.warun.accounting.util
 
 import com.warun.accounting.data.local.ExpenseRecord
+import com.warun.accounting.data.local.ExpenseCategory
 import com.warun.accounting.data.local.ExpenseSourceType
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -77,15 +78,191 @@ class ExpenseCalculationsTest {
         assertEquals(7_500, calculateCashFlow(10_000, 2_500))
     }
 
+    @Test
+    fun preferredAmountUsesLegacyWhenNoActiveOrCancelledExpenseExists() {
+        assertEquals(
+            3_000L,
+            emptyList<ExpenseRecord>().preferredExpenseAmount(
+                "2026-07-20",
+                ExpenseCategory.Consumables,
+                3_000L
+            )
+        )
+    }
+
+    @Test
+    fun preferredAmountUsesActiveExpensesWhenNoCancellationExists() {
+        val expenses = listOf(
+            expense(
+                id = "active-first",
+                amount = 800L,
+                paymentMethod = PaymentMethodCash,
+                category = ExpenseCategory.Consumables
+            ),
+            expense(
+                id = "active-second",
+                amount = 1_200L,
+                paymentMethod = PaymentMethodCash,
+                category = ExpenseCategory.Consumables
+            )
+        )
+
+        assertEquals(
+            2_000L,
+            expenses.preferredExpenseAmount(
+                "2026-07-20",
+                ExpenseCategory.Consumables,
+                3_000L
+            )
+        )
+    }
+
+    @Test
+    fun preferredAmountTreatsZeroAmountActiveRecordAsExisting() {
+        val expenses = listOf(
+            expense(
+                id = "zero-active",
+                amount = 0L,
+                paymentMethod = PaymentMethodCash,
+                category = ExpenseCategory.Consumables
+            )
+        )
+
+        assertEquals(
+            0L,
+            expenses.preferredExpenseAmount(
+                "2026-07-20",
+                ExpenseCategory.Consumables,
+                3_000L
+            )
+        )
+    }
+
+    @Test
+    fun preferredCashAmountTreatsNonCashActiveRecordAsExisting() {
+        val expenses = listOf(
+            expense(
+                id = "credit-active",
+                amount = 2_000L,
+                paymentMethod = PaymentMethodCredit,
+                category = ExpenseCategory.Consumables
+            )
+        )
+
+        assertEquals(
+            0L,
+            expenses.preferredCashExpenseAmount(
+                "2026-07-20",
+                ExpenseCategory.Consumables,
+                3_000L
+            )
+        )
+    }
+
+    @Test
+    fun preferredAmountReturnsZeroWhenOnlyCancelledExpensesExist() {
+        val cancelled = setOf(
+            ExpenseDateCategoryKey("2026-07-20", ExpenseCategory.Consumables)
+        )
+
+        assertEquals(
+            0L,
+            emptyList<ExpenseRecord>().preferredExpenseAmount(
+                "2026-07-20",
+                ExpenseCategory.Consumables,
+                3_000L,
+                cancelled
+            )
+        )
+    }
+
+    @Test
+    fun preferredAmountUsesOnlyActiveExpensesWhenActiveAndCancelledBothExist() {
+        val expenses = listOf(
+            expense(
+                id = "active",
+                amount = 2_000L,
+                paymentMethod = PaymentMethodCash,
+                category = ExpenseCategory.Consumables
+            )
+        )
+        val cancelled = setOf(
+            ExpenseDateCategoryKey("2026-07-20", ExpenseCategory.Consumables)
+        )
+
+        assertEquals(
+            2_000L,
+            expenses.preferredExpenseAmount(
+                "2026-07-20",
+                ExpenseCategory.Consumables,
+                3_000L,
+                cancelled
+            )
+        )
+    }
+
+    @Test
+    fun cancellationForDifferentCategoryDoesNotSuppressLegacyFallback() {
+        val cancelled = setOf(
+            ExpenseDateCategoryKey("2026-07-20", ExpenseCategory.FoodPurchase)
+        )
+
+        assertEquals(
+            3_000L,
+            emptyList<ExpenseRecord>().preferredExpenseAmount(
+                "2026-07-20",
+                ExpenseCategory.Consumables,
+                3_000L,
+                cancelled
+            )
+        )
+    }
+
+    @Test
+    fun cancellationForDifferentDateDoesNotSuppressLegacyFallback() {
+        val cancelled = setOf(
+            ExpenseDateCategoryKey("2026-07-21", ExpenseCategory.Consumables)
+        )
+
+        assertEquals(
+            3_000L,
+            emptyList<ExpenseRecord>().preferredExpenseAmount(
+                "2026-07-20",
+                ExpenseCategory.Consumables,
+                3_000L,
+                cancelled
+            )
+        )
+    }
+
+    @Test
+    fun multipleCancelledExpensesForSameDateAndCategoryStillResolveToZero() {
+        val cancelledKeysFromMultipleRecords = listOf(
+            ExpenseDateCategoryKey("2026-07-20", ExpenseCategory.Consumables),
+            ExpenseDateCategoryKey("2026-07-20", ExpenseCategory.Consumables)
+        ).toSet()
+
+        assertEquals(
+            0L,
+            emptyList<ExpenseRecord>().preferredCashExpenseAmount(
+                "2026-07-20",
+                ExpenseCategory.Consumables,
+                3_000L,
+                cancelledKeysFromMultipleRecords
+            )
+        )
+    }
+
     private fun expense(
         id: String,
         amount: Long,
         paymentMethod: String?,
-        expenseDate: String = "2026-07-20"
+        expenseDate: String = "2026-07-20",
+        category: String = "food_purchase"
     ) = ExpenseRecord(
         id = id,
         expenseDate = expenseDate,
-        category = "food_purchase",
+        category = category,
         supplierName = null,
         amount = amount,
         paymentMethod = paymentMethod,

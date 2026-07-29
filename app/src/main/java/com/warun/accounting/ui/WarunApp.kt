@@ -158,6 +158,7 @@ import com.warun.accounting.util.normalizePaymentMethod
 import com.warun.accounting.util.paymentMethodOptions
 import com.warun.accounting.util.preferredCashExpenseAmount
 import com.warun.accounting.util.preferredExpenseAmount
+import com.warun.accounting.util.ExpenseDateCategoryKey
 import com.warun.accounting.ui.viewmodel.AppSettingsInput
 import com.warun.accounting.ui.viewmodel.DailyReportInput
 import com.warun.accounting.ui.viewmodel.DashboardViewModel
@@ -1486,7 +1487,8 @@ private fun ReportEntryScreen(
     val totals = reportInput.calculateTotals(
         paymentVisibility,
         liveReportExpenses,
-        uiState.prepaidTransactions
+        uiState.prepaidTransactions,
+        uiState.cancelledExpenseKeys
     )
     val hasUnsavedChanges = reportInput != cleanReportInput || expenseFormDirty || utilityFieldsEdited
     val expenseSaveDecision = reportExpenseSaveDecision(
@@ -1847,6 +1849,7 @@ private fun ReportEntryScreen(
             expenses = reportExpenses,
             expenseEvidence = uiState.expenseEvidence,
             previewExpenses = liveReportExpenses,
+            cancelledExpenseKeys = uiState.cancelledExpenseKeys,
             draftExpenseInput = draftExpenseInput,
             ocrApplyCaptureId = pendingExpenseCapture?.captureId,
             supplierCandidates = uiState.supplierCandidates,
@@ -1883,6 +1886,7 @@ private fun DailyReportForm(
     expenses: List<ExpenseRecord>,
     expenseEvidence: List<ExpenseEvidenceRecord>,
     previewExpenses: List<ExpenseRecord>,
+    cancelledExpenseKeys: Set<ExpenseDateCategoryKey>,
     draftExpenseInput: ExpenseInput?,
     ocrApplyCaptureId: String?,
     supplierCandidates: List<SupplierCandidateRecord>,
@@ -1926,6 +1930,7 @@ private fun DailyReportForm(
                 expenses = expenses,
                 expenseEvidence = expenseEvidence,
                 previewExpenses = previewExpenses,
+                cancelledExpenseKeys = cancelledExpenseKeys,
                 draftExpenseInput = draftExpenseInput,
                 ocrApplyCaptureId = ocrApplyCaptureId,
                 supplierCandidates = supplierCandidates,
@@ -2213,6 +2218,7 @@ private fun ExpenseCard(
     expenses: List<ExpenseRecord>,
     expenseEvidence: List<ExpenseEvidenceRecord>,
     previewExpenses: List<ExpenseRecord>,
+    cancelledExpenseKeys: Set<ExpenseDateCategoryKey>,
     draftExpenseInput: ExpenseInput?,
     ocrApplyCaptureId: String?,
     expenseTotal: Long,
@@ -2296,7 +2302,12 @@ private fun ExpenseCard(
                 }
                 DetailedExpenseCategoryRow(
                     ConsumablesCategory,
-                    previewExpenses.preferredExpenseAmount(input.reportDate, ConsumablesCategory, input.consumablesExpense.toInputLong())
+                    previewExpenses.preferredExpenseAmount(
+                        input.reportDate,
+                        ConsumablesCategory,
+                        input.consumablesExpense.toInputLong(),
+                        cancelledExpenseKeys
+                    )
                 ) {
                     selectedCategory = ConsumablesCategory
                 }
@@ -3385,6 +3396,7 @@ private fun BalanceScreen(uiState: DashboardUiState) {
     val summary = remember(
         uiState.reports,
         uiState.expenses,
+        uiState.cancelledExpenseKeys,
         uiState.prepaidTransactions,
         period
     ) {
@@ -3392,7 +3404,8 @@ private fun BalanceScreen(uiState: DashboardUiState) {
             uiState.reports,
             uiState.expenses,
             period,
-            uiState.prepaidTransactions
+            uiState.prepaidTransactions,
+            uiState.cancelledExpenseKeys
         )
     }
 
@@ -3638,6 +3651,7 @@ private fun ReportListScreen(
     val rows = remember(
         uiState.reports,
         uiState.expenses,
+        uiState.cancelledExpenseKeys,
         uiState.prepaidTransactions,
         selectedMonth
     ) {
@@ -3645,7 +3659,8 @@ private fun ReportListScreen(
             uiState.reports,
             uiState.expenses,
             uiState.prepaidTransactions,
-            selectedMonth
+            selectedMonth,
+            uiState.cancelledExpenseKeys
         )
     }
 
@@ -3777,12 +3792,19 @@ private fun ReportDetailScreen(
     val dayExpenses = remember(uiState.expenses, reportDate) {
         uiState.expenses.filter { it.expenseDate == reportDate }
     }
-    val row = remember(dayReports, dayExpenses, uiState.prepaidTransactions, reportDate) {
+    val row = remember(
+        dayReports,
+        dayExpenses,
+        uiState.prepaidTransactions,
+        uiState.cancelledExpenseKeys,
+        reportDate
+    ) {
         buildDailyBalanceRow(
             reportDate,
             dayReports,
             dayExpenses,
-            uiState.prepaidTransactions
+            uiState.prepaidTransactions,
+            uiState.cancelledExpenseKeys
         )
     }
     val registeredEvidence = remember(dayExpenses, uiState.expenseEvidence) {
@@ -3818,7 +3840,12 @@ private fun ReportDetailScreen(
             }
         }
         dayReports.forEachIndexed { index, report ->
-            DailyReportDetailCard(index = index, report = report, expenses = dayExpenses)
+            DailyReportDetailCard(
+                index = index,
+                report = report,
+                expenses = dayExpenses,
+                cancelledExpenseKeys = uiState.cancelledExpenseKeys
+            )
         }
         if (dayExpenses.isNotEmpty()) {
             DashboardCard {
@@ -3906,7 +3933,12 @@ private fun RegisteredReceiptSection(
 }
 
 @Composable
-private fun DailyReportDetailCard(index: Int, report: DailyReport, expenses: List<ExpenseRecord>) {
+private fun DailyReportDetailCard(
+    index: Int,
+    report: DailyReport,
+    expenses: List<ExpenseRecord>,
+    cancelledExpenseKeys: Set<ExpenseDateCategoryKey>
+) {
     DashboardCard {
         Text("日報 ${index + 1}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         TotalRow("ステータス", report.status.toReportStatusLabel())
@@ -3916,10 +3948,18 @@ private fun DailyReportDetailCard(index: Int, report: DailyReport, expenses: Lis
         TotalRow("QR決済売上", report.qrSales.toYen())
         TotalRow("売掛売上", report.accountsReceivableSales.toYen())
         TotalRow("その他売上", report.otherSales.toYen())
-        TotalRow("支出合計", report.totalExpense(expenses).toYen())
+        TotalRow("支出合計", report.totalExpense(expenses, cancelledExpenseKeys).toYen())
         TotalRow("食材仕入", report.detailExpense(expenses, FoodPurchaseCategory).toYen())
         TotalRow("酒類仕入", report.detailExpense(expenses, AlcoholPurchaseCategory).toYen())
-        TotalRow("消耗品費", expenses.preferredExpenseAmount(report.reportDate, ConsumablesCategory, report.consumablesExpense).toYen())
+        TotalRow(
+            "消耗品費",
+            expenses.preferredExpenseAmount(
+                report.reportDate,
+                ConsumablesCategory,
+                report.consumablesExpense,
+                cancelledExpenseKeys
+            ).toYen()
+        )
         TotalRow(if (report.isLegacyUtilityExpense()) "水道光熱費（旧形式）" else "水道光熱費", report.utilityExpenseTotal().toYen())
         TotalRow("電気代", report.electricityExpense.toYen())
         TotalRow("ガス代", report.gasExpense.toYen())
@@ -4466,7 +4506,9 @@ private fun buildMonthlyOrganizationSummary(
     val monthReceipts = uiState.receipts.filter { it.purchaseDate?.startsWith(targetMonth) == true }
     val monthExpenses = uiState.expenses.filter { it.expenseDate.startsWith(targetMonth) }
     val salesTotal = monthReports.sumOf { it.totalSales() }
-    val reportExpenses = monthReports.sumOf { it.totalExpense(monthExpenses) } + expensesWithoutReportsTotal(monthReports, monthExpenses)
+    val reportExpenses = monthReports.sumOf {
+        it.totalExpense(monthExpenses, uiState.cancelledExpenseKeys)
+    } + expensesWithoutReportsTotal(monthReports, monthExpenses)
     val receiptExpenses = 0L
     val submitted = uiState.monthlySubmissions.any {
         it.targetMonth == targetMonth && it.status == MonthlySubmissionStatus.Submitted
@@ -4498,7 +4540,8 @@ private fun AppSettings?.toPaymentVisibility(): PaymentVisibility =
 private fun DailyReportInput.calculateTotals(
     paymentVisibility: PaymentVisibility,
     expenses: List<ExpenseRecord>,
-    prepaidTransactions: List<PrepaidTransactionRecord>
+    prepaidTransactions: List<PrepaidTransactionRecord>,
+    cancelledExpenseKeys: Set<ExpenseDateCategoryKey>
 ): DailyReportTotals {
     val cashSales = if (paymentVisibility.useCashPayment) this.cashSales.toInputLong() else 0L
     val totalSales = listOf(
@@ -4516,13 +4559,23 @@ private fun DailyReportInput.calculateTotals(
         this.miscellaneousExpense.toInputLong()
     val expenseTotal = detailExpense(this, expenses, FoodPurchaseCategory) +
         detailExpense(this, expenses, AlcoholPurchaseCategory) +
-        expenses.preferredExpenseAmount(reportDate, ConsumablesCategory, consumablesExpense.toInputLong()) +
+        expenses.preferredExpenseAmount(
+            reportDate,
+            ConsumablesCategory,
+            consumablesExpense.toInputLong(),
+            cancelledExpenseKeys
+        ) +
         detailExpense(this, expenses, OtherExpenseCategory) +
         detailExpense(this, expenses, VehicleTransportCategory) +
         directExpenseTotal
     val cashExpense = cashDetailExpense(this, expenses, FoodPurchaseCategory) +
         cashDetailExpense(this, expenses, AlcoholPurchaseCategory) +
-        expenses.preferredCashExpenseAmount(reportDate, ConsumablesCategory, consumablesExpense.toInputLong()) +
+        expenses.preferredCashExpenseAmount(
+            reportDate,
+            ConsumablesCategory,
+            consumablesExpense.toInputLong(),
+            cancelledExpenseKeys
+        ) +
         cashDetailExpense(this, expenses, OtherExpenseCategory) +
         cashDetailExpense(this, expenses, VehicleTransportCategory) +
         directExpenseTotal
@@ -4571,14 +4624,19 @@ internal fun buildBalanceSummary(
     reports: List<DailyReport>,
     expenses: List<ExpenseRecord>,
     period: BalancePeriod,
-    prepaidTransactions: List<PrepaidTransactionRecord> = emptyList()
+    prepaidTransactions: List<PrepaidTransactionRecord> = emptyList(),
+    cancelledExpenseKeys: Set<ExpenseDateCategoryKey> = emptySet()
 ): BalanceSummary {
     val periodReports = reports.filter { period.contains(it.reportDate) }
     val periodExpenses = expenses.filter { expense -> period.contains(expense.expenseDate) }
     val salesTotal = periodReports.sumOf { it.totalSales() }
-    val expenseTotal = periodReports.sumOf { it.totalExpense(periodExpenses) } + expensesWithoutReportsTotal(periodReports, periodExpenses)
+    val expenseTotal = periodReports.sumOf {
+        it.totalExpense(periodExpenses, cancelledExpenseKeys)
+    } + expensesWithoutReportsTotal(periodReports, periodExpenses)
     val cashSales = periodReports.sumOf { it.cashSales }
-    val cashExpense = periodReports.sumOf { it.cashExpense(periodExpenses) } + cashExpensesWithoutReportsTotal(periodReports, periodExpenses)
+    val cashExpense = periodReports.sumOf {
+        it.cashExpense(periodExpenses, cancelledExpenseKeys)
+    } + cashExpensesWithoutReportsTotal(periodReports, periodExpenses)
     val cashCharge = netCashChargeAmount(prepaidTransactions, period::contains)
     val cashOutflow = cashExpense + cashCharge
     val cashFlow = calculateCashFlow(cashSales, cashOutflow)
@@ -4594,7 +4652,11 @@ internal fun buildBalanceSummary(
         cashOutflow
     )
     val actualCashBalance = latestReport?.takeIf { it.hasActualClosingCash }?.actualClosingCash ?: theoreticalCashBalance
-    val categoryTotals = buildExpenseBreakdownTotals(periodReports, periodExpenses)
+    val categoryTotals = buildExpenseBreakdownTotals(
+        periodReports,
+        periodExpenses,
+        cancelledExpenseKeys
+    )
     val businessAnalysis = buildBusinessAnalysisSummary(
         salesTotal = salesTotal,
         expenseTotal = expenseTotal,
@@ -4615,7 +4677,8 @@ internal fun buildBalanceSummary(
                 reportDate = reportDate,
                 reports = periodReports.filter { it.reportDate == reportDate },
                 expenses = periodExpenses.filter { it.expenseDate == reportDate },
-                prepaidTransactions = prepaidTransactions
+                prepaidTransactions = prepaidTransactions,
+                cancelledExpenseKeys = cancelledExpenseKeys
             )
         }
 
@@ -4643,14 +4706,19 @@ private fun buildDailyBalanceRow(
     reportDate: String,
     reports: List<DailyReport>,
     expenses: List<ExpenseRecord> = emptyList(),
-    prepaidTransactions: List<PrepaidTransactionRecord> = emptyList()
+    prepaidTransactions: List<PrepaidTransactionRecord> = emptyList(),
+    cancelledExpenseKeys: Set<ExpenseDateCategoryKey> = emptySet()
 ): DailyBalanceRow {
     val salesTotal = reports.sumOf { it.totalSales() }
-    val expenseTotal = reports.sumOf { it.totalExpense(expenses) } + expensesWithoutReportsTotal(reports, expenses)
+    val expenseTotal = reports.sumOf {
+        it.totalExpense(expenses, cancelledExpenseKeys)
+    } + expensesWithoutReportsTotal(reports, expenses)
     val cashSales = reports.sumOf { it.cashSales }
     val firstReport = reports.minByOrNull { it.createdAt }
     val latestReport = reports.maxByOrNull { it.updatedAt }
-    val cashExpense = reports.sumOf { it.cashExpense(expenses) } + cashExpensesWithoutReportsTotal(reports, expenses)
+    val cashExpense = reports.sumOf {
+        it.cashExpense(expenses, cancelledExpenseKeys)
+    } + cashExpensesWithoutReportsTotal(reports, expenses)
     val cashCharge = netCashChargeAmount(prepaidTransactions) { it == reportDate }
     val cashOutflow = cashExpense + cashCharge
     val cashFlow = calculateCashFlow(cashSales, cashOutflow)
@@ -4679,7 +4747,8 @@ private fun buildMonthlyReportRows(
     reports: List<DailyReport>,
     expenses: List<ExpenseRecord>,
     prepaidTransactions: List<PrepaidTransactionRecord>,
-    month: YearMonth
+    month: YearMonth,
+    cancelledExpenseKeys: Set<ExpenseDateCategoryKey> = emptySet()
 ): List<MonthlyReportRow> {
     val today = LocalDate.now()
     val currentMonth = YearMonth.from(today)
@@ -4697,7 +4766,8 @@ private fun buildMonthlyReportRows(
             reportDate = reportDate,
             reports = dayReports,
             expenses = dayExpenses,
-            prepaidTransactions = prepaidTransactions
+            prepaidTransactions = prepaidTransactions,
+            cancelledExpenseKeys = cancelledExpenseKeys
         )
 
         MonthlyReportRow(
@@ -4758,13 +4828,19 @@ internal fun DailyReport.toInput(): DailyReportInput =
 
 private fun buildExpenseBreakdownTotals(
     reports: List<DailyReport>,
-    expenses: List<ExpenseRecord>
+    expenses: List<ExpenseRecord>,
+    cancelledExpenseKeys: Set<ExpenseDateCategoryKey>
 ): List<Pair<String, Long>> =
     listOf(
         "食材仕入" to expenses.filter { it.category == FoodPurchaseCategory }.sumOf { it.amount },
         "酒類仕入" to expenses.filter { it.category == AlcoholPurchaseCategory }.sumOf { it.amount },
         "消耗品費" to reports.sumOf { report ->
-            expenses.preferredExpenseAmount(report.reportDate, ConsumablesCategory, report.consumablesExpense)
+            expenses.preferredExpenseAmount(
+                report.reportDate,
+                ConsumablesCategory,
+                report.consumablesExpense,
+                cancelledExpenseKeys
+            )
         } + expensesWithoutReportsTotal(reports, expenses.filter { it.category == ConsumablesCategory }),
         "水道光熱費" to reports.sumOf { it.utilityExpenseTotal() },
         "通信費" to reports.sumOf { it.communicationExpense },
@@ -4789,18 +4865,34 @@ private fun DailyReport.utilityExpenseTotal(): Long {
 private fun DailyReport.isLegacyUtilityExpense(): Boolean =
     utilitiesExpense > 0L && electricityExpense == 0L && gasExpense == 0L && waterExpense == 0L
 
-private fun DailyReport.cashExpense(expenses: List<ExpenseRecord>): Long =
+private fun DailyReport.cashExpense(
+    expenses: List<ExpenseRecord>,
+    cancelledExpenseKeys: Set<ExpenseDateCategoryKey>
+): Long =
     cashExpenseCategoryTotal(expenses, reportDate, FoodPurchaseCategory) +
         cashExpenseCategoryTotal(expenses, reportDate, AlcoholPurchaseCategory) +
-        expenses.preferredCashExpenseAmount(reportDate, ConsumablesCategory, consumablesExpense) +
+        expenses.preferredCashExpenseAmount(
+            reportDate,
+            ConsumablesCategory,
+            consumablesExpense,
+            cancelledExpenseKeys
+        ) +
         cashExpenseCategoryTotal(expenses, reportDate, OtherExpenseCategory) +
         cashExpenseCategoryTotal(expenses, reportDate, VehicleTransportCategory) +
         utilityExpenseTotal() + communicationExpense + rentExpense + accountantFeeExpense + miscellaneousExpense
 
-private fun DailyReport.totalExpense(expenses: List<ExpenseRecord>): Long =
+private fun DailyReport.totalExpense(
+    expenses: List<ExpenseRecord>,
+    cancelledExpenseKeys: Set<ExpenseDateCategoryKey>
+): Long =
     detailExpense(expenses, FoodPurchaseCategory) +
         detailExpense(expenses, AlcoholPurchaseCategory) +
-        expenses.preferredExpenseAmount(reportDate, ConsumablesCategory, consumablesExpense) +
+        expenses.preferredExpenseAmount(
+            reportDate,
+            ConsumablesCategory,
+            consumablesExpense,
+            cancelledExpenseKeys
+        ) +
         detailExpense(expenses, OtherExpenseCategory) +
         detailExpense(expenses, VehicleTransportCategory) +
         utilityExpenseTotal() + communicationExpense + rentExpense + accountantFeeExpense + miscellaneousExpense

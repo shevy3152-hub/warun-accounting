@@ -8,6 +8,7 @@ import com.warun.accounting.data.local.ExpenseSourceType
 import com.warun.accounting.ui.model.DashboardUiState
 import com.warun.accounting.ui.util.todayString
 import com.warun.accounting.util.PaymentMethodCash
+import com.warun.accounting.util.ExpenseDateCategoryKey
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -71,6 +72,31 @@ class Phase3AggregationTest {
             expenses = listOf(expense("consumables", ExpenseCategory.Consumables, 2_000, date))
         )
         assertEquals(2_000, state.expenseTotal)
+    }
+
+    @Test
+    fun cancelledConsumablesDoesNotRestoreLegacyInDailyMonthlyOrCashTotals() {
+        val date = todayString()
+        val state = DashboardUiState(
+            reports = listOf(
+                report(
+                    date = date,
+                    openingCash = 100_000L,
+                    cashSales = 10_000L,
+                    consumables = 3_000L
+                )
+            ),
+            cancelledExpenseKeys = setOf(
+                ExpenseDateCategoryKey(date, ExpenseCategory.Consumables)
+            )
+        )
+
+        assertEquals(0L, state.expenseTotal)
+        assertEquals(0L, state.todayExpensesTotal)
+        assertEquals(0L, state.monthExpensesTotal)
+        assertEquals(0L, state.cashExpenses)
+        assertEquals(10_000L, state.todayCashFlow)
+        assertEquals(110_000L, state.todayClosingCash)
     }
 
     @Test

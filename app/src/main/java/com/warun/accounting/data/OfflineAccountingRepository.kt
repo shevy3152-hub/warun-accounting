@@ -6,6 +6,7 @@ import com.warun.accounting.data.local.ExpenseRecord
 import com.warun.accounting.data.local.EvidenceRecord
 import com.warun.accounting.data.local.ExpenseEvidenceLinkRecord
 import com.warun.accounting.data.local.ExpenseEvidenceRecord
+import com.warun.accounting.data.local.ExpenseVisibilityRecord
 import com.warun.accounting.data.local.ExpensePrepaidLinkDao
 import com.warun.accounting.data.local.MonthlySubmission
 import com.warun.accounting.data.local.ReceiptRecord
@@ -25,6 +26,9 @@ class OfflineAccountingRepository @Inject constructor(
     override fun observeReceipts(): Flow<List<ReceiptRecord>> = dao.observeReceipts()
 
     override fun observeExpenseRecords(): Flow<List<ExpenseRecord>> = dao.observeExpenseRecords()
+
+    override fun observeExpenseVisibilityRecords(): Flow<List<ExpenseVisibilityRecord>> =
+        dao.observeExpenseVisibilityRecords()
 
     override fun observeCancelledExpenseRecordsForAuditByDate(
         expenseDate: String
