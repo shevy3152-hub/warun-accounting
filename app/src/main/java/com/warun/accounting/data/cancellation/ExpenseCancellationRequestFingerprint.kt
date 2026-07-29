@@ -28,6 +28,7 @@ enum class ExpenseCancellationValidationFailure {
     InvalidAmount,
     InvalidDate,
     SamePurchaseAndReversal,
+    ReasonTooLong,
     UnnormalizedReason
 }
 
@@ -36,6 +37,8 @@ class ExpenseCancellationValidationException(
 ) : IllegalArgumentException(failure.name)
 
 object ExpenseCancellationRules {
+    const val MaxReasonLength = 200
+
     private val OperationKeyPattern = Regex(
         "^expense-cancel:[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-" +
             "[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -52,6 +55,13 @@ object ExpenseCancellationRules {
         reason
             ?.let { Normalizer.normalize(it, Normalizer.Form.NFC).trim() }
             ?.takeIf { it.isNotEmpty() }
+
+    fun canonicalReason(reason: String?): String? =
+        normalizeReason(reason).also {
+            if ((it?.length ?: 0) > MaxReasonLength) {
+                fail(ExpenseCancellationValidationFailure.ReasonTooLong)
+            }
+        }
 
     fun validateRecord(record: ExpenseCancellationRecord) {
         validateOperationKey(record.operationKey)
@@ -70,7 +80,7 @@ object ExpenseCancellationRules {
         if (record.cancelledAt < 0L) {
             fail(ExpenseCancellationValidationFailure.InvalidTimestamp)
         }
-        if (record.reason != normalizeReason(record.reason)) {
+        if (record.reason != canonicalReason(record.reason)) {
             fail(ExpenseCancellationValidationFailure.UnnormalizedReason)
         }
     }
@@ -145,7 +155,7 @@ object ExpenseCancellationRequestFingerprint {
         },
         purchaseDate = ExpenseCancellationRules.canonicalDate(input.purchaseDate),
         cancellationDate = ExpenseCancellationRules.canonicalDate(input.cancellationDate),
-        reason = ExpenseCancellationRules.normalizeReason(input.reason)
+        reason = ExpenseCancellationRules.canonicalReason(input.reason)
     )
 
     private fun DataOutputStream.writeString(value: String) {

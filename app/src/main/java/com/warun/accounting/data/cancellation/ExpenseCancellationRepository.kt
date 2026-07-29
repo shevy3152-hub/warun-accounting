@@ -44,6 +44,15 @@ data class ExpenseCancellationResult(
     val idempotentReplay: Boolean
 )
 
+data class ExpenseCancellationSnapshot(
+    val expenseId: String,
+    val expectedExpenseUpdatedAt: Long,
+    val originalPurchaseTransactionId: String,
+    val prepaidAccountId: String,
+    val amount: Long,
+    val purchaseDate: String
+)
+
 enum class ExpenseCancellationFailure {
     InvalidRequest,
     ExpenseNotFound,
@@ -169,6 +178,67 @@ class ExpenseCancellationRepository internal constructor(
         clock = clock as ExpenseCancellationClock,
         idGenerator = idGenerator as ExpenseCancellationIdGenerator
     )
+
+    suspend fun loadCancellationSnapshot(
+        expenseId: String
+    ): ExpenseCancellationSnapshot {
+        return try {
+            database.withTransaction {
+                val canonicalExpenseId = ExpenseCancellationRules.canonicalIdentifier(expenseId)
+                if (cancellationDao.getByExpenseId(canonicalExpenseId) != null) {
+                    fail(ExpenseCancellationFailure.AlreadyCancelled)
+                }
+                val expense = warunDao.getActiveExpenseRecord(canonicalExpenseId)
+                    ?: if (warunDao.getExpenseRecord(canonicalExpenseId) == null) {
+                        fail(ExpenseCancellationFailure.ExpenseNotFound)
+                    } else {
+                        fail(ExpenseCancellationFailure.StaleState)
+                    }
+                if (normalizePaymentMethod(expense.paymentMethod) != PaymentMethodPrepaid) {
+                    fail(ExpenseCancellationFailure.InvalidRequest)
+                }
+                val link = prepaidLinkDao.getByExpenseId(canonicalExpenseId)
+                    ?: fail(ExpenseCancellationFailure.PrepaidStateInconsistent)
+                val purchase = transactionDao.getById(link.purchaseTransactionId)
+                    ?: fail(ExpenseCancellationFailure.PrepaidStateInconsistent)
+                if (
+                    link.expenseId != expense.id ||
+                    purchase.id != link.purchaseTransactionId ||
+                    purchase.transactionType != PrepaidTransactionType.Purchase ||
+                    purchase.reversalOfTransactionId != null ||
+                    purchase.expenseId != expense.id ||
+                    expense.amount <= 0L ||
+                    purchase.balanceDelta != negateExact(expense.amount) ||
+                    purchase.accountId.isBlank() ||
+                    purchase.transactionDate.isBlank() ||
+                    transactionDao.getByReversalOfTransactionId(purchase.id) != null ||
+                    accountDao.getById(purchase.accountId) == null
+                ) {
+                    fail(ExpenseCancellationFailure.PrepaidStateInconsistent)
+                }
+                ExpenseCancellationSnapshot(
+                    expenseId = expense.id,
+                    expectedExpenseUpdatedAt = expense.updatedAt,
+                    originalPurchaseTransactionId = purchase.id,
+                    prepaidAccountId = purchase.accountId,
+                    amount = expense.amount,
+                    purchaseDate = purchase.transactionDate
+                )
+            }
+        } catch (error: ExpenseCancellationException) {
+            throw error
+        } catch (error: ExpenseCancellationValidationException) {
+            throw ExpenseCancellationException(
+                ExpenseCancellationFailure.InvalidRequest,
+                error
+            )
+        } catch (error: SQLiteException) {
+            throw ExpenseCancellationException(
+                ExpenseCancellationFailure.DatabaseFailure,
+                error
+            )
+        }
+    }
 
     suspend fun cancelExpense(
         request: ExpenseCancellationRequest

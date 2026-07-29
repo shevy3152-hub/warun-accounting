@@ -113,6 +113,19 @@ class ExpenseCancellationRequestFingerprintTest {
         }
     }
 
+    @Test
+    fun reasonLengthUsesTheSameCanonicalLimitAsTheViewModel() {
+        ExpenseCancellationRequestFingerprint.create(
+            input(reason = "あ".repeat(ExpenseCancellationRules.MaxReasonLength))
+        )
+
+        assertFailure(ExpenseCancellationValidationFailure.ReasonTooLong) {
+            ExpenseCancellationRequestFingerprint.create(
+                input(reason = "あ".repeat(ExpenseCancellationRules.MaxReasonLength + 1))
+            )
+        }
+    }
+
     private fun input(
         expenseId: String = "expense-1",
         expectedExpenseUpdatedAt: Long = 42L,
