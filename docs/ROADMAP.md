@@ -371,7 +371,8 @@ Phase 4A、4B、プリペイド管理Phase C-3は実装・受入済みです。R
 
 ### 保守確認
 
-- A90にはPhase C-3最終受入の開始前からpending画像が1件存在する。今回の取消処理による新規pendingではなく、現段階では削除しない。将来、Evidence Journalとの対応関係を読取専用で確認する。
+- **Low**: A90のPhase C-3受入前から残るpending画像1件は、読取専用調査で分類E「判定不能」とした。永続データ上は孤立pendingが最有力だが、一時UI状態からの参照を完全には否定できないため、現時点では保持し、Phase C-3完了判定には影響させない。
+- 将来の清掃は、Evidence、Link、Journal、quarantine、入力状態、SavedStateHandle、進行中captureIdの全参照と経過期間を確認した候補だけをquarantineへ移し、猶予期間後に再確認してから削除する方式を設計する。
 
 ### 経営指標
 

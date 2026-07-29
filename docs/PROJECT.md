@@ -297,6 +297,15 @@ OCR反映時点で保持されるのはcapture参照だけです。「支出入�
 - A90 1200×1920でDialog表示、スクロール、IME、回転、取消、集計、監査、Evidence、再起動後の保持を確認した。
 - 受入用プリペイド支出300円の取消で、au PAY残高4,700円から5,000円、majica残高5,400円不変、REVERSAL 1件、Cancellation 1件、EvidenceとSHA-256一致、未完了編集operation 0件、クラッシュなしを確認した。
 
+### 既存pending 1件の読取専用調査
+
+- 対象は`com.warun.accounting`の`/data/user/0/com.warun.accounting/files/receipt-images/pending/receipt_bacb947b-63a9-4d77-bfa5-044ec54af6c7.jpg`。3,053,403 bytes、2026-07-27 00:32:01 +09:00更新、2448×3264の正常なJPEGで、SHA-256は`ccd5f2d1dfb4bac0e583b825e27af5a1762a08337ee39f7c26ab6667eef8f759`。内容は2026-07-24、合計1,846円の受入前に撮影されたレシート。
+- `warun-accounting.db`はuser_version 14。captureId、SHA、サイズが一致するEvidenceRecord、ExpenseEvidenceLink、Journalはなく、Journalディレクトリは空でquarantineもなかった。
+- 同日・同店・同額のactive Expenseは別captureIdのEvidenceへ正常にLinkされ、同一レシートの別撮影がstoredへ正式保存済みだった。pendingとstoredはcaptureId、サイズ、SHAが異なり、stored側のDB、Link、ファイルは整合していた。
+- 正式分類はE「判定不能」。永続データ上はC「孤立pending」が最有力で、約3分後に別captureIdで同じレシートが正式保存された旧撮影の後片付け漏れである可能性が高い。一方、SavedStateHandleまたはプロセス内の未保存入力が旧captureIdを所有していないことは読取専用調査では完全に証明できないため、孤立確定または削除可能とは扱わない。
+- PC側query-only snapshotの`integrity_check`は`ok`。調査前後でpendingの件数、名前、サイズ、更新日時、SHA、DB／WAL／SHM、Journal 0件は不変で、A90上のデータは変更していない。
+- 現在は保持し、手動削除、自動復旧の強制、Journal／EvidenceRecord／Linkの人工的な作成を行わない。このLow優先度の保守事項はPhase C-3完了判定へ影響しない。
+
 ## 未実装
 
 詳細と優先順位は `docs/ROADMAP.md` を参照してください。現在の主な未実装範囲は次のとおりです。

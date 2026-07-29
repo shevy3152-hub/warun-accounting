@@ -317,7 +317,8 @@ git diff --check
 - リリース署名、配布、バックアップ、復元、production DBの運用手順
 - CI、必須Lint／フォーマット、コードレビュー、PRの正式ルール
 - REFUND、部分返金、複数返金、プリペイド口座削除、Expense物理削除、Journal v2、スマホ最適化はPhase C-3の実装範囲外。
-- A90には受入開始前から未関連のpending画像が1件ある。今回の取消処理で作成されたものではなく、現段階では削除せず、将来Evidence Journalとの対応関係を読取専用で確認する。
+- A90に受入開始前から残るpending画像1件は、読取専用調査でも一時UI状態による所有を完全には否定できず、分類E「判定不能」とした。永続データ上は孤立pendingの可能性が高いが、削除可能とは扱わず、手動削除、自動復旧の強制、Journal／EvidenceRecord／Linkの人工的な作成を行わない。
+- 将来pendingを孤立候補と判定する場合も、EvidenceRecord、ExpenseEvidenceLink、Evidence Journal、quarantine、現在の入力状態、SavedStateHandle、進行中のOCR／撮影／写真選択から参照されず、一定期間以上更新されていないことを確認し、削除直前に全参照を再確認する。候補検出後は直ちに削除せず、quarantine、猶予期間、再確認を経る設計を先に承認する。
 - READMEの実装状況を更新する時期と範囲
 
 これらを必要とするタスクでは、既存コードから推測して契約を固定せず、設計案と影響範囲を提示してユーザー確認を待つ。
