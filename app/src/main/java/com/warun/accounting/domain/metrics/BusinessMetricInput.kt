@@ -11,6 +11,9 @@ data class MetricSourceSummary(
     val customerCountSourceCount: Int,
     val legacyFallbackUsed: Boolean,
     val cancellationsExcluded: Boolean,
+    val fixedCostSourcePartial: Boolean = false,
+    val customerCountZeroOrUnknown: Boolean = false,
+    val directExpenseSourceCount: Int = 0,
 ) {
     init {
         require(salesSourceCount >= 0)
@@ -19,7 +22,12 @@ data class MetricSourceSummary(
         require(alcoholPurchaseSourceCount >= 0)
         require(fixedCostSourceCount >= 0)
         require(customerCountSourceCount >= 0)
+        require(directExpenseSourceCount >= 0)
+        require(expenseSourceCount.toLong() + directExpenseSourceCount <= Int.MAX_VALUE)
     }
+
+    val recordedExpenseSourceCount: Int
+        get() = expenseSourceCount + directExpenseSourceCount
 }
 
 /**
@@ -45,4 +53,10 @@ data class BusinessMetricInput(
     val customerCount: Long?,
     val sourceSummary: MetricSourceSummary,
     val calculatedAt: Instant,
+    /**
+     * Period total of legacy utilities amounts that could not be attributed to electricity, gas,
+     * or water. Per-report source selection is completed before this input is constructed, so
+     * this total may coexist with allocated utility totals originating from different dates.
+     */
+    val unallocatedUtilitiesYen: Long? = null,
 )

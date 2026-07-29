@@ -19,7 +19,7 @@ object BusinessMetricCalculator {
             input = input,
             type = BusinessMetricType.RECORDED_EXPENSES,
             value = input.recordedExpensesYen,
-            sourceCount = input.sourceSummary.expenseSourceCount,
+            sourceCount = input.sourceSummary.recordedExpenseSourceCount,
             missingSource = MissingMetricInput.EXPENSE_SOURCE,
             basis = MetricCalculationBasis.RECORDED_EXPENSE_TOTAL,
         )
@@ -154,6 +154,7 @@ object BusinessMetricCalculator {
             input.electricityYen,
             input.gasYen,
             input.waterYen,
+            input.unallocatedUtilitiesYen,
         )
         val missing = linkedSetOf<MissingMetricInput>()
         val warnings = linkedSetOf<MetricWarning>().apply {
@@ -171,8 +172,24 @@ object BusinessMetricCalculator {
         if (values.any { it != null && it < 0 }) {
             missing += MissingMetricInput.NON_NEGATIVE_INPUT
         }
-        if (input.sourceSummary.fixedCostSourceCount > 0 && values.any { it == null }) {
+        val missingFixedCostSource =
+            listOf(input.rentYen, input.communicationYen, input.accountantFeeYen).any {
+                it == null
+            } ||
+                (
+                    input.unallocatedUtilitiesYen == null &&
+                        listOf(input.electricityYen, input.gasYen, input.waterYen).any {
+                            it == null
+                        }
+                    )
+        if (input.sourceSummary.fixedCostSourceCount > 0 && missingFixedCostSource) {
             warnings += MetricWarning.SOURCE_DATA_PARTIAL
+        }
+        if (input.sourceSummary.fixedCostSourcePartial) {
+            warnings += MetricWarning.SOURCE_DATA_PARTIAL
+        }
+        if (input.unallocatedUtilitiesYen != null) {
+            warnings += MetricWarning.UNALLOCATED_UTILITIES_USED
         }
 
         val value = if (missing.isEmpty()) {
@@ -446,6 +463,9 @@ object BusinessMetricCalculator {
         }
         if (customerCount == 0L) {
             missing += MissingMetricInput.POSITIVE_CUSTOMER_COUNT
+            warnings += MetricWarning.CUSTOMER_COUNT_ZERO_OR_UNKNOWN
+        }
+        if (input.sourceSummary.customerCountZeroOrUnknown) {
             warnings += MetricWarning.CUSTOMER_COUNT_ZERO_OR_UNKNOWN
         }
         val value = if (

@@ -18,6 +18,56 @@ data class ExpenseDateCategoryKey(
     val category: String
 )
 
+enum class PreferredExpenseAmountSource {
+    ACTIVE_RECORDS,
+    CANCELLATION_SUPPRESSED,
+    LEGACY_FALLBACK,
+    NO_SOURCE,
+}
+
+data class PreferredExpenseAmountDetail(
+    val amount: Long,
+    val source: PreferredExpenseAmountSource,
+    val sourceCount: Int,
+)
+
+/**
+ * Shared active/cancelled/legacy selection rule.
+ *
+ * Callers retain responsibility for calculating [activeAmount], allowing existing UI aggregation
+ * to preserve its current arithmetic while new domain assembly can use overflow-safe arithmetic.
+ */
+fun preferredExpenseAmountDetail(
+    activeRecordCount: Int,
+    activeAmount: Long,
+    cancellationExists: Boolean,
+    legacyAmount: Long,
+): PreferredExpenseAmountDetail {
+    require(activeRecordCount >= 0)
+    return when {
+        activeRecordCount > 0 -> PreferredExpenseAmountDetail(
+            amount = activeAmount,
+            source = PreferredExpenseAmountSource.ACTIVE_RECORDS,
+            sourceCount = activeRecordCount,
+        )
+        cancellationExists -> PreferredExpenseAmountDetail(
+            amount = 0L,
+            source = PreferredExpenseAmountSource.CANCELLATION_SUPPRESSED,
+            sourceCount = 0,
+        )
+        legacyAmount > 0L -> PreferredExpenseAmountDetail(
+            amount = legacyAmount,
+            source = PreferredExpenseAmountSource.LEGACY_FALLBACK,
+            sourceCount = 1,
+        )
+        else -> PreferredExpenseAmountDetail(
+            amount = legacyAmount,
+            source = PreferredExpenseAmountSource.NO_SOURCE,
+            sourceCount = 0,
+        )
+    }
+}
+
 fun Iterable<ExpenseRecord>.preferredExpenseAmount(
     reportDate: String,
     category: String,
@@ -25,11 +75,12 @@ fun Iterable<ExpenseRecord>.preferredExpenseAmount(
     cancelledExpenseKeys: Set<ExpenseDateCategoryKey> = emptySet()
 ): Long {
     val records = filter { it.expenseDate == reportDate && it.category == category }
-    return when {
-        records.isNotEmpty() -> records.expenseAmount()
-        ExpenseDateCategoryKey(reportDate, category) in cancelledExpenseKeys -> 0L
-        else -> legacyAmount
-    }
+    return preferredExpenseAmountDetail(
+        activeRecordCount = records.size,
+        activeAmount = records.expenseAmount(),
+        cancellationExists = ExpenseDateCategoryKey(reportDate, category) in cancelledExpenseKeys,
+        legacyAmount = legacyAmount,
+    ).amount
 }
 
 fun Iterable<ExpenseRecord>.preferredCashExpenseAmount(
@@ -39,9 +90,10 @@ fun Iterable<ExpenseRecord>.preferredCashExpenseAmount(
     cancelledExpenseKeys: Set<ExpenseDateCategoryKey> = emptySet()
 ): Long {
     val records = filter { it.expenseDate == reportDate && it.category == category }
-    return when {
-        records.isNotEmpty() -> records.cashExpenseAmount()
-        ExpenseDateCategoryKey(reportDate, category) in cancelledExpenseKeys -> 0L
-        else -> legacyAmount
-    }
+    return preferredExpenseAmountDetail(
+        activeRecordCount = records.size,
+        activeAmount = records.cashExpenseAmount(),
+        cancellationExists = ExpenseDateCategoryKey(reportDate, category) in cancelledExpenseKeys,
+        legacyAmount = legacyAmount,
+    ).amount
 }

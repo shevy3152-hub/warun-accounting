@@ -181,6 +181,83 @@ class BusinessMetricCalculatorTest {
     }
 
     @Test
+    fun unallocatedUtilitiesAreCountedOnceWithoutReclassification() {
+        val input = baseInput().copy(
+            rentYen = null,
+            communicationYen = null,
+            accountantFeeYen = null,
+            electricityYen = null,
+            gasYen = null,
+            waterYen = null,
+            unallocatedUtilitiesYen = 9_000L,
+            sourceSummary = baseSources().copy(fixedCostSourceCount = 1),
+        )
+
+        val result = calculate(input).recordedFixedCostEquivalent
+
+        assertEquals(MetricValue.Amount(9_000L), result.value)
+        assertEquals(MetricClassification.RECORDED, result.classification)
+        assertTrue(MetricWarning.UNALLOCATED_UTILITIES_USED in result.warnings)
+    }
+
+    @Test
+    fun allocatedAndUnallocatedPeriodTotalsCanCoexistAndAreEachCountedOnce() {
+        val input = baseInput().copy(
+            rentYen = null,
+            communicationYen = null,
+            accountantFeeYen = null,
+            electricityYen = 1_000L,
+            gasYen = null,
+            waterYen = null,
+            unallocatedUtilitiesYen = 2_000L,
+            sourceSummary = baseSources().copy(fixedCostSourceCount = 2),
+        )
+
+        val result = calculate(input).recordedFixedCostEquivalent
+
+        assertEquals(MetricValue.Amount(3_000L), result.value)
+        assertTrue(MetricWarning.UNALLOCATED_UTILITIES_USED in result.warnings)
+    }
+
+    @Test
+    fun allocatedUtilitiesDoNotDeclareUnallocatedWarning() {
+        val result = calculate().recordedFixedCostEquivalent
+
+        assertFalse(MetricWarning.UNALLOCATED_UTILITIES_USED in result.warnings)
+        assertAmount(30_000L, result)
+    }
+
+    @Test
+    fun negativeAndOverflowingUnallocatedUtilitiesAreRejectedWithoutWrapping() {
+        val negative = calculate(
+            baseInput().copy(
+                electricityYen = null,
+                gasYen = null,
+                waterYen = null,
+                unallocatedUtilitiesYen = -1L,
+                sourceSummary = baseSources().copy(fixedCostSourceCount = 4),
+            ),
+        ).recordedFixedCostEquivalent
+        val overflow = calculate(
+            baseInput().copy(
+                rentYen = Long.MAX_VALUE,
+                communicationYen = null,
+                accountantFeeYen = null,
+                electricityYen = null,
+                gasYen = null,
+                waterYen = null,
+                unallocatedUtilitiesYen = 1L,
+                sourceSummary = baseSources().copy(fixedCostSourceCount = 2),
+            ),
+        ).recordedFixedCostEquivalent
+
+        assertNull(negative.value)
+        assertTrue(MissingMetricInput.NON_NEGATIVE_INPUT in negative.missingInputs)
+        assertNull(overflow.value)
+        assertTrue(MissingMetricInput.VALUE_WITHIN_LONG_RANGE in overflow.missingInputs)
+    }
+
+    @Test
     fun partialFixedCostSourcesKeepRecordedValueAndDeclarePartialData() {
         val input = baseInput().copy(
             rentYen = 10_000L,
@@ -628,6 +705,12 @@ class BusinessMetricCalculatorTest {
     fun sourceSummaryRejectsNegativeCounts() {
         assertThrows(IllegalArgumentException::class.java) {
             baseSources().copy(salesSourceCount = -1)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            baseSources().copy(
+                expenseSourceCount = Int.MAX_VALUE,
+                directExpenseSourceCount = 1,
+            )
         }
     }
 

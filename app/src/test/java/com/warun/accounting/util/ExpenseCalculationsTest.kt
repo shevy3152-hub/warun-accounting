@@ -253,6 +253,39 @@ class ExpenseCalculationsTest {
         )
     }
 
+    @Test
+    fun detailedPreferredAmountReportsContributingSourceWithoutChangingAmountRule() {
+        assertEquals(
+            PreferredExpenseAmountDetail(
+                amount = 2_000L,
+                source = PreferredExpenseAmountSource.ACTIVE_RECORDS,
+                sourceCount = 2,
+            ),
+            preferredExpenseAmountDetail(
+                activeRecordCount = 2,
+                activeAmount = 2_000L,
+                cancellationExists = true,
+                legacyAmount = 9_000L,
+            ),
+        )
+        assertEquals(
+            PreferredExpenseAmountSource.CANCELLATION_SUPPRESSED,
+            preferredExpenseAmountDetail(0, 0L, true, 9_000L).source,
+        )
+        assertEquals(
+            PreferredExpenseAmountSource.LEGACY_FALLBACK,
+            preferredExpenseAmountDetail(0, 0L, false, 9_000L).source,
+        )
+        assertEquals(
+            PreferredExpenseAmountDetail(
+                amount = 0L,
+                source = PreferredExpenseAmountSource.NO_SOURCE,
+                sourceCount = 0,
+            ),
+            preferredExpenseAmountDetail(0, 0L, false, 0L),
+        )
+    }
+
     private fun expense(
         id: String,
         amount: Long,
