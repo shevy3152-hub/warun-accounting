@@ -6,6 +6,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.warun.accounting.data.OfflineAccountingRepository
 import com.warun.accounting.data.prepaid.OfflinePrepaidRepository
+import com.warun.accounting.data.prepaid.PrepaidAccountCreateInput
 import com.warun.accounting.data.prepaid.PrepaidAdjustmentInput
 import com.warun.accounting.data.prepaid.PrepaidChargeInput
 import com.warun.accounting.data.prepaid.PrepaidExpensePurchaseInput
@@ -72,6 +73,57 @@ class PrepaidPersistenceTest {
                 .map { it.balance }
         )
     }
+
+    @Test
+    fun repositoryCreatesNormalizedZeroBalanceAccountWithoutChangingExistingLedger() =
+        runBlocking {
+            val repository = repository()
+            repository.createCharge(
+                PrepaidChargeInput(
+                    accountId = PrepaidAccountId.Majica,
+                    transactionDate = "2026-08-01",
+                    amount = 2_000L,
+                    chargeSource = PrepaidChargeSource.Cash,
+                    memo = "existing balance",
+                    operationKey = "existing-account-charge"
+                )
+            )
+            val transactionsBefore = database.prepaidTransactionDao().observeAll().first()
+
+            val account = repository.createAccount(
+                PrepaidAccountCreateInput("  Ｔｅｓｔ　Ｐａｙ  ")
+            )
+
+            assertEquals("Test Pay", account.name)
+            assertTrue(PrepaidAccountType.isSupported(account.type))
+            assertEquals(0L, repository.getBalance(account.id))
+            assertEquals(2_000L, repository.getBalance(PrepaidAccountId.Majica))
+            assertEquals(
+                transactionsBefore,
+                database.prepaidTransactionDao().observeAll().first()
+            )
+            assertValidationFailure(PrepaidValidationFailure.DuplicateAccountName) {
+                repository.createAccount(PrepaidAccountCreateInput("test pay"))
+            }
+            assertValidationFailure(PrepaidValidationFailure.DuplicateAccountName) {
+                repository.createAccount(PrepaidAccountCreateInput("  MAJICA "))
+            }
+
+            repository.createCharge(
+                PrepaidChargeInput(
+                    accountId = account.id,
+                    transactionDate = "2026-08-01",
+                    amount = 500L,
+                    chargeSource = PrepaidChargeSource.BankAccount,
+                    memo = "first charge",
+                    operationKey = "user-account-charge"
+                )
+            )
+
+            assertEquals(500L, repository.getBalance(account.id))
+            assertEquals(2_000L, repository.getBalance(PrepaidAccountId.Majica))
+            assertEquals(2, database.prepaidTransactionDao().observeAll().first().size)
+        }
 
     @Test
     fun daoCalculatesBalancesPerAccountAndPreservesImmutableHistory() = runBlocking {

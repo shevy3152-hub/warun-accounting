@@ -9,8 +9,15 @@ import androidx.room.PrimaryKey
 object PrepaidAccountType {
     const val Majica = "MAJICA"
     const val AuPayPrepaid = "AU_PAY_PREPAID"
+    const val UserDefinedPrefix = "USER_DEFINED:"
 
     val Supported = setOf(Majica, AuPayPrepaid)
+
+    fun userDefined(uniqueId: String): String = "$UserDefinedPrefix$uniqueId"
+
+    fun isSupported(value: String): Boolean =
+        value in Supported ||
+            (value.startsWith(UserDefinedPrefix) && value.length > UserDefinedPrefix.length)
 }
 
 object PrepaidAccountId {

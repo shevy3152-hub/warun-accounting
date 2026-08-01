@@ -14,6 +14,9 @@ interface PrepaidAccountDao {
     @Query("SELECT * FROM prepaid_accounts ORDER BY createdAt ASC, id ASC")
     fun observeAllAccounts(): Flow<List<PrepaidAccountRecord>>
 
+    @Query("SELECT * FROM prepaid_accounts ORDER BY createdAt ASC, id ASC")
+    suspend fun getAllAccounts(): List<PrepaidAccountRecord>
+
     @Query("SELECT * FROM prepaid_accounts WHERE id = :accountId")
     suspend fun getById(accountId: String): PrepaidAccountRecord?
 

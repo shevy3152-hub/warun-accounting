@@ -67,6 +67,32 @@ class PrepaidLedgerRulesTest {
     }
 
     @Test
+    fun userDefinedAccountUsesTheExistingChargeLedgerContract() {
+        val account = PrepaidAccountRecord(
+            id = "prepaid-user-test",
+            type = PrepaidAccountType.userDefined("test"),
+            name = "Test Pay",
+            isActive = true,
+            createdAt = 1L,
+            updatedAt = 1L
+        )
+        val charge = transaction(
+            id = "user-charge",
+            accountId = account.id,
+            type = PrepaidTransactionType.Charge,
+            delta = 1_000L,
+            chargeSource = PrepaidChargeSource.CreditCard
+        )
+
+        PrepaidLedgerRules.validateTransaction(account, charge, currentBalance = 0L)
+
+        assertEquals(
+            1_000L,
+            PrepaidLedgerRules.calculateBalance(listOf(charge), account.id)
+        )
+    }
+
+    @Test
     fun reversalOffsetsTheOriginalTransaction() {
         val original = transaction(
             id = "purchase",

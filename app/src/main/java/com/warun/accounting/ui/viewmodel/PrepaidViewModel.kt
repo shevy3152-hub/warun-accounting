@@ -7,6 +7,7 @@ import com.warun.accounting.data.local.PrepaidAccountId
 import com.warun.accounting.data.local.PrepaidAccountRecord
 import com.warun.accounting.data.local.PrepaidChargeSource
 import com.warun.accounting.data.local.PrepaidTransactionRecord
+import com.warun.accounting.data.prepaid.PrepaidAccountCreateInput
 import com.warun.accounting.data.prepaid.PrepaidAdjustmentInput
 import com.warun.accounting.data.prepaid.PrepaidChargeInput
 import com.warun.accounting.data.prepaid.PrepaidRepository
@@ -52,14 +53,19 @@ data class PrepaidFormState(
     val operationKey: String = UUID.randomUUID().toString(),
     val inputMode: String = PrepaidInputMode.History,
     val pendingReversalTargetId: String? = null,
-    val reversalOperationKey: String? = null
+    val reversalOperationKey: String? = null,
+    val isAccountCreationOpen: Boolean = false,
+    val newAccountName: String = ""
 ) {
-    val hasUnsavedChanges: Boolean
+    val hasUnsavedLedgerChanges: Boolean
         get() = amount.isNotBlank() ||
             memo.isNotBlank() ||
             transactionDate != todayString() ||
             chargeSource != PrepaidChargeSource.Cash ||
             adjustmentDirection != PrepaidAdjustmentDirection.Increase
+
+    val hasUnsavedChanges: Boolean
+        get() = hasUnsavedLedgerChanges || newAccountName.isNotBlank()
 }
 
 data class PrepaidFeedback(
@@ -145,6 +151,43 @@ class PrepaidViewModel @Inject constructor(
     }
     fun setAdjustmentDirection(value: String) = updateForm {
         copy(adjustmentDirection = value)
+    }
+
+    fun beginAccountCreation() {
+        if (_form.value.hasUnsavedLedgerChanges) {
+            _feedback.value = PrepaidFeedback(
+                "入力中の台帳内容があります。保存するか破棄してから口座を追加してください。",
+                true
+            )
+            return
+        }
+        updateForm { copy(isAccountCreationOpen = true) }
+    }
+
+    fun setNewAccountName(value: String) = updateForm { copy(newAccountName = value) }
+
+    fun cancelAccountCreation() = updateForm {
+        copy(isAccountCreationOpen = false, newAccountName = "")
+    }
+
+    fun saveAccount() {
+        if (_isSaving.value) return
+        val name = _form.value.newAccountName
+        _isSaving.value = true
+        viewModelScope.launch {
+            runCatching { repository.createAccount(PrepaidAccountCreateInput(name)) }
+                .onSuccess { account ->
+                    setForm(PrepaidFormState(accountId = account.id))
+                    _feedback.value = PrepaidFeedback(
+                        "${account.name}を初期残高0円で追加しました。",
+                        false
+                    )
+                }
+                .onFailure { error ->
+                    _feedback.value = PrepaidFeedback(error.toUserMessage(), true)
+                }
+            _isSaving.value = false
+        }
     }
 
     fun saveCharge() {
@@ -292,6 +335,8 @@ class PrepaidViewModel @Inject constructor(
         PrepaidValidationFailure.InvalidDate -> "正しい日付を入力してください。"
         PrepaidValidationFailure.ArithmeticOverflow -> "金額が大きすぎるため保存できません。"
         PrepaidValidationFailure.ReversalOfReversal -> "取消取引を再度取消すことはできません。"
+        PrepaidValidationFailure.AccountNameRequired -> "口座名を入力してください。"
+        PrepaidValidationFailure.DuplicateAccountName -> "同じ名前のプリペイド口座が既にあります。"
         else -> "保存できませんでした。入力内容を確認して、もう一度お試しください。"
     }
 
@@ -311,6 +356,8 @@ class PrepaidViewModel @Inject constructor(
         savedStateHandle[InputModeKey] = value.inputMode
         savedStateHandle[ReversalTargetKey] = value.pendingReversalTargetId
         savedStateHandle[ReversalOperationKey] = value.reversalOperationKey
+        savedStateHandle[AccountCreationOpenKey] = value.isAccountCreationOpen
+        savedStateHandle[NewAccountNameKey] = value.newAccountName
     }
 
     private fun restoreForm(): PrepaidFormState = PrepaidFormState(
@@ -324,7 +371,9 @@ class PrepaidViewModel @Inject constructor(
         operationKey = savedStateHandle[OperationKey] ?: UUID.randomUUID().toString(),
         inputMode = savedStateHandle[InputModeKey] ?: PrepaidInputMode.History,
         pendingReversalTargetId = savedStateHandle[ReversalTargetKey],
-        reversalOperationKey = savedStateHandle[ReversalOperationKey]
+        reversalOperationKey = savedStateHandle[ReversalOperationKey],
+        isAccountCreationOpen = savedStateHandle[AccountCreationOpenKey] ?: false,
+        newAccountName = savedStateHandle[NewAccountNameKey] ?: ""
     )
 
     private companion object {
@@ -338,6 +387,8 @@ class PrepaidViewModel @Inject constructor(
         const val InputModeKey = "prepaid.inputMode"
         const val ReversalTargetKey = "prepaid.reversalTarget"
         const val ReversalOperationKey = "prepaid.reversalOperationKey"
+        const val AccountCreationOpenKey = "prepaid.accountCreationOpen"
+        const val NewAccountNameKey = "prepaid.newAccountName"
     }
 }
 

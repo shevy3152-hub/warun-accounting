@@ -42,7 +42,9 @@ enum class PrepaidValidationFailure {
     PaymentMethodMismatch,
     ExpenseAlreadyExists,
     ExpenseContentMismatch,
-    EvidenceContentMismatch
+    EvidenceContentMismatch,
+    AccountNameRequired,
+    DuplicateAccountName
 }
 
 class PrepaidValidationException(
@@ -74,7 +76,7 @@ object PrepaidLedgerRules {
         if (!account.isActive) {
             fail(PrepaidValidationFailure.AccountInactive)
         }
-        if (account.type !in PrepaidAccountType.Supported) {
+        if (!PrepaidAccountType.isSupported(account.type)) {
             fail(PrepaidValidationFailure.UnknownAccountType)
         }
         if (
@@ -187,7 +189,11 @@ object PrepaidLedgerRules {
         val allowedSources = when (account.type) {
             PrepaidAccountType.Majica -> setOf(PrepaidChargeSource.Cash)
             PrepaidAccountType.AuPayPrepaid -> PrepaidChargeSource.Supported
-            else -> emptySet()
+            else -> if (PrepaidAccountType.isSupported(account.type)) {
+                PrepaidChargeSource.Supported
+            } else {
+                emptySet()
+            }
         }
         if (chargeSource !in allowedSources) {
             fail(PrepaidValidationFailure.UnknownChargeSource)

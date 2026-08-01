@@ -138,13 +138,14 @@ fun PrepaidManagementScreen(
                 fontWeight = FontWeight.Bold
             )
             Text(
-                "チャージと残高調整を不変台帳へ記録します。プリペイドでの支出登録は未対応です。",
+                "口座を初期残高0円で追加し、残高はチャージと不変台帳で管理します。",
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             AccountList(
                 ledger = ledger,
                 selectedAccountId = form.accountId,
-                onSelect = viewModel::selectAccount
+                onSelect = viewModel::selectAccount,
+                onAdd = viewModel::beginAccountCreation
             )
             ActionSelector(
                 mode = form.inputMode,
@@ -209,13 +210,52 @@ fun PrepaidManagementScreen(
             }
         )
     }
+
+    if (form.isAccountCreationOpen) {
+        AlertDialog(
+            onDismissRequest = viewModel::cancelAccountCreation,
+            title = { Text("プリペイド口座を追加") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = form.newAccountName,
+                        onValueChange = viewModel::setNewAccountName,
+                        label = { Text("口座名（必須）") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    Text(
+                        "初期残高は0円です。残高は口座追加後にチャージから登録してください。",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = viewModel::saveAccount,
+                    enabled = form.newAccountName.isNotBlank() && !isSaving
+                ) {
+                    Text(if (isSaving) "追加中…" else "追加")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = viewModel::cancelAccountCreation,
+                    enabled = !isSaving
+                ) {
+                    Text("キャンセル")
+                }
+            }
+        )
+    }
 }
 
 @Composable
 private fun AccountList(
     ledger: PrepaidLedgerUiState,
     selectedAccountId: String,
-    onSelect: (String) -> Unit
+    onSelect: (String) -> Unit,
+    onAdd: () -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("口座", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
@@ -250,6 +290,12 @@ private fun AccountList(
                     }
                 }
             }
+        }
+        OutlinedButton(
+            onClick = onAdd,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("新しい口座を追加")
         }
     }
 }

@@ -10,13 +10,16 @@ import com.warun.accounting.data.local.PrepaidAccountBalance
 import com.warun.accounting.data.local.PrepaidAccountDao
 import com.warun.accounting.data.local.PrepaidAccountId
 import com.warun.accounting.data.local.PrepaidAccountRecord
+import com.warun.accounting.data.local.PrepaidAccountType
 import com.warun.accounting.data.local.PrepaidTransactionDao
 import com.warun.accounting.data.local.PrepaidTransactionRecord
 import com.warun.accounting.data.local.PrepaidTransactionType
 import com.warun.accounting.data.local.WarunDao
 import com.warun.accounting.data.local.WarunDatabase
+import java.text.Normalizer
 import java.time.LocalDate
 import java.time.format.DateTimeParseException
+import java.util.Locale
 import java.util.UUID
 import javax.inject.Inject
 import kotlinx.coroutines.flow.Flow
@@ -41,6 +44,7 @@ interface PrepaidRepository {
     suspend fun getMajicaAccount(): PrepaidAccountRecord?
     suspend fun getAuPayPrepaidAccount(): PrepaidAccountRecord?
     suspend fun getBalance(accountId: String): Long
+    suspend fun createAccount(input: PrepaidAccountCreateInput): PrepaidAccountRecord
     suspend fun validateTransactionForInsert(transaction: PrepaidTransactionRecord)
     suspend fun validateLinkForInsert(
         link: ExpensePrepaidLinkRecord,
@@ -51,6 +55,10 @@ interface PrepaidRepository {
     suspend fun reverseTransaction(input: PrepaidReversalInput): PrepaidWriteResult
     suspend fun savePurchaseExpense(input: PrepaidExpensePurchaseInput): PrepaidExpenseWriteResult
 }
+
+data class PrepaidAccountCreateInput(
+    val name: String
+)
 
 data class PrepaidChargeInput(
     val accountId: String,
@@ -153,6 +161,35 @@ class OfflinePrepaidRepository @Inject constructor(
             throw PrepaidValidationException(PrepaidValidationFailure.AccountNotFound)
         }
         return transactionDao.getBalance(accountId)
+    }
+
+    override suspend fun createAccount(
+        input: PrepaidAccountCreateInput
+    ): PrepaidAccountRecord = database.withTransaction {
+        val normalizedName = normalizePrepaidAccountName(input.name)
+        if (normalizedName.isBlank()) {
+            throw PrepaidValidationException(PrepaidValidationFailure.AccountNameRequired)
+        }
+        val duplicateKey = prepaidAccountNameDuplicateKey(normalizedName)
+        if (
+            accountDao.getAllAccounts().any {
+                prepaidAccountNameDuplicateKey(it.name) == duplicateKey
+            }
+        ) {
+            throw PrepaidValidationException(PrepaidValidationFailure.DuplicateAccountName)
+        }
+        val uniqueId = UUID.randomUUID().toString()
+        val now = System.currentTimeMillis()
+        val account = PrepaidAccountRecord(
+            id = "prepaid-user-$uniqueId",
+            type = PrepaidAccountType.userDefined(uniqueId),
+            name = normalizedName,
+            isActive = true,
+            createdAt = now,
+            updatedAt = now
+        )
+        accountDao.insert(account)
+        account
     }
 
     override suspend fun validateTransactionForInsert(
@@ -483,6 +520,14 @@ class OfflinePrepaidRepository @Inject constructor(
         }
     }
 }
+
+internal fun normalizePrepaidAccountName(value: String): String =
+    Normalizer.normalize(value, Normalizer.Form.NFKC)
+        .trim()
+        .replace(Regex("\\s+"), " ")
+
+internal fun prepaidAccountNameDuplicateKey(value: String): String =
+    normalizePrepaidAccountName(value).lowercase(Locale.ROOT)
 
 internal fun sameExpenseBusinessOperation(
     existing: ExpenseRecord,

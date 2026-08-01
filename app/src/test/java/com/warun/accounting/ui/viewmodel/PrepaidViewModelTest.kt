@@ -10,6 +10,7 @@ import com.warun.accounting.data.local.PrepaidChargeSource
 import com.warun.accounting.data.local.PrepaidTransactionRecord
 import com.warun.accounting.data.local.PrepaidTransactionType
 import com.warun.accounting.data.prepaid.PrepaidAdjustmentInput
+import com.warun.accounting.data.prepaid.PrepaidAccountCreateInput
 import com.warun.accounting.data.prepaid.PrepaidChargeInput
 import com.warun.accounting.data.prepaid.PrepaidRepository
 import com.warun.accounting.data.prepaid.PrepaidReversalInput
@@ -126,11 +127,47 @@ class PrepaidViewModelTest {
         assertTrue(repository.chargeInputs.isEmpty())
         assertTrue(viewModel.feedback.value?.isError == true)
     }
+
+    @Test
+    fun accountCreationInputSurvivesSavedStateRecreation() {
+        val handle = SavedStateHandle()
+        val first = PrepaidViewModel(FakePrepaidRepository(), handle)
+
+        first.beginAccountCreation()
+        first.setNewAccountName("交通系 IC")
+
+        val restored = PrepaidViewModel(FakePrepaidRepository(), handle)
+        assertTrue(restored.form.value.isAccountCreationOpen)
+        assertEquals("交通系 IC", restored.form.value.newAccountName)
+        assertTrue(restored.form.value.hasUnsavedChanges)
+    }
+
+    @Test
+    fun doubleTapCreatesOneZeroBalanceAccountAndSelectsIt() = runTest(dispatcher) {
+        val repository = FakePrepaidRepository()
+        val viewModel = PrepaidViewModel(repository, SavedStateHandle())
+        viewModel.beginAccountCreation()
+        viewModel.setNewAccountName("  Ｔｅｓｔ　Ｐａｙ  ")
+
+        viewModel.saveAccount()
+        viewModel.saveAccount()
+        advanceUntilIdle()
+
+        assertEquals(1, repository.accountInputs.size)
+        assertEquals("  Ｔｅｓｔ　Ｐａｙ  ", repository.accountInputs.single().name)
+        assertEquals("Test Pay", repository.createdAccount?.name)
+        assertEquals(repository.createdAccount?.id, viewModel.form.value.accountId)
+        assertFalse(viewModel.form.value.isAccountCreationOpen)
+        assertFalse(viewModel.form.value.hasUnsavedChanges)
+        assertTrue(viewModel.feedback.value?.message?.contains("初期残高0円") == true)
+    }
 }
 
 private class FakePrepaidRepository : PrepaidRepository {
     val chargeInputs = mutableListOf<PrepaidChargeInput>()
-    private val accounts = listOf(
+    val accountInputs = mutableListOf<PrepaidAccountCreateInput>()
+    var createdAccount: PrepaidAccountRecord? = null
+    private val accounts = mutableListOf(
         PrepaidAccountRecord(
             PrepaidAccountId.Majica,
             PrepaidAccountType.Majica,
@@ -148,12 +185,13 @@ private class FakePrepaidRepository : PrepaidRepository {
             0
         )
     )
+    private val accountsFlow = MutableStateFlow(accounts.toList())
     private val transactionFlow = MutableStateFlow<List<PrepaidTransactionRecord>>(emptyList())
 
     override fun observeActiveAccounts(): Flow<List<PrepaidAccountRecord>> =
-        MutableStateFlow(accounts)
+        accountsFlow
     override fun observeAllAccounts(): Flow<List<PrepaidAccountRecord>> =
-        MutableStateFlow(accounts)
+        accountsFlow
     override fun observeTransactions(accountId: String): Flow<List<PrepaidTransactionRecord>> =
         transactionFlow
     override fun observeTransactionsBetween(
@@ -174,9 +212,26 @@ private class FakePrepaidRepository : PrepaidRepository {
     override suspend fun getAccount(accountId: String): PrepaidAccountRecord? =
         accounts.firstOrNull { it.id == accountId }
     override suspend fun getExpenseLink(expenseId: String): ExpensePrepaidLinkRecord? = null
-    override suspend fun getMajicaAccount(): PrepaidAccountRecord = accounts.first()
-    override suspend fun getAuPayPrepaidAccount(): PrepaidAccountRecord = accounts.last()
+    override suspend fun getMajicaAccount(): PrepaidAccountRecord =
+        accounts.first { it.id == PrepaidAccountId.Majica }
+    override suspend fun getAuPayPrepaidAccount(): PrepaidAccountRecord =
+        accounts.first { it.id == PrepaidAccountId.AuPayPrepaid }
     override suspend fun getBalance(accountId: String): Long = 0
+    override suspend fun createAccount(input: PrepaidAccountCreateInput): PrepaidAccountRecord {
+        accountInputs += input
+        return PrepaidAccountRecord(
+            id = "prepaid-user-test",
+            type = PrepaidAccountType.userDefined("test"),
+            name = "Test Pay",
+            isActive = true,
+            createdAt = 1L,
+            updatedAt = 1L
+        ).also {
+            createdAccount = it
+            accounts += it
+            accountsFlow.value = accounts.toList()
+        }
+    }
     override suspend fun validateTransactionForInsert(transaction: PrepaidTransactionRecord) = Unit
     override suspend fun validateLinkForInsert(
         link: ExpensePrepaidLinkRecord,
