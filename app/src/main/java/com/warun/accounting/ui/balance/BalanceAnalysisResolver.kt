@@ -48,7 +48,10 @@ internal fun resolveBalanceMetricPeriod(
     BalancePeriodMode.LastMonth,
     -> MetricPeriod.Monthly(YearMonth.from(period.start))
 
-    BalancePeriodMode.Custom -> null
+    BalancePeriodMode.Custom -> MetricPeriod.CustomRange(
+        startDate = period.start,
+        endDateInclusive = period.end,
+    )
 }
 
 internal fun resolveBalanceAnalysis(

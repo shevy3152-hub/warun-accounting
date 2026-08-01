@@ -229,6 +229,67 @@ class BusinessMetricViewModelTest {
     }
 
     @Test
+    fun customRangeChangeAndProviderReemitUseInclusiveSelectedRange() = runTest(dispatcher) {
+        val reports = MutableStateFlow(
+            listOf(
+                report(id = "before", reportDate = "2026-07-30", sales = 900L),
+                report(id = "start", reportDate = "2026-07-31", sales = 1_000L),
+                report(id = "end", reportDate = "2026-08-02", sales = 2_000L),
+                report(id = "after", reportDate = "2026-08-03", sales = 800L),
+            ),
+        )
+        val visibility = MutableStateFlow(
+            listOf(
+                visibility("before", ExpenseCategory.OtherExpense, false, "2026-07-30", 90L),
+                visibility("start", ExpenseCategory.OtherExpense, false, "2026-07-31", 100L),
+                visibility("end", ExpenseCategory.OtherExpense, false, "2026-08-02", 200L),
+                visibility("after", ExpenseCategory.OtherExpense, false, "2026-08-03", 80L),
+            ),
+        )
+        val viewModel = viewModel(reports = reports, visibility = visibility)
+        val collector = launch { viewModel.state.collect {} }
+        val singleDay = MetricPeriod.CustomRange(
+            LocalDate.parse("2026-07-31"),
+            LocalDate.parse("2026-07-31"),
+        )
+        val crossMonth = MetricPeriod.CustomRange(
+            LocalDate.parse("2026-07-31"),
+            LocalDate.parse("2026-08-02"),
+        )
+
+        viewModel.selectPeriod(singleDay)
+        advanceUntilIdle()
+        val single = viewModel.state.value as BusinessMetricUiState.Success
+        assertEquals(1_000L, single.report.recordedSales.value?.yen)
+        assertEquals(100L, single.report.recordedExpenses.value?.yen)
+
+        viewModel.selectPeriod(crossMonth)
+        advanceUntilIdle()
+        val cross = viewModel.state.value as BusinessMetricUiState.Success
+        assertEquals(crossMonth, cross.report.period)
+        assertEquals(3_000L, cross.report.recordedSales.value?.yen)
+        assertEquals(300L, cross.report.recordedExpenses.value?.yen)
+
+        reports.value = reports.value.map {
+            if (it.id == "end") report(id = it.id, reportDate = it.reportDate, sales = 2_500L) else it
+        }
+        visibility.value = visibility.value.map {
+            if (it.expense.id == "end") {
+                visibility("end", ExpenseCategory.OtherExpense, false, "2026-08-02", 250L)
+            } else {
+                it
+            }
+        }
+        advanceUntilIdle()
+
+        val updated = viewModel.state.value as BusinessMetricUiState.Success
+        assertEquals(crossMonth, updated.report.period)
+        assertEquals(3_500L, updated.report.recordedSales.value?.yen)
+        assertEquals(350L, updated.report.recordedExpenses.value?.yen)
+        collector.cancel()
+    }
+
+    @Test
     fun delayedOldPeriodCannotOverwriteLatestPeriod() = runTest(dispatcher) {
         val viewModel = viewModel()
         val collector = launch { viewModel.state.collect {} }

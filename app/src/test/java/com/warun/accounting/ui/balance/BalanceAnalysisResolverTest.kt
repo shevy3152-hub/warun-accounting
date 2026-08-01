@@ -26,9 +26,17 @@ import org.junit.Test
 
 class BalanceAnalysisResolverTest {
     @Test
-    fun dailyAndCalendarMonthModesCreateMatchingBusinessMetricPeriods() {
+    fun allBalanceModesCreateMatchingBusinessMetricPeriods() {
         val daily = BalancePeriod(LocalDate.parse("2026-07-15"), LocalDate.parse("2026-07-15"))
         val monthly = BalancePeriod(LocalDate.parse("2026-07-01"), LocalDate.parse("2026-07-31"))
+        val customSingleDay = BalancePeriod(
+            LocalDate.parse("2026-07-31"),
+            LocalDate.parse("2026-07-31"),
+        )
+        val customCrossMonth = BalancePeriod(
+            LocalDate.parse("2026-07-31"),
+            LocalDate.parse("2026-08-02"),
+        )
 
         assertEquals(
             MetricPeriod.Daily(LocalDate.parse("2026-07-15")),
@@ -46,7 +54,20 @@ class BalanceAnalysisResolverTest {
             MetricPeriod.Monthly(YearMonth.of(2026, 7)),
             resolveBalanceMetricPeriod(BalancePeriodMode.LastMonth, monthly),
         )
-        assertNull(resolveBalanceMetricPeriod(BalancePeriodMode.Custom, monthly))
+        assertEquals(
+            MetricPeriod.CustomRange(
+                LocalDate.parse("2026-07-31"),
+                LocalDate.parse("2026-07-31"),
+            ),
+            resolveBalanceMetricPeriod(BalancePeriodMode.Custom, customSingleDay),
+        )
+        assertEquals(
+            MetricPeriod.CustomRange(
+                LocalDate.parse("2026-07-31"),
+                LocalDate.parse("2026-08-02"),
+            ),
+            resolveBalanceMetricPeriod(BalancePeriodMode.Custom, customCrossMonth),
+        )
     }
 
     @Test
@@ -172,6 +193,98 @@ class BalanceAnalysisResolverTest {
     }
 
     @Test
+    fun customRangeIncludesBothBoundariesAcrossMonthAndExcludesOutside() {
+        val period = MetricPeriod.CustomRange(
+            LocalDate.parse("2026-07-31"),
+            LocalDate.parse("2026-08-02"),
+        )
+        val state = successFromSources(
+            period = period,
+            evaluationDate = "2026-08-10",
+            reports = listOf(
+                MetricDailyReportSource("before", LocalDate.parse("2026-07-30"), 999_000L, 1L),
+                MetricDailyReportSource("start", period.startDate, 40_000L, 1L),
+                MetricDailyReportSource("end", period.endDateInclusive, 60_000L, 1L),
+                MetricDailyReportSource("after", LocalDate.parse("2026-08-03"), 999_000L, 1L),
+            ),
+            expenses = listOf(
+                metricExpense(
+                    "food-start",
+                    period.startDate,
+                    MetricExpenseCategory.FOOD_PURCHASE,
+                    20_000L,
+                ),
+                metricExpense(
+                    "alcohol-end",
+                    period.endDateInclusive,
+                    MetricExpenseCategory.ALCOHOL_PURCHASE,
+                    10_000L,
+                ),
+                metricExpense(
+                    "outside",
+                    LocalDate.parse("2026-08-03"),
+                    MetricExpenseCategory.FOOD_PURCHASE,
+                    999_000L,
+                ),
+            ),
+        )
+
+        val result = resolve(period, legacySummary("2026-07-31"), state)
+
+        assertEquals(30_000L, result.referenceCost.value)
+        assertEquals(70_000L, result.approximateGrossProfit.value)
+        assertBigDecimalEquals(BigDecimal("30"), result.referenceCostRatePercent.value)
+    }
+
+    @Test
+    fun customRangeExcludesCancelledExpense() {
+        val period = MetricPeriod.CustomRange(
+            LocalDate.parse("2026-07-31"),
+            LocalDate.parse("2026-08-02"),
+        )
+        val state = success(
+            period = period,
+            evaluationDate = "2026-08-10",
+            salesYen = 100_000L,
+            expenses = listOf(
+                metricExpense("active-food", period.startDate, MetricExpenseCategory.FOOD_PURCHASE, 20_000L),
+                metricExpense(
+                    "cancelled-alcohol",
+                    period.endDateInclusive,
+                    MetricExpenseCategory.ALCOHOL_PURCHASE,
+                    10_000L,
+                    isCancelled = true,
+                ),
+            ),
+        )
+
+        val result = resolve(period, legacySummary("2026-07-31"), state)
+
+        assertEquals(20_000L, result.referenceCost.value)
+        assertEquals(80_000L, result.approximateGrossProfit.value)
+        assertBigDecimalEquals(BigDecimal("20"), result.referenceCostRatePercent.value)
+    }
+
+    @Test
+    fun customRangeNullMetricsRemainUnavailableWithoutLegacyOrZeroFallback() {
+        val period = MetricPeriod.CustomRange(
+            LocalDate.parse("2026-07-31"),
+            LocalDate.parse("2026-08-02"),
+        )
+        val result = resolve(
+            period,
+            legacySummary("2026-07-31"),
+            success(period, "2026-08-10", salesYen = 100_000L, expenses = emptyList()),
+        )
+
+        assertNull(result.referenceCost.value)
+        assertNull(result.approximateGrossProfit.value)
+        assertNull(result.referenceCostRatePercent.value)
+        assertEquals("データ不足", result.referenceCost.unavailableText)
+        assertTrue(result.referenceCost.statusText.contains("REFERENCE_COST_SOURCE"))
+    }
+
+    @Test
     fun loadingFailureAndLegacySwitchRemainDistinct() {
         val period = MetricPeriod.Daily(LocalDate.parse("2026-07-15"))
         val legacy = legacySummary("2026-07-15")
@@ -212,10 +325,22 @@ class BalanceAnalysisResolverTest {
         evaluationDate: String,
         salesYen: Long,
         expenses: List<MetricExpenseVisibilitySource>,
+    ): BusinessMetricUiState.Success = successFromSources(
+        period = period,
+        evaluationDate = evaluationDate,
+        reports = listOf(MetricDailyReportSource("report-1", period.startDate, salesYen, 1L)),
+        expenses = expenses,
+    )
+
+    private fun successFromSources(
+        period: MetricPeriod,
+        evaluationDate: String,
+        reports: List<MetricDailyReportSource>,
+        expenses: List<MetricExpenseVisibilitySource>,
     ): BusinessMetricUiState.Success {
         val snapshot = BusinessMetricSourceSnapshot(
             period = period,
-            reports = listOf(MetricDailyReportSource("report-1", period.startDate, salesYen, 1L)),
+            reports = reports,
             expenseVisibility = expenses,
             evaluationDate = LocalDate.parse(evaluationDate),
             calculatedAt = Instant.parse("2026-08-01T00:00:00Z"),
