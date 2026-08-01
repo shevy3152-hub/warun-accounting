@@ -121,6 +121,10 @@ import com.warun.accounting.data.prepaid.netCashChargeAmount
 import com.warun.accounting.data.prepaid.PrepaidValidationException
 import com.warun.accounting.data.prepaid.PrepaidValidationFailure
 import com.warun.accounting.domain.metrics.MetricPeriod
+import com.warun.accounting.ui.balance.BalanceMonthlyAnalysisPresentation
+import com.warun.accounting.ui.balance.BalanceMonthlyAnalysisSource
+import com.warun.accounting.ui.balance.resolveBalanceMonthlyAnalysis
+import com.warun.accounting.ui.balance.resolveBalanceMonthlyMetricPeriod
 import com.warun.accounting.ui.home.HomeMonthlyMetricPresentation
 import com.warun.accounting.ui.home.HomeMonthlyMetricSource
 import com.warun.accounting.ui.home.resolveHomeMonthlyExpenses
@@ -196,6 +200,7 @@ import kotlinx.coroutines.withContext
 
 private val homeMonthlySalesSource = HomeMonthlyMetricSource.BUSINESS_METRIC
 private val homeMonthlyExpensesSource = HomeMonthlyMetricSource.BUSINESS_METRIC
+private val balanceMonthlyAnalysisSource = BalanceMonthlyAnalysisSource.BUSINESS_METRIC
 
 private data class PrepaidExpenseUiSnapshot(
     val accounts: List<PrepaidAccountRecord>,
@@ -3590,7 +3595,10 @@ private fun ReceiptList(receipts: List<ReceiptRecord>) {
     }
 }
 @Composable
-private fun BalanceScreen(uiState: DashboardUiState) {
+private fun BalanceScreen(
+    uiState: DashboardUiState,
+    businessMetricViewModel: BusinessMetricViewModel = hiltViewModel(),
+) {
     val today = remember { LocalDate.now() }
     var periodMode by remember { mutableStateOf(BalancePeriodMode.Today) }
     var customStartDate by remember { mutableStateOf(today.toString()) }
@@ -3613,6 +3621,21 @@ private fun BalanceScreen(uiState: DashboardUiState) {
             uiState.cancelledExpenseKeys
         )
     }
+    val businessMetricState by businessMetricViewModel.state.collectAsStateWithLifecycle()
+    val monthlyMetricPeriod = remember(periodMode, period) {
+        resolveBalanceMonthlyMetricPeriod(periodMode, period)
+    }
+    LaunchedEffect(monthlyMetricPeriod) {
+        monthlyMetricPeriod?.let(businessMetricViewModel::selectPeriod)
+    }
+    val monthlyAnalysis = monthlyMetricPeriod?.let { metricPeriod ->
+        resolveBalanceMonthlyAnalysis(
+            source = balanceMonthlyAnalysisSource,
+            legacy = summary.businessAnalysis,
+            expectedPeriod = metricPeriod,
+            state = businessMetricState,
+        )
+    }
 
     ScreenColumn {
         ScreenTitle("収支確認", "日別、月別、期間指定で売上、支出、現金差額を確認します。")
@@ -3626,7 +3649,7 @@ private fun BalanceScreen(uiState: DashboardUiState) {
             onCustomEndChange = { customEndDate = it }
         )
         BalanceSummaryCards(summary)
-        BusinessAnalysisCard(summary.businessAnalysis)
+        BusinessAnalysisCard(summary.businessAnalysis, monthlyAnalysis)
         AdaptiveGrid {
             ExpenseBreakdown(summary.categoryTotals)
             DailyBalanceList(summary.dailyRows)
@@ -3721,7 +3744,10 @@ private fun BalanceSummaryCards(summary: BalanceSummary) {
 }
 
 @Composable
-private fun BusinessAnalysisCard(summary: BusinessAnalysisSummary) {
+private fun BusinessAnalysisCard(
+    summary: BusinessAnalysisSummary,
+    monthlyAnalysis: BalanceMonthlyAnalysisPresentation?,
+) {
     DashboardCard {
         Text(
             "経営分析（概算）",
@@ -3735,19 +3761,28 @@ private fun BusinessAnalysisCard(summary: BusinessAnalysisSummary) {
         AdaptiveSummaryGrid { cardModifier ->
             SummaryCard("売上合計", summary.salesTotal.toYen(), modifier = cardModifier)
             SummaryCard(
-                "概算原価",
-                summary.estimatedCost?.toYen() ?: "計算不可",
-                modifier = cardModifier
+                label = monthlyAnalysis?.referenceCostLabel ?: "概算原価",
+                value = monthlyAnalysis?.referenceCost?.let { metric ->
+                    metric.value?.toYen() ?: requireNotNull(metric.unavailableText)
+                } ?: (summary.estimatedCost?.toYen() ?: "計算不可"),
+                modifier = cardModifier,
+                supportingText = monthlyAnalysis?.referenceCost?.statusText,
             )
             SummaryCard(
-                "概算原価率",
-                formatBusinessRate(summary.estimatedCostRate),
-                modifier = cardModifier
+                label = monthlyAnalysis?.referenceCostRateLabel ?: "概算原価率",
+                value = monthlyAnalysis?.referenceCostRatePercent?.let { metric ->
+                    metric.value?.let(::formatBusinessRate) ?: requireNotNull(metric.unavailableText)
+                } ?: formatBusinessRate(summary.estimatedCostRate),
+                modifier = cardModifier,
+                supportingText = monthlyAnalysis?.referenceCostRatePercent?.statusText,
             )
             SummaryCard(
-                "概算粗利",
-                summary.estimatedGrossProfit?.toYen() ?: "計算不可",
-                modifier = cardModifier
+                label = "概算粗利",
+                value = monthlyAnalysis?.approximateGrossProfit?.let { metric ->
+                    metric.value?.toYen() ?: requireNotNull(metric.unavailableText)
+                } ?: (summary.estimatedGrossProfit?.toYen() ?: "計算不可"),
+                modifier = cardModifier,
+                supportingText = monthlyAnalysis?.approximateGrossProfit?.statusText,
             )
             SummaryCard(
                 "概算粗利率",
@@ -4681,7 +4716,7 @@ private fun AppTextField(
     )
 }
 
-private enum class BalancePeriodMode(val label: String) {
+internal enum class BalancePeriodMode(val label: String) {
     Today("今日"),
     Yesterday("昨日"),
     ThisMonth("今月"),
