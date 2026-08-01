@@ -290,6 +290,44 @@ class BusinessMetricViewModelTest {
     }
 
     @Test
+    fun providerReemitRecalculatesCompletedMonthFixedCostAndBreakEven() = runTest(dispatcher) {
+        val reports = MutableStateFlow(
+            listOf(report(reportDate = "2026-06-01", sales = 100_000L, rent = 30_000L)),
+        )
+        val visibility = MutableStateFlow(
+            listOf(
+                visibility(
+                    "food",
+                    ExpenseCategory.FoodPurchase,
+                    false,
+                    expenseDate = "2026-06-01",
+                    amount = 30_000L,
+                ),
+            ),
+        )
+        val viewModel = viewModel(reports = reports, visibility = visibility)
+        val collector = launch { viewModel.state.collect {} }
+        val period = MetricPeriod.Monthly(YearMonth.of(2026, 6))
+
+        viewModel.selectPeriod(period)
+        advanceUntilIdle()
+        val initial = viewModel.state.value as BusinessMetricUiState.Success
+        assertEquals(30_000L, initial.report.recordedFixedCostEquivalent.value?.yen)
+        assertEquals(42_858L, initial.report.referenceBreakEvenSales.value?.yen)
+
+        reports.value = listOf(
+            report(reportDate = "2026-06-01", sales = 100_000L, rent = 40_000L),
+        )
+        advanceUntilIdle()
+
+        val updated = viewModel.state.value as BusinessMetricUiState.Success
+        assertEquals(period, updated.report.period)
+        assertEquals(40_000L, updated.report.recordedFixedCostEquivalent.value?.yen)
+        assertEquals(57_143L, updated.report.referenceBreakEvenSales.value?.yen)
+        collector.cancel()
+    }
+
+    @Test
     fun delayedOldPeriodCannotOverwriteLatestPeriod() = runTest(dispatcher) {
         val viewModel = viewModel()
         val collector = launch { viewModel.state.collect {} }
@@ -336,6 +374,7 @@ class BusinessMetricViewModelTest {
         id: String = "report-1",
         reportDate: String = "2026-07-01",
         sales: Long,
+        rent: Long = 0L,
     ) = DailyReport(
         id = id,
         reportDate = reportDate,
@@ -354,7 +393,7 @@ class BusinessMetricViewModelTest {
         gasExpense = 0L,
         waterExpense = 0L,
         communicationExpense = 0L,
-        rentExpense = 0L,
+        rentExpense = rent,
         accountantFeeExpense = 0L,
         miscellaneousExpense = 0L,
         otherExpense = 0L,

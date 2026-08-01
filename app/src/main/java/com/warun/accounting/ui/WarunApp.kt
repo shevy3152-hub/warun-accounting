@@ -3827,18 +3827,39 @@ private fun BusinessAnalysisCard(
                 modifier = cardModifier
             )
             SummaryCard(
-                "固定費相当額（簡易）",
-                summary.simpleFixedCost?.toYen() ?: "計算不可",
-                modifier = cardModifier
+                label = businessMetricAnalysis?.fixedCostLabel ?: "固定費相当額（簡易）",
+                value = businessMetricAnalysis?.fixedCost?.let { metric ->
+                    metric.value?.toYen() ?: requireNotNull(metric.unavailableText)
+                } ?: (summary.simpleFixedCost?.toYen() ?: "計算不可"),
+                modifier = cardModifier,
+                supportingText = businessMetricAnalysis?.fixedCost?.statusText,
             )
             SummaryCard(
-                "概算損益分岐点売上",
-                summary.estimatedBreakEvenSales?.toYen() ?: "計算不可",
-                modifier = cardModifier
+                label = businessMetricAnalysis?.breakEvenSalesLabel ?: "概算損益分岐点売上",
+                value = businessMetricAnalysis?.breakEvenSales?.let { metric ->
+                    metric.value?.toYen() ?: requireNotNull(metric.unavailableText)
+                } ?: (summary.estimatedBreakEvenSales?.toYen() ?: "計算不可"),
+                modifier = cardModifier,
+                supportingText = businessMetricAnalysis?.breakEvenSales?.statusText,
             )
         }
-        Text("損益分岐点との差", style = MaterialTheme.typography.labelLarge)
-        Text(summary.breakEvenStatusMessage(), fontWeight = FontWeight.Bold)
+        Text(
+            businessMetricAnalysis?.breakEvenStatusLabel ?: "損益分岐点との差",
+            style = MaterialTheme.typography.labelLarge,
+        )
+        Text(
+            businessMetricAnalysis?.breakEvenStatus?.let { metric ->
+                metric.value ?: requireNotNull(metric.unavailableText)
+            } ?: summary.breakEvenStatusMessage(),
+            fontWeight = FontWeight.Bold,
+        )
+        businessMetricAnalysis?.breakEvenStatus?.statusText?.let { status ->
+            Text(
+                status,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         Text(
             "概算値です。食材・酒類仕入を原価として計算しています。棚卸、人件費、費用の固定費・変動費分類は反映していません。",
             style = MaterialTheme.typography.bodySmall,

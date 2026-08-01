@@ -14,6 +14,7 @@ import com.warun.accounting.ui.BalancePeriod
 import com.warun.accounting.ui.BalancePeriodMode
 import com.warun.accounting.ui.model.BusinessAnalysisSummary
 import com.warun.accounting.ui.model.BusinessMetricUiState
+import com.warun.accounting.ui.model.breakEvenStatusMessage
 import com.warun.accounting.ui.model.buildBusinessAnalysisSummary
 import java.math.BigDecimal
 import java.time.Instant
@@ -193,6 +194,127 @@ class BalanceAnalysisResolverTest {
     }
 
     @Test
+    fun completedMonthShowsRecordedFixedCostAndReferenceBreakEven() {
+        val period = MetricPeriod.Monthly(YearMonth.of(2026, 7))
+        val result = resolve(
+            period,
+            legacySummary("2026-07-01"),
+            successFromSources(
+                period = period,
+                evaluationDate = "2026-08-01",
+                reports = listOf(
+                    MetricDailyReportSource(
+                        id = "report-1",
+                        reportDate = period.startDate,
+                        salesYen = 100_000L,
+                        customerCount = 1L,
+                        rentExpenseYen = 10_000L,
+                        communicationExpenseYen = 5_000L,
+                        accountantFeeExpenseYen = 5_000L,
+                        electricityExpenseYen = 4_000L,
+                        gasExpenseYen = 3_000L,
+                        waterExpenseYen = 3_000L,
+                    ),
+                ),
+                expenses = listOf(
+                    metricExpense("food", period.startDate, MetricExpenseCategory.FOOD_PURCHASE, 20_000L),
+                    metricExpense("alcohol", period.startDate, MetricExpenseCategory.ALCOHOL_PURCHASE, 10_000L),
+                ),
+            ),
+        )
+
+        assertEquals("記録済み固定費相当額", result.fixedCostLabel)
+        assertEquals(30_000L, result.fixedCost.value)
+        assertEquals(42_858L, result.breakEvenSales.value)
+        assertEquals(
+            "参考損益分岐売上高を ￥57,142上回っています",
+            result.breakEvenStatus.value,
+        )
+        assertTrue(result.fixedCost.statusText.contains("AVAILABLE"))
+        assertTrue(result.breakEvenSales.statusText.contains("AVAILABLE"))
+    }
+
+    @Test
+    fun incompleteMonthKeepsFixedCostPartialAndBreakEvenUnavailable() {
+        val period = MetricPeriod.Monthly(YearMonth.of(2026, 8))
+        val result = resolve(
+            period,
+            legacySummary("2026-08-01"),
+            success(
+                period = period,
+                evaluationDate = "2026-08-01",
+                salesYen = 100_000L,
+                expenses = listOf(
+                    metricExpense("food", period.startDate, MetricExpenseCategory.FOOD_PURCHASE, 20_000L),
+                ),
+                rentExpenseYen = 30_000L,
+            ),
+        )
+
+        assertEquals(30_000L, result.fixedCost.value)
+        assertTrue(result.fixedCost.statusText.contains("PARTIAL_DATA"))
+        assertTrue(result.fixedCost.statusText.contains("月途中"))
+        assertNull(result.breakEvenSales.value)
+        assertEquals("算出対象外", result.breakEvenSales.unavailableText)
+        assertTrue(result.breakEvenSales.statusText.contains("COMPLETED_CALENDAR_MONTH"))
+        assertNull(result.breakEvenStatus.value)
+        assertEquals("算出対象外", result.breakEvenStatus.unavailableText)
+    }
+
+    @Test
+    fun missingFixedCostSourceDoesNotBecomeLegacyOrZero() {
+        val period = MetricPeriod.Monthly(YearMonth.of(2026, 7))
+        val result = resolve(
+            period,
+            legacySummary("2026-07-01"),
+            success(
+                period = period,
+                evaluationDate = "2026-08-01",
+                salesYen = 100_000L,
+                expenses = listOf(
+                    metricExpense("food", period.startDate, MetricExpenseCategory.FOOD_PURCHASE, 20_000L),
+                ),
+            ),
+        )
+
+        assertNull(result.fixedCost.value)
+        assertEquals("データ不足", result.fixedCost.unavailableText)
+        assertTrue(result.fixedCost.statusText.contains("FIXED_COST_SOURCE"))
+        assertNull(result.breakEvenSales.value)
+        assertEquals("データ不足", result.breakEvenSales.unavailableText)
+    }
+
+    @Test
+    fun dailyAndCustomRangeAreIneligibleForReferenceBreakEven() {
+        val daily = MetricPeriod.Daily(LocalDate.parse("2026-07-15"))
+        val custom = MetricPeriod.CustomRange(
+            LocalDate.parse("2026-07-01"),
+            LocalDate.parse("2026-07-31"),
+        )
+
+        listOf(daily, custom).forEach { period ->
+            val result = resolve(
+                period,
+                legacySummary(period.startDate.toString()),
+                success(
+                    period = period,
+                    evaluationDate = "2026-08-01",
+                    salesYen = 100_000L,
+                    expenses = listOf(
+                        metricExpense("food", period.startDate, MetricExpenseCategory.FOOD_PURCHASE, 20_000L),
+                    ),
+                    rentExpenseYen = 30_000L,
+                ),
+            )
+
+            assertEquals(30_000L, result.fixedCost.value)
+            assertNull(result.breakEvenSales.value)
+            assertEquals("算出対象外", result.breakEvenSales.unavailableText)
+            assertTrue(result.breakEvenSales.statusText.contains("COMPLETED_CALENDAR_MONTH"))
+        }
+    }
+
+    @Test
     fun customRangeIncludesBothBoundariesAcrossMonthAndExcludesOutside() {
         val period = MetricPeriod.CustomRange(
             LocalDate.parse("2026-07-31"),
@@ -303,10 +425,17 @@ class BalanceAnalysisResolverTest {
 
         assertNull(loading.referenceCost.value)
         assertEquals("読み込み中", loading.referenceCost.unavailableText)
+        assertNull(loading.fixedCost.value)
+        assertNull(loading.breakEvenSales.value)
         assertNull(failure.referenceCost.value)
         assertEquals("取得できません", failure.referenceCost.unavailableText)
+        assertNull(failure.fixedCost.value)
+        assertNull(failure.breakEvenStatus.value)
         assertEquals("概算原価", rollback.referenceCostLabel)
         assertMatchesLegacy(rollback, legacy)
+        assertEquals(legacy.simpleFixedCost, rollback.fixedCost.value)
+        assertEquals(legacy.estimatedBreakEvenSales, rollback.breakEvenSales.value)
+        assertEquals(legacy.breakEvenStatusMessage(), rollback.breakEvenStatus.value)
     }
 
     private fun resolve(
@@ -325,10 +454,19 @@ class BalanceAnalysisResolverTest {
         evaluationDate: String,
         salesYen: Long,
         expenses: List<MetricExpenseVisibilitySource>,
+        rentExpenseYen: Long = 0L,
     ): BusinessMetricUiState.Success = successFromSources(
         period = period,
         evaluationDate = evaluationDate,
-        reports = listOf(MetricDailyReportSource("report-1", period.startDate, salesYen, 1L)),
+        reports = listOf(
+            MetricDailyReportSource(
+                id = "report-1",
+                reportDate = period.startDate,
+                salesYen = salesYen,
+                customerCount = 1L,
+                rentExpenseYen = rentExpenseYen,
+            ),
+        ),
         expenses = expenses,
     )
 
@@ -363,10 +501,11 @@ class BalanceAnalysisResolverTest {
 
     private fun legacySummary(date: String) = buildBusinessAnalysisSummary(
         salesTotal = 100_000L,
-        expenseTotal = 30_000L,
+        expenseTotal = 40_000L,
         periodExpenses = listOf(
             legacyExpense("food", date, ExpenseCategory.FoodPurchase, 20_000L),
             legacyExpense("alcohol", date, ExpenseCategory.AlcoholPurchase, 10_000L),
+            legacyExpense("other", date, ExpenseCategory.OtherExpense, 10_000L),
         ),
     )
 
