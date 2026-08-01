@@ -5,7 +5,7 @@ import com.warun.accounting.data.local.DailyReportStatus
 import com.warun.accounting.data.local.ExpenseCategory
 import com.warun.accounting.data.local.ExpenseRecord
 import com.warun.accounting.data.local.ExpenseSourceType
-import com.warun.accounting.domain.metrics.AmountMetricResult
+import com.warun.accounting.data.metrics.BusinessMetricComparisonSource
 import com.warun.accounting.domain.metrics.BusinessMetricCalculationCoordinator
 import com.warun.accounting.domain.metrics.BusinessMetricCalculationResult
 import com.warun.accounting.domain.metrics.BusinessMetricSourceSnapshot
@@ -15,11 +15,8 @@ import com.warun.accounting.domain.metrics.MetricExpenseCategoryMappingResult
 import com.warun.accounting.domain.metrics.MetricExpenseSource
 import com.warun.accounting.domain.metrics.MetricExpenseVisibilitySource
 import com.warun.accounting.domain.metrics.MetricPeriod
-import com.warun.accounting.domain.metrics.MetricValue
 import com.warun.accounting.ui.model.BusinessAnalysisCalculationStatus
 import com.warun.accounting.util.ExpenseDateCategoryKey
-import java.math.BigDecimal
-import java.math.RoundingMode
 import java.time.Instant
 import java.time.LocalDate
 import java.time.YearMonth
@@ -28,10 +25,79 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Test-only comparison boundary. It deliberately does not feed either result back into
- * production UI state or replace the legacy calculations.
+ * Shared comparison boundary used by the debug diagnostic UI and these JVM contract tests.
  */
 class BusinessMetricComparisonTest {
+    @Test
+    fun availableMismatchedValuesBecomeUnexpectedDifference() {
+        val date = "2026-07-01"
+        val old = buildBalanceSummary(
+            reports = listOf(report(date, sales = 1_000L)),
+            expenses = emptyList(),
+            period = MetricPeriod.Daily(LocalDate.parse(date)).toBalancePeriod(),
+        )
+        val snapshot = BusinessMetricSourceSnapshot(
+            period = MetricPeriod.Daily(LocalDate.parse(date)),
+            reports = listOf(report(date, sales = 2_000L).toMetricSource()),
+            expenseVisibility = emptyList(),
+            evaluationDate = LocalDate.parse("2026-07-29"),
+            calculatedAt = Instant.parse("2026-07-29T00:00:00Z"),
+        )
+        val calculation = BusinessMetricCalculationCoordinator.calculate(snapshot)
+        require(calculation is BusinessMetricCalculationResult.Success)
+
+        val comparison = compareBusinessMetrics(old, calculation.report)
+
+        assertEquals(ComparisonDisposition.UNEXPECTED_DIFFERENCE, comparison.sales.disposition)
+        assertTrue(!comparison.sales.reason.isNullOrBlank())
+    }
+
+    @Test
+    fun legacyFoodPolicyDoesNotHideUnrelatedGrossProfitDifference() {
+        val date = "2026-07-01"
+        val period = MetricPeriod.Daily(LocalDate.parse(date))
+        val reports = listOf(report(date, sales = 10_000L, legacyFood = 2_000L))
+        val source = BusinessMetricComparisonSource(
+            reports = reports,
+            activeExpenses = emptyList(),
+            cancelledExpenseKeys = emptySet(),
+        )
+        val old = buildBalanceSummary(
+            reports = reports,
+            expenses = emptyList(),
+            period = period.toBalancePeriod(),
+        )
+        val snapshot = BusinessMetricSourceSnapshot(
+            period = period,
+            reports = reports.map { it.toMetricSource() },
+            expenseVisibility = emptyList(),
+            evaluationDate = LocalDate.parse("2026-07-29"),
+            calculatedAt = Instant.parse("2026-07-29T00:00:00Z"),
+        )
+        val calculation = BusinessMetricCalculationCoordinator.calculate(snapshot)
+        require(calculation is BusinessMetricCalculationResult.Success)
+        val unrelatedDifference = old.copy(
+            businessAnalysis = old.businessAnalysis.copy(
+                estimatedGrossProfit = requireNotNull(old.businessAnalysis.estimatedGrossProfit) + 1L,
+            ),
+        )
+
+        val comparison = compareBusinessMetrics(
+            old = unrelatedDifference,
+            newReport = calculation.report,
+            expectedDifferences = expectedBusinessMetricDifferences(
+                source = source,
+                period = period,
+                old = unrelatedDifference,
+                newReport = calculation.report,
+            ),
+        )
+
+        assertEquals(ComparisonDisposition.EXPECTED_DIFFERENCE, comparison.expenses.disposition)
+        assertEquals(ComparisonDisposition.UNEXPECTED_DIFFERENCE, comparison.grossProfit.disposition)
+        assertEquals(listOf(ComparisonMetric.GROSS_PROFIT), comparison.unexpectedDifferences.map { it.metric })
+    }
+
     @Test
     fun basicNormalFixtureMatchesForSharedRecordedIndicators() {
         val date = "2026-07-01"
@@ -156,14 +222,6 @@ class BusinessMetricComparisonTest {
             activeExpenses = emptyList(),
             cancelledExpenses = emptyList(),
             period = MetricPeriod.Daily(LocalDate.parse(date)),
-            expectedDifferences = mapOf(
-                ComparisonMetric.EXPENSES to "The legacy UI falls back only for consumables; the shared domain fallback also applies to food",
-                ComparisonMetric.REFERENCE_COST to "The new reference-cost contract reports unavailable when no food/alcohol source exists",
-                ComparisonMetric.GROSS_PROFIT to "The new gross-profit contract depends on an available reference-cost source",
-                ComparisonMetric.REFERENCE_COST_RATE to "The new ratio contract reports unavailable when reference cost is unavailable",
-                ComparisonMetric.FIXED_COST to "The new fixed-cost contract reports unavailable when no fixed-cost source exists",
-                ComparisonMetric.BREAK_EVEN to "The new break-even contract reports unavailable for this Daily period",
-            ),
         )
         // EXPECTED_DIFFERENCE: the legacy UI only falls back for consumables; C1 applies the
         // shared legacy fallback contract to food and alcohol as well.
@@ -282,7 +340,7 @@ class BusinessMetricComparisonTest {
 
         assertEquals(0L, comparison.old.salesTotal)
         assertEquals(null, comparison.newReport.recordedSales)
-        assertEquals(BusinessAnalysisCalculationStatus.NoSales, comparison.old.businessAnalysis.calculationStatus)
+        assertEquals(BusinessAnalysisCalculationStatus.NoSales.name, comparison.old.businessAnalysis.calculationStatus)
         assertExpectedDifference(comparison.sales)
     }
 
@@ -414,7 +472,7 @@ class BusinessMetricComparisonTest {
         period: MetricPeriod,
         expectedDifferences: Map<ComparisonMetric, String> = emptyMap(),
         notComparable: Map<ComparisonMetric, String> = emptyMap(),
-    ): ComparisonFixtureResult {
+    ): BusinessMetricComparison {
         val cancelledKeys = cancelledExpenses
             .map { ExpenseDateCategoryKey(it.expenseDate, it.category) }
             .toSet()
@@ -449,58 +507,22 @@ class BusinessMetricComparisonTest {
         require(result is BusinessMetricCalculationResult.Success)
         val report = result.report
 
-        val comparisonResult = ComparisonFixtureResult(
+        val source = BusinessMetricComparisonSource(
+            reports = reports,
+            activeExpenses = activeExpenses,
+            cancelledExpenseKeys = cancelledKeys,
+        )
+        val sharedExpectedDifferences = expectedBusinessMetricDifferences(
+            source = source,
+            period = period,
             old = old,
-            newReport = NewValues(
-                recordedSales = amount(report.recordedSales),
-                recordedExpenses = amount(report.recordedExpenses),
-                referenceCost = amount(report.referenceCost),
-                grossProfit = amount(report.approximateGrossProfit),
-                referenceCostRate = ratio(report.referenceCostRate),
-                fixedCost = amount(report.recordedFixedCostEquivalent),
-                breakEvenSales = amount(report.referenceBreakEvenSales),
-            ),
-            sales = comparison(ComparisonMetric.SALES, old.salesTotal, amount(report.recordedSales), expectedDifferences, notComparable),
-            expenses = comparison(ComparisonMetric.EXPENSES, old.expenseTotal, amount(report.recordedExpenses), expectedDifferences, notComparable),
-            referenceCost = comparison(
-                ComparisonMetric.REFERENCE_COST,
-                old.businessAnalysis.estimatedCost,
-                amount(report.referenceCost),
-                expectedDifferences,
-                notComparable,
-            ),
-            grossProfit = comparison(
-                ComparisonMetric.GROSS_PROFIT,
-                old.businessAnalysis.estimatedGrossProfit,
-                amount(report.approximateGrossProfit),
-                expectedDifferences,
-                notComparable,
-            ),
-            referenceCostRate = comparison(
-                ComparisonMetric.REFERENCE_COST_RATE,
-                old.businessAnalysis.estimatedCostRate?.divide(
-                    BigDecimal.valueOf(100L),
-                    12,
-                    RoundingMode.HALF_UP,
-                ),
-                ratio(report.referenceCostRate),
-                expectedDifferences,
-                notComparable,
-            ),
-            fixedCost = comparison(
-                ComparisonMetric.FIXED_COST,
-                old.businessAnalysis.simpleFixedCost,
-                amount(report.recordedFixedCostEquivalent),
-                expectedDifferences,
-                notComparable,
-            ),
-            breakEven = comparison(
-                ComparisonMetric.BREAK_EVEN,
-                old.businessAnalysis.estimatedBreakEvenSales,
-                amount(report.referenceBreakEvenSales),
-                expectedDifferences,
-                notComparable,
-            ),
+            newReport = report,
+        )
+        val comparisonResult = compareBusinessMetrics(
+            old = old,
+            newReport = report,
+            expectedDifferences = sharedExpectedDifferences + expectedDifferences,
+            notComparable = notComparable,
         )
         assertEquals(
             comparisonResult.unexpectedDifferences.joinToString { "${it.metric}: old=${it.old}, new=${it.new}" },
@@ -527,36 +549,6 @@ class BusinessMetricComparisonTest {
         legacyUtilitiesExpenseYen = utilitiesExpense,
         miscellaneousExpenseYen = miscellaneousExpense,
     )
-
-    private fun MetricPeriod.toBalancePeriod() = BalancePeriod(startDate, endDateInclusive)
-
-    private fun amount(result: AmountMetricResult): Long? =
-        (result.value as? MetricValue.Amount)?.yen
-
-    private fun ratio(result: com.warun.accounting.domain.metrics.RatioMetricResult): BigDecimal? =
-        (result.value as? MetricValue.Ratio)?.value
-
-    private fun <T> comparison(
-        metric: ComparisonMetric,
-        old: T,
-        new: T,
-        expectedDifferences: Map<ComparisonMetric, String>,
-        notComparable: Map<ComparisonMetric, String>,
-    ): MetricComparison<T> {
-        val disposition = when {
-            old == new -> ComparisonDisposition.MATCH
-            metric in expectedDifferences -> ComparisonDisposition.EXPECTED_DIFFERENCE
-            metric in notComparable -> ComparisonDisposition.NOT_COMPARABLE
-            else -> ComparisonDisposition.UNEXPECTED_DIFFERENCE
-        }
-        return MetricComparison(
-            metric = metric,
-            old = old,
-            new = new,
-            disposition = disposition,
-            reason = expectedDifferences[metric] ?: notComparable[metric],
-        )
-    }
 
     private fun unavailableMetricDifferences(
         vararg metrics: ComparisonMetric,
@@ -626,63 +618,4 @@ class BusinessMetricComparisonTest {
         updatedAt = 1L,
     )
 
-    private data class ComparisonFixtureResult(
-        val old: BalanceSummary,
-        val newReport: NewValues,
-        val sales: MetricComparison<Long?>,
-        val expenses: MetricComparison<Long?>,
-        val referenceCost: MetricComparison<Long?>,
-        val grossProfit: MetricComparison<Long?>,
-        val referenceCostRate: MetricComparison<BigDecimal?>,
-        val fixedCost: MetricComparison<Long?>,
-        val breakEven: MetricComparison<Long?>,
-    ) {
-        val all: List<MetricComparison<*>> = listOf(
-            sales,
-            expenses,
-            referenceCost,
-            grossProfit,
-            referenceCostRate,
-            fixedCost,
-            breakEven,
-        )
-
-        val unexpectedDifferences: List<MetricComparison<*>> =
-            all.filter { it.disposition == ComparisonDisposition.UNEXPECTED_DIFFERENCE }
-    }
-
-    private data class NewValues(
-        val recordedSales: Long?,
-        val recordedExpenses: Long?,
-        val referenceCost: Long?,
-        val grossProfit: Long?,
-        val referenceCostRate: BigDecimal?,
-        val fixedCost: Long?,
-        val breakEvenSales: Long?,
-    )
-
-    private data class MetricComparison<T>(
-        val metric: ComparisonMetric,
-        val old: T,
-        val new: T,
-        val disposition: ComparisonDisposition,
-        val reason: String?,
-    )
-
-    private enum class ComparisonMetric {
-        SALES,
-        EXPENSES,
-        REFERENCE_COST,
-        GROSS_PROFIT,
-        REFERENCE_COST_RATE,
-        FIXED_COST,
-        BREAK_EVEN,
-    }
-
-    private enum class ComparisonDisposition {
-        MATCH,
-        EXPECTED_DIFFERENCE,
-        NOT_COMPARABLE,
-        UNEXPECTED_DIFFERENCE,
-    }
 }

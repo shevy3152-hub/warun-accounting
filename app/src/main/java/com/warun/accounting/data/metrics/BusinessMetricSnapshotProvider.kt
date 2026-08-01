@@ -2,6 +2,7 @@ package com.warun.accounting.data.metrics
 
 import com.warun.accounting.data.AccountingRepository
 import com.warun.accounting.data.local.DailyReport
+import com.warun.accounting.data.local.ExpenseRecord
 import com.warun.accounting.data.local.ExpenseVisibilityRecord
 import com.warun.accounting.domain.metrics.BusinessMetricSourceSnapshot
 import com.warun.accounting.domain.metrics.MetricDailyReportSource
@@ -10,6 +11,7 @@ import com.warun.accounting.domain.metrics.MetricExpenseCategoryMapper
 import com.warun.accounting.domain.metrics.MetricExpenseCategoryMappingResult
 import com.warun.accounting.domain.metrics.MetricExpenseVisibilitySource
 import com.warun.accounting.domain.metrics.MetricPeriod
+import com.warun.accounting.util.ExpenseDateCategoryKey
 import java.time.Instant
 import java.time.LocalDate
 import java.time.format.DateTimeParseException
@@ -42,9 +44,20 @@ data class BusinessMetricSnapshotMappingFailure(
     val categoryFailure: MetricExpenseCategoryMappingResult.Failure? = null,
 )
 
+/**
+ * Same-generation legacy inputs used only by the debug comparison boundary.
+ * The normal BusinessMetric calculation continues to consume the domain snapshot below.
+ */
+data class BusinessMetricComparisonSource(
+    val reports: List<DailyReport>,
+    val activeExpenses: List<ExpenseRecord>,
+    val cancelledExpenseKeys: Set<ExpenseDateCategoryKey>,
+)
+
 sealed interface BusinessMetricSnapshotResult {
     data class Success(
         val snapshot: BusinessMetricSourceSnapshot,
+        val comparisonSource: BusinessMetricComparisonSource? = null,
     ) : BusinessMetricSnapshotResult
 
     data class MappingFailure(
@@ -150,6 +163,23 @@ class BusinessMetricSnapshotProvider private constructor(
                 ),
                 evaluationDate = request.evaluationDate,
                 calculatedAt = request.calculatedAt,
+            ),
+            comparisonSource = BusinessMetricComparisonSource(
+                reports = reports.sortedWith(compareBy<DailyReport> { it.reportDate }.thenBy { it.id }),
+                activeExpenses = visibility
+                    .filterNot(ExpenseVisibilityRecord::isCancelled)
+                    .map(ExpenseVisibilityRecord::expense)
+                    .sortedWith(compareBy<ExpenseRecord> { it.expenseDate }.thenBy { it.id }),
+                cancelledExpenseKeys = visibility
+                    .asSequence()
+                    .filter(ExpenseVisibilityRecord::isCancelled)
+                    .map { row ->
+                        ExpenseDateCategoryKey(
+                            expenseDate = row.expense.expenseDate,
+                            category = row.expense.category,
+                        )
+                    }
+                    .toSet(),
             ),
         )
     }

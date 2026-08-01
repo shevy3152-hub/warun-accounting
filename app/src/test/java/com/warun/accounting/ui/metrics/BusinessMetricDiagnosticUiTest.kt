@@ -9,6 +9,7 @@ import com.warun.accounting.domain.metrics.MetricSourceSummary
 import com.warun.accounting.domain.metrics.MetricValue
 import com.warun.accounting.domain.metrics.MissingMetricInput
 import com.warun.accounting.domain.metrics.RatioMetricResult
+import com.warun.accounting.ui.ComparisonMetric
 import java.math.BigDecimal
 import java.time.Instant
 import java.time.LocalDate
@@ -39,6 +40,14 @@ class BusinessMetricDiagnosticUiTest {
             "入力不足",
             formatDiagnosticMetricValue(ratioResult(null)),
         )
+    }
+
+    @Test
+    fun comparisonNullValueIsDisplayedAsNullAndNotZero() {
+        assertEquals("null", formatComparisonMetricValue(ComparisonMetric.EXPENSES, null))
+        assertEquals("null", formatComparisonMetricValue(ComparisonMetric.REFERENCE_COST_RATE, null))
+        assertEquals("¥20,000", formatComparisonMetricValue(ComparisonMetric.EXPENSES, 20_000L))
+        assertEquals("35.0%", formatComparisonMetricValue(ComparisonMetric.REFERENCE_COST_RATE, BigDecimal("0.35")))
     }
 
     @Test

@@ -7,7 +7,9 @@ import com.warun.accounting.domain.metrics.MetricAvailability
 import com.warun.accounting.domain.metrics.MetricPeriod
 import com.warun.accounting.domain.metrics.MissingMetricInput
 import com.warun.accounting.domain.metrics.RatioMetricResult
+import com.warun.accounting.ui.ComparisonMetric
 import com.warun.accounting.ui.model.BusinessMetricUiState
+import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.LocalDate
 import java.time.YearMonth
@@ -87,6 +89,23 @@ internal fun formatDiagnosticMetricValue(result: BusinessMetricResult): String =
         is com.warun.accounting.domain.metrics.BreakEvenPosition.Remaining -> formatYen(value.yen)
         is com.warun.accounting.domain.metrics.BreakEvenPosition.Achieved -> "達成（余剰 ${formatYen(value.excessYen)}）"
     }
+}
+
+internal fun formatComparisonMetricValue(metric: ComparisonMetric, value: Any?): String = when {
+    value == null -> "null"
+    metric == ComparisonMetric.REFERENCE_COST_RATE && value is BigDecimal -> formatRatio(value)
+    value is Long -> formatYen(value)
+    else -> value.toString()
+}
+
+internal fun ComparisonMetric.label(): String = when (this) {
+    ComparisonMetric.SALES -> "売上合計"
+    ComparisonMetric.EXPENSES -> "支出合計"
+    ComparisonMetric.REFERENCE_COST -> "参考原価"
+    ComparisonMetric.GROSS_PROFIT -> "概算粗利"
+    ComparisonMetric.REFERENCE_COST_RATE -> "原価率"
+    ComparisonMetric.FIXED_COST -> "固定費相当額"
+    ComparisonMetric.BREAK_EVEN -> "損益分岐点"
 }
 
 internal fun formatYen(yen: Long): String = String.format(Locale.JAPAN, "¥%,d", yen)

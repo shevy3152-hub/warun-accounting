@@ -32,7 +32,9 @@ import com.warun.accounting.domain.metrics.MetricPeriod
 import com.warun.accounting.ui.metrics.DiagnosticPeriodMode
 import com.warun.accounting.ui.metrics.DiagnosticPeriodSelection
 import com.warun.accounting.ui.metrics.diagnosticFailureMessage
+import com.warun.accounting.ui.metrics.formatComparisonMetricValue
 import com.warun.accounting.ui.metrics.formatDiagnosticMetricValue
+import com.warun.accounting.ui.metrics.label
 import com.warun.accounting.ui.metrics.parseDiagnosticPeriod
 import com.warun.accounting.ui.metrics.toDiagnosticLabel
 import com.warun.accounting.ui.model.BusinessMetricUiState
@@ -175,7 +177,10 @@ private fun DiagnosticStateContent(
             CircularProgressIndicator()
             Text("読み込み中")
         }
-        is BusinessMetricUiState.Success -> BusinessMetricReportContent(visibleState.report)
+        is BusinessMetricUiState.Success -> BusinessMetricReportContent(
+            report = visibleState.report,
+            comparison = visibleState.comparison,
+        )
         is BusinessMetricUiState.MappingFailure,
         is BusinessMetricUiState.DataAccessFailure,
         is BusinessMetricUiState.AssemblyFailure,
@@ -185,7 +190,10 @@ private fun DiagnosticStateContent(
 }
 
 @Composable
-private fun BusinessMetricReportContent(report: BusinessMetricReport) {
+private fun BusinessMetricReportContent(
+    report: BusinessMetricReport,
+    comparison: BusinessMetricComparison?,
+) {
     val metrics = listOf(
         "売上合計" to report.recordedSales,
         "支出合計（新経路）" to report.recordedExpenses,
@@ -206,6 +214,28 @@ private fun BusinessMetricReportContent(report: BusinessMetricReport) {
             if (result.warnings.isNotEmpty()) {
                 Text("warnings: ${result.warnings.joinToString()}")
             }
+        }
+    }
+    comparison?.let { BusinessMetricComparisonContent(it) }
+        ?: DiagnosticCard {
+            Text("旧値・新値比較", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text("比較データなし", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+}
+
+@Composable
+private fun BusinessMetricComparisonContent(comparison: BusinessMetricComparison) {
+    DiagnosticCard {
+        Text("旧値・新値比較", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Text("UNEXPECTED_DIFFERENCE: ${comparison.unexpectedDifferences.size}件")
+    }
+    comparison.all.forEach { entry ->
+        DiagnosticCard {
+            Text(entry.metric.label(), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text("旧値: ${formatComparisonMetricValue(entry.metric, entry.old)}")
+            Text("新値: ${formatComparisonMetricValue(entry.metric, entry.new)}")
+            Text("判定: ${entry.disposition}")
+            entry.reason?.let { reason -> Text("理由: $reason") }
         }
     }
 }
