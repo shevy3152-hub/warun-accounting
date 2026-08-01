@@ -1,5 +1,6 @@
 package com.warun.accounting.ui
 
+import com.warun.accounting.util.ExpenseDateCategoryKey
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -43,5 +44,16 @@ class TopLevelNavigationTest {
         assertTrue(shouldShowDatedReportBack("2026-07-24"))
         assertFalse(shouldShowDatedReportBack(null))
         assertFalse(shouldShowDatedReportBack(""))
+    }
+
+    @Test
+    fun cancellationAuditLinkIsAvailableOnlyForTheSelectedCancellationDate() {
+        val cancellations = setOf(
+            ExpenseDateCategoryKey("2026-08-02", "食材仕入")
+        )
+
+        assertTrue(hasCancellationAuditForDate(cancellations, "2026-08-02"))
+        assertFalse(hasCancellationAuditForDate(cancellations, "2026-08-01"))
+        assertFalse(hasCancellationAuditForDate(cancellations, ""))
     }
 }

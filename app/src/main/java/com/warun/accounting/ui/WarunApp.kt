@@ -376,6 +376,11 @@ private fun supplierCandidatesFor(
 internal fun shouldShowDatedReportBack(initialDate: String?): Boolean =
     !initialDate.isNullOrBlank()
 
+internal fun hasCancellationAuditForDate(
+    cancelledExpenseKeys: Set<ExpenseDateCategoryKey>,
+    reportDate: String
+): Boolean = reportDate.isNotBlank() && cancelledExpenseKeys.any { it.expenseDate == reportDate }
+
 private fun receiptParserStoreNames(savedCandidates: List<SupplierCandidateRecord>): List<String> {
     val fixedNames = (
         foodSupplierCandidates + alcoholSupplierCandidates + consumablesCandidates +
@@ -1971,6 +1976,15 @@ private fun ReportEntryScreen(
             }
         }
         ScreenTitle("日報入力", "空いた時間に任意の日付で入力できます。途中でも下書き保存できます。")
+        if (hasCancellationAuditForDate(uiState.cancelledExpenseKeys, reportInput.reportDate)) {
+            OutlinedButton(
+                onClick = { onOpenCancellationAudit(reportInput.reportDate) },
+                enabled = !hasUnsavedChanges && savingStatus == null,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("取消済み支出を確認")
+            }
+        }
         ReceiptOcrPanel(
             capturedReceipt = capturedReceipt,
             onCaptureCleared = onCaptureCleared,
