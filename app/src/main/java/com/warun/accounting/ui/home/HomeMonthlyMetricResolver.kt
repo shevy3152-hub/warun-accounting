@@ -1,0 +1,129 @@
+package com.warun.accounting.ui.home
+
+import com.warun.accounting.domain.metrics.AmountMetricResult
+import com.warun.accounting.domain.metrics.BusinessMetricReport
+import com.warun.accounting.domain.metrics.MetricAvailability
+import com.warun.accounting.domain.metrics.MetricPeriod
+import com.warun.accounting.ui.model.BusinessMetricUiState
+
+internal enum class HomeMonthlyMetricSource {
+    BUSINESS_METRIC,
+    LEGACY,
+}
+
+internal data class HomeMonthlyMetricPresentation(
+    val amountYen: Long?,
+    val unavailableText: String?,
+    val statusText: String,
+) {
+    init {
+        require((amountYen != null) xor (unavailableText != null))
+    }
+}
+
+internal fun resolveHomeMonthlySales(
+    source: HomeMonthlyMetricSource,
+    legacyYen: Long,
+    expectedPeriod: MetricPeriod.Monthly,
+    state: BusinessMetricUiState,
+): HomeMonthlyMetricPresentation = resolveHomeMonthlyMetric(
+    source = source,
+    legacyYen = legacyYen,
+    expectedPeriod = expectedPeriod,
+    state = state,
+    metric = BusinessMetricReport::recordedSales,
+)
+
+internal fun resolveHomeMonthlyExpenses(
+    source: HomeMonthlyMetricSource,
+    legacyYen: Long,
+    expectedPeriod: MetricPeriod.Monthly,
+    state: BusinessMetricUiState,
+): HomeMonthlyMetricPresentation = resolveHomeMonthlyMetric(
+    source = source,
+    legacyYen = legacyYen,
+    expectedPeriod = expectedPeriod,
+    state = state,
+    metric = BusinessMetricReport::recordedExpenses,
+)
+
+private fun resolveHomeMonthlyMetric(
+    source: HomeMonthlyMetricSource,
+    legacyYen: Long,
+    expectedPeriod: MetricPeriod.Monthly,
+    state: BusinessMetricUiState,
+    metric: (BusinessMetricReport) -> AmountMetricResult,
+): HomeMonthlyMetricPresentation {
+    if (source == HomeMonthlyMetricSource.LEGACY) {
+        return HomeMonthlyMetricPresentation(
+            amountYen = legacyYen,
+            unavailableText = null,
+            statusText = "LEGACY / 旧Dashboard集計",
+        )
+    }
+
+    return when (state) {
+        BusinessMetricUiState.Loading -> unavailable(
+            text = "読み込み中",
+            status = "BusinessMetric / Loading / 月途中",
+        )
+
+        is BusinessMetricUiState.Success -> {
+            if (state.report.period != expectedPeriod) {
+                unavailable(
+                    text = "読み込み中",
+                    status = "BusinessMetric / 期間更新中 / 月途中",
+                )
+            } else {
+                resolveMetric(metric(state.report))
+            }
+        }
+
+        is BusinessMetricUiState.MappingFailure,
+        is BusinessMetricUiState.DataAccessFailure,
+        is BusinessMetricUiState.AssemblyFailure,
+        is BusinessMetricUiState.CalculationFailure,
+        -> unavailable(
+            text = "取得できません",
+            status = "BusinessMetric / Failure / 月途中",
+        )
+    }
+}
+
+private fun resolveMetric(metric: AmountMetricResult): HomeMonthlyMetricPresentation {
+    val statusParts = buildList {
+        add("RECORDED")
+        add(metric.availability.name)
+        if (metric.availability == MetricAvailability.PARTIAL_DATA || metric.value == null) {
+            add("月途中")
+        }
+        if (metric.missingInputs.isNotEmpty()) {
+            add("不足: ${metric.missingInputs.joinToString { it.name }}")
+        }
+    }
+    val amount = metric.value?.yen
+    return if (amount != null) {
+        HomeMonthlyMetricPresentation(
+            amountYen = amount,
+            unavailableText = null,
+            statusText = statusParts.joinToString(" / "),
+        )
+    } else {
+        unavailable(
+            text = when (metric.availability) {
+                MetricAvailability.INSUFFICIENT_DATA -> "データ不足"
+                MetricAvailability.NOT_AVAILABLE -> "算出対象外"
+                MetricAvailability.AVAILABLE,
+                MetricAvailability.PARTIAL_DATA,
+                -> error("A value is required for ${metric.availability}")
+            },
+            status = statusParts.joinToString(" / "),
+        )
+    }
+}
+
+private fun unavailable(text: String, status: String) = HomeMonthlyMetricPresentation(
+    amountYen = null,
+    unavailableText = text,
+    statusText = status,
+)

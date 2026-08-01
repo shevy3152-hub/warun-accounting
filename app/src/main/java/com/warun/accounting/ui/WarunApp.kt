@@ -121,8 +121,9 @@ import com.warun.accounting.data.prepaid.netCashChargeAmount
 import com.warun.accounting.data.prepaid.PrepaidValidationException
 import com.warun.accounting.data.prepaid.PrepaidValidationFailure
 import com.warun.accounting.domain.metrics.MetricPeriod
-import com.warun.accounting.ui.home.HomeMonthlySalesPresentation
-import com.warun.accounting.ui.home.HomeMonthlySalesSource
+import com.warun.accounting.ui.home.HomeMonthlyMetricPresentation
+import com.warun.accounting.ui.home.HomeMonthlyMetricSource
+import com.warun.accounting.ui.home.resolveHomeMonthlyExpenses
 import com.warun.accounting.ui.home.resolveHomeMonthlySales
 import com.warun.accounting.ui.input.DateInputTextField
 import com.warun.accounting.ui.cancellation.ExpenseCancellationDialog
@@ -193,7 +194,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
-private val homeMonthlySalesSource = HomeMonthlySalesSource.BUSINESS_METRIC
+private val homeMonthlySalesSource = HomeMonthlyMetricSource.BUSINESS_METRIC
+private val homeMonthlyExpensesSource = HomeMonthlyMetricSource.BUSINESS_METRIC
 
 private data class PrepaidExpenseUiSnapshot(
     val accounts: List<PrepaidAccountRecord>,
@@ -978,6 +980,12 @@ private fun HomeScreen(
         expectedPeriod = currentMonthPeriod,
         state = businessMetricState,
     )
+    val monthlyExpenses = resolveHomeMonthlyExpenses(
+        source = homeMonthlyExpensesSource,
+        legacyYen = uiState.monthExpensesTotal,
+        expectedPeriod = currentMonthPeriod,
+        state = businessMetricState,
+    )
     ScreenColumn {
         ScreenTitle("ホーム", "今日と今月の状況をすぐ確認できます。")
         onOpenBusinessMetricDiagnostic?.let { onOpen ->
@@ -1012,7 +1020,7 @@ private fun HomeScreen(
             }
         }
         HomePrimaryActions(onNavigate)
-        HomeStatusGrid(uiState, monthlySales)
+        HomeStatusGrid(uiState, monthlySales, monthlyExpenses)
         HomeMonthlyTasks(uiState, onNavigate)
         PhoneMenuCards(onNavigate)
         DailyReportList(uiState.reports.take(5))
@@ -1056,7 +1064,8 @@ private fun HomePrimaryActions(onNavigate: (String) -> Unit) {
 @Composable
 private fun HomeStatusGrid(
     uiState: DashboardUiState,
-    monthlySales: HomeMonthlySalesPresentation,
+    monthlySales: HomeMonthlyMetricPresentation,
+    monthlyExpenses: HomeMonthlyMetricPresentation,
 ) {
     DashboardCard {
         Text("今日", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
@@ -1081,7 +1090,13 @@ private fun HomeStatusGrid(
                 supportingText = monthlySales.statusText,
                 modifier = cardModifier,
             )
-            SummaryCard("今月の支出", uiState.monthExpensesTotal.toYen(), modifier = cardModifier)
+            SummaryCard(
+                label = "今月の支出",
+                value = monthlyExpenses.amountYen?.toYen()
+                    ?: requireNotNull(monthlyExpenses.unavailableText),
+                supportingText = monthlyExpenses.statusText,
+                modifier = cardModifier,
+            )
             SummaryCard("今月の概算差額", uiState.monthEstimatedBalance.toYen(), modifier = cardModifier)
         }
     }

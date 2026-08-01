@@ -1,6 +1,7 @@
 package com.warun.accounting.ui.viewmodel
 
 import com.warun.accounting.data.local.DailyReport
+import com.warun.accounting.data.local.ExpenseCategory
 import com.warun.accounting.data.local.ExpenseRecord
 import com.warun.accounting.data.local.ExpenseVisibilityRecord
 import com.warun.accounting.data.metrics.BusinessMetricRequestClock
@@ -152,9 +153,10 @@ class BusinessMetricViewModelTest {
     }
 
     @Test
-    fun providerReemitRecalculatesMonthlySalesWithoutChangingSelectedPeriod() = runTest(dispatcher) {
+    fun providerReemitRecalculatesMonthlySalesAndExpensesWithoutChangingSelectedPeriod() = runTest(dispatcher) {
         val reports = MutableStateFlow(listOf(report(sales = 0L)))
-        val viewModel = viewModel(reports = reports)
+        val visibility = MutableStateFlow(listOf(visibility("expense-1", ExpenseCategory.OtherExpense, false)))
+        val viewModel = viewModel(reports = reports, visibility = visibility)
         val collector = launch { viewModel.state.collect {} }
         val period = MetricPeriod.Monthly(YearMonth.of(2026, 7))
 
@@ -162,13 +164,16 @@ class BusinessMetricViewModelTest {
         advanceUntilIdle()
         val initial = viewModel.state.value as BusinessMetricUiState.Success
         assertEquals(0L, initial.report.recordedSales.value?.yen)
+        assertEquals(100L, initial.report.recordedExpenses.value?.yen)
 
         reports.value = listOf(report(sales = 1_000L))
+        visibility.value = listOf(visibility("expense-1", ExpenseCategory.OtherExpense, false, amount = 250L))
         advanceUntilIdle()
 
         val updated = viewModel.state.value as BusinessMetricUiState.Success
         assertEquals(period, updated.report.period)
         assertEquals(1_000L, updated.report.recordedSales.value?.yen)
+        assertEquals(250L, updated.report.recordedExpenses.value?.yen)
         collector.cancel()
     }
 
@@ -255,13 +260,14 @@ class BusinessMetricViewModelTest {
         category: String,
         isCancelled: Boolean,
         expenseDate: String = "2026-07-01",
+        amount: Long = 100L,
     ) = ExpenseVisibilityRecord(
         expense = ExpenseRecord(
             id = id,
             expenseDate = expenseDate,
             category = category,
             supplierName = null,
-            amount = 100L,
+            amount = amount,
             paymentMethod = null,
             memo = null,
             receiptId = null,
