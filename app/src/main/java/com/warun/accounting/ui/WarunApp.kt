@@ -97,6 +97,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.warun.accounting.camera.ReceiptCaptureResult
+import com.warun.accounting.BuildConfig
 import com.warun.accounting.data.local.AppSettings
 import com.warun.accounting.data.local.DailyReport
 import com.warun.accounting.data.local.DailyReportStatus
@@ -218,6 +219,11 @@ private sealed class AppDestination(
     data object ReportList : AppDestination("report_list", "日報一覧", Icons.Outlined.ListAlt)
     data object Submit : AppDestination("submit", "税理士へ提出", Icons.Outlined.Download)
     data object Settings : AppDestination("settings", "設定", Icons.Outlined.Settings)
+    data object BusinessMetricDiagnostic : AppDestination(
+        "business_metric_diagnostic",
+        "経営指標（確認用）",
+        Icons.Outlined.Assessment,
+    )
 }
 
 private val destinations = listOf(
@@ -665,7 +671,12 @@ private fun AppNavHost(
             HomeScreen(
                 uiState = uiState,
                 evidenceRecoveryIssueCount = evidenceRecoveryIssueCount,
-                onNavigate = onNavigateSingleTop
+                onNavigate = onNavigateSingleTop,
+                onOpenBusinessMetricDiagnostic = if (BuildConfig.DEBUG) {
+                    { onNavigate(AppDestination.BusinessMetricDiagnostic.route) }
+                } else {
+                    null
+                },
             )
         }
         composable(AppDestination.ReportEntry.route) { backStackEntry ->
@@ -799,7 +810,20 @@ private fun AppNavHost(
             )
         }
         composable(AppDestination.Settings.route) {
-            SettingsScreen(uiState = uiState, onSave = viewModel::saveAppSettings)
+            SettingsScreen(
+                uiState = uiState,
+                onSave = viewModel::saveAppSettings,
+                onOpenBusinessMetricDiagnostic = if (BuildConfig.DEBUG) {
+                    { onNavigate(AppDestination.BusinessMetricDiagnostic.route) }
+                } else {
+                    null
+                },
+            )
+        }
+        if (BuildConfig.DEBUG) {
+            composable(AppDestination.BusinessMetricDiagnostic.route) {
+                BusinessMetricDiagnosticScreen(onBack = onPopBackStack)
+            }
         }
     }
 }
@@ -931,10 +955,19 @@ private fun SummaryLine(label: String, value: String, color: Color) {
 private fun HomeScreen(
     uiState: DashboardUiState,
     evidenceRecoveryIssueCount: Int,
-    onNavigate: (String) -> Unit
+    onNavigate: (String) -> Unit,
+    onOpenBusinessMetricDiagnostic: (() -> Unit)? = null,
 ) {
     ScreenColumn {
         ScreenTitle("ホーム", "今日と今月の状況をすぐ確認できます。")
+        onOpenBusinessMetricDiagnostic?.let { onOpen ->
+            OutlinedButton(
+                onClick = onOpen,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("経営指標（確認用）")
+            }
+        }
         if (evidenceRecoveryIssueCount > 0) {
             Surface(
                 color = MaterialTheme.colorScheme.errorContainer,
@@ -4241,7 +4274,8 @@ private fun SubmitScreen(
 @Composable
 private fun SettingsScreen(
     uiState: DashboardUiState,
-    onSave: (AppSettingsInput) -> Unit
+    onSave: (AppSettingsInput) -> Unit,
+    onOpenBusinessMetricDiagnostic: (() -> Unit)? = null,
 ) {
     val settings = uiState.appSettings
     var input by remember(settings) {
@@ -4291,6 +4325,25 @@ private fun SettingsScreen(
                 onClick = { onSave(input) },
                 modifier = Modifier.fillMaxWidth()
             )
+        }
+        onOpenBusinessMetricDiagnostic?.let { onOpen ->
+            FormCard {
+                Text(
+                    "開発確認",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    "新しい経営指標計算経路を実データで確認します。既存画面の値は変更しません。",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedButton(
+                    onClick = onOpen,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("経営指標（確認用）")
+                }
+            }
         }
     }
 }
