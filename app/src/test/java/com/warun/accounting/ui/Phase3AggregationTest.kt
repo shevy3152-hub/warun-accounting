@@ -6,6 +6,7 @@ import com.warun.accounting.data.local.ExpenseCategory
 import com.warun.accounting.data.local.ExpenseRecord
 import com.warun.accounting.data.local.ExpenseSourceType
 import com.warun.accounting.ui.model.DashboardUiState
+import com.warun.accounting.ui.util.currentMonthString
 import com.warun.accounting.ui.util.todayString
 import com.warun.accounting.util.PaymentMethodCash
 import com.warun.accounting.util.ExpenseDateCategoryKey
@@ -50,6 +51,18 @@ class Phase3AggregationTest {
         val state = DashboardUiState(reports = listOf(report(date = todayString(), cashSales = 12_000)))
         val live = SidebarSummaryOverride(15_000, 14_000, 20_000)
         assertEquals(live, resolveSidebarSummary(state, live))
+    }
+
+    @Test
+    fun legacyHomeMonthSalesStillUsesCurrentMonthContract() {
+        val state = DashboardUiState(
+            reports = listOf(
+                report(date = "${currentMonthString()}-01", cashSales = 12_000),
+                report(date = "2020-01-01", cashSales = 90_000),
+            ),
+        )
+
+        assertEquals(12_000L, state.monthSales)
     }
 
     @Test

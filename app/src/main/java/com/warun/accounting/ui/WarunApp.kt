@@ -120,6 +120,10 @@ import com.warun.accounting.data.cancellation.ExpenseCancellationAuditItem
 import com.warun.accounting.data.prepaid.netCashChargeAmount
 import com.warun.accounting.data.prepaid.PrepaidValidationException
 import com.warun.accounting.data.prepaid.PrepaidValidationFailure
+import com.warun.accounting.domain.metrics.MetricPeriod
+import com.warun.accounting.ui.home.HomeMonthlySalesPresentation
+import com.warun.accounting.ui.home.HomeMonthlySalesSource
+import com.warun.accounting.ui.home.resolveHomeMonthlySales
 import com.warun.accounting.ui.input.DateInputTextField
 import com.warun.accounting.ui.cancellation.ExpenseCancellationDialog
 import com.warun.accounting.ui.cancellation.ExpenseCancellationDialogSummary
@@ -155,6 +159,7 @@ import com.warun.accounting.ui.receipt.planReceiptOcrMerge
 import com.warun.accounting.ui.receipt.toSavedValue
 import com.warun.accounting.ui.prepaid.PrepaidManagementScreen
 import com.warun.accounting.ui.prepaid.PrepaidNavigationGuard
+import com.warun.accounting.ui.util.currentMonthString
 import com.warun.accounting.ui.util.toYen
 import com.warun.accounting.util.calculateCashBalance
 import com.warun.accounting.util.calculateCashFlow
@@ -170,6 +175,7 @@ import com.warun.accounting.util.preferredCashExpenseAmount
 import com.warun.accounting.util.preferredExpenseAmount
 import com.warun.accounting.util.ExpenseDateCategoryKey
 import com.warun.accounting.ui.viewmodel.AppSettingsInput
+import com.warun.accounting.ui.viewmodel.BusinessMetricViewModel
 import com.warun.accounting.ui.viewmodel.DailyReportInput
 import com.warun.accounting.ui.viewmodel.DashboardViewModel
 import com.warun.accounting.ui.viewmodel.CancellationUiFailure
@@ -186,6 +192,8 @@ import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+
+private val homeMonthlySalesSource = HomeMonthlySalesSource.BUSINESS_METRIC
 
 private data class PrepaidExpenseUiSnapshot(
     val accounts: List<PrepaidAccountRecord>,
@@ -957,7 +965,19 @@ private fun HomeScreen(
     evidenceRecoveryIssueCount: Int,
     onNavigate: (String) -> Unit,
     onOpenBusinessMetricDiagnostic: (() -> Unit)? = null,
+    businessMetricViewModel: BusinessMetricViewModel = hiltViewModel(),
 ) {
+    val businessMetricState by businessMetricViewModel.state.collectAsStateWithLifecycle()
+    val currentMonthPeriod = MetricPeriod.Monthly(YearMonth.parse(currentMonthString()))
+    LaunchedEffect(currentMonthPeriod) {
+        businessMetricViewModel.selectPeriod(currentMonthPeriod)
+    }
+    val monthlySales = resolveHomeMonthlySales(
+        source = homeMonthlySalesSource,
+        legacyYen = uiState.monthSales,
+        expectedPeriod = currentMonthPeriod,
+        state = businessMetricState,
+    )
     ScreenColumn {
         ScreenTitle("ホーム", "今日と今月の状況をすぐ確認できます。")
         onOpenBusinessMetricDiagnostic?.let { onOpen ->
@@ -992,7 +1012,7 @@ private fun HomeScreen(
             }
         }
         HomePrimaryActions(onNavigate)
-        HomeStatusGrid(uiState)
+        HomeStatusGrid(uiState, monthlySales)
         HomeMonthlyTasks(uiState, onNavigate)
         PhoneMenuCards(onNavigate)
         DailyReportList(uiState.reports.take(5))
@@ -1034,7 +1054,10 @@ private fun HomePrimaryActions(onNavigate: (String) -> Unit) {
     }
 }
 @Composable
-private fun HomeStatusGrid(uiState: DashboardUiState) {
+private fun HomeStatusGrid(
+    uiState: DashboardUiState,
+    monthlySales: HomeMonthlySalesPresentation,
+) {
     DashboardCard {
         Text("今日", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         AdaptiveSummaryGrid { cardModifier ->
@@ -1052,7 +1075,12 @@ private fun HomeStatusGrid(uiState: DashboardUiState) {
     DashboardCard {
         Text("今月", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         AdaptiveSummaryGrid { cardModifier ->
-            SummaryCard("今月の売上", uiState.monthSales.toYen(), modifier = cardModifier)
+            SummaryCard(
+                label = "今月の売上",
+                value = monthlySales.amountYen?.toYen() ?: requireNotNull(monthlySales.unavailableText),
+                supportingText = monthlySales.statusText,
+                modifier = cardModifier,
+            )
             SummaryCard("今月の支出", uiState.monthExpensesTotal.toYen(), modifier = cardModifier)
             SummaryCard("今月の概算差額", uiState.monthEstimatedBalance.toYen(), modifier = cardModifier)
         }
@@ -1081,7 +1109,8 @@ private fun HomeMonthlyTasks(
 private fun SummaryCard(
     label: String,
     value: String,
-    modifier: Modifier = Modifier.width(168.dp)
+    modifier: Modifier = Modifier.width(168.dp),
+    supportingText: String? = null,
 ) {
     Card(
         shape = RoundedCornerShape(8.dp),
@@ -1104,6 +1133,13 @@ private fun SummaryCard(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+            supportingText?.let { text ->
+                Text(
+                    text = text,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
         }
     }
 }

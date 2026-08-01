@@ -152,11 +152,11 @@ class BusinessMetricViewModelTest {
     }
 
     @Test
-    fun providerReemitRecalculatesWithoutChangingSelectedPeriod() = runTest(dispatcher) {
+    fun providerReemitRecalculatesMonthlySalesWithoutChangingSelectedPeriod() = runTest(dispatcher) {
         val reports = MutableStateFlow(listOf(report(sales = 0L)))
         val viewModel = viewModel(reports = reports)
         val collector = launch { viewModel.state.collect {} }
-        val period = MetricPeriod.Daily(LocalDate.parse("2026-07-01"))
+        val period = MetricPeriod.Monthly(YearMonth.of(2026, 7))
 
         viewModel.selectPeriod(period)
         advanceUntilIdle()
