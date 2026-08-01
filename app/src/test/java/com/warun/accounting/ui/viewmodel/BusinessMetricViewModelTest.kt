@@ -178,6 +178,57 @@ class BusinessMetricViewModelTest {
     }
 
     @Test
+    fun dailyDateSwitchAndProviderReemitUseOnlyTheSelectedDay() = runTest(dispatcher) {
+        val reports = MutableStateFlow(
+            listOf(
+                report(id = "report-1", reportDate = "2026-07-01", sales = 1_000L),
+                report(id = "report-2", reportDate = "2026-07-02", sales = 2_000L),
+            ),
+        )
+        val visibility = MutableStateFlow(
+            listOf(
+                visibility("expense-1", ExpenseCategory.OtherExpense, false, "2026-07-01", 100L),
+                visibility("expense-2", ExpenseCategory.OtherExpense, false, "2026-07-02", 200L),
+            ),
+        )
+        val viewModel = viewModel(reports = reports, visibility = visibility)
+        val collector = launch { viewModel.state.collect {} }
+        val firstDay = MetricPeriod.Daily(LocalDate.parse("2026-07-01"))
+        val secondDay = MetricPeriod.Daily(LocalDate.parse("2026-07-02"))
+
+        viewModel.selectPeriod(firstDay)
+        advanceUntilIdle()
+        val first = viewModel.state.value as BusinessMetricUiState.Success
+        assertEquals(1_000L, first.report.recordedSales.value?.yen)
+        assertEquals(100L, first.report.recordedExpenses.value?.yen)
+
+        viewModel.selectPeriod(secondDay)
+        advanceUntilIdle()
+        val second = viewModel.state.value as BusinessMetricUiState.Success
+        assertEquals(secondDay, second.report.period)
+        assertEquals(2_000L, second.report.recordedSales.value?.yen)
+        assertEquals(200L, second.report.recordedExpenses.value?.yen)
+
+        reports.value = reports.value.map {
+            if (it.id == "report-2") report(id = it.id, reportDate = it.reportDate, sales = 3_000L) else it
+        }
+        visibility.value = visibility.value.map {
+            if (it.expense.id == "expense-2") {
+                visibility("expense-2", ExpenseCategory.OtherExpense, false, "2026-07-02", 250L)
+            } else {
+                it
+            }
+        }
+        advanceUntilIdle()
+
+        val updated = viewModel.state.value as BusinessMetricUiState.Success
+        assertEquals(secondDay, updated.report.period)
+        assertEquals(3_000L, updated.report.recordedSales.value?.yen)
+        assertEquals(250L, updated.report.recordedExpenses.value?.yen)
+        collector.cancel()
+    }
+
+    @Test
     fun delayedOldPeriodCannotOverwriteLatestPeriod() = runTest(dispatcher) {
         val viewModel = viewModel()
         val collector = launch { viewModel.state.collect {} }

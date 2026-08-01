@@ -4,6 +4,7 @@ import com.warun.accounting.domain.metrics.AmountMetricResult
 import com.warun.accounting.domain.metrics.BusinessMetricResult
 import com.warun.accounting.domain.metrics.MetricAvailability
 import com.warun.accounting.domain.metrics.MetricPeriod
+import com.warun.accounting.domain.metrics.MetricWarning
 import com.warun.accounting.domain.metrics.RatioMetricResult
 import com.warun.accounting.ui.BalancePeriod
 import com.warun.accounting.ui.BalancePeriodMode
@@ -12,7 +13,7 @@ import com.warun.accounting.ui.model.BusinessMetricUiState
 import java.math.BigDecimal
 import java.time.YearMonth
 
-internal enum class BalanceMonthlyAnalysisSource {
+internal enum class BalanceAnalysisSource {
     BUSINESS_METRIC,
     LEGACY,
 }
@@ -27,7 +28,7 @@ internal data class BalanceMetricPresentation<T>(
     }
 }
 
-internal data class BalanceMonthlyAnalysisPresentation(
+internal data class BalanceAnalysisPresentation(
     val referenceCostLabel: String,
     val referenceCostRateLabel: String,
     val referenceCost: BalanceMetricPresentation<Long>,
@@ -35,29 +36,30 @@ internal data class BalanceMonthlyAnalysisPresentation(
     val referenceCostRatePercent: BalanceMetricPresentation<BigDecimal>,
 )
 
-internal fun resolveBalanceMonthlyMetricPeriod(
+internal fun resolveBalanceMetricPeriod(
     mode: BalancePeriodMode,
     period: BalancePeriod,
-): MetricPeriod.Monthly? = when (mode) {
+): MetricPeriod? = when (mode) {
+    BalancePeriodMode.Today,
+    BalancePeriodMode.Yesterday,
+    -> MetricPeriod.Daily(period.start)
+
     BalancePeriodMode.ThisMonth,
     BalancePeriodMode.LastMonth,
     -> MetricPeriod.Monthly(YearMonth.from(period.start))
 
-    BalancePeriodMode.Today,
-    BalancePeriodMode.Yesterday,
-    BalancePeriodMode.Custom,
-    -> null
+    BalancePeriodMode.Custom -> null
 }
 
-internal fun resolveBalanceMonthlyAnalysis(
-    source: BalanceMonthlyAnalysisSource,
+internal fun resolveBalanceAnalysis(
+    source: BalanceAnalysisSource,
     legacy: BusinessAnalysisSummary,
-    expectedPeriod: MetricPeriod.Monthly,
+    expectedPeriod: MetricPeriod,
     state: BusinessMetricUiState,
-): BalanceMonthlyAnalysisPresentation {
-    if (source == BalanceMonthlyAnalysisSource.LEGACY) {
+): BalanceAnalysisPresentation {
+    if (source == BalanceAnalysisSource.LEGACY) {
         val status = "LEGACY / 旧BusinessAnalysis"
-        return BalanceMonthlyAnalysisPresentation(
+        return BalanceAnalysisPresentation(
             referenceCostLabel = "概算原価",
             referenceCostRateLabel = "概算原価率",
             referenceCost = legacyMetric(legacy.estimatedCost, "計算不可", status),
@@ -72,7 +74,7 @@ internal fun resolveBalanceMonthlyAnalysis(
             if (state.report.period != expectedPeriod) {
                 unavailableAnalysis("読み込み中", "BusinessMetric / 期間更新中")
             } else {
-                BalanceMonthlyAnalysisPresentation(
+                BalanceAnalysisPresentation(
                     referenceCostLabel = "参考原価",
                     referenceCostRateLabel = "参考原価率",
                     referenceCost = amountPresentation(state.report.referenceCost),
@@ -109,8 +111,8 @@ private fun <T> metricPresentation(
     val status = buildList {
         add(result.classification.name)
         add(result.availability.name)
-        if (result.availability == MetricAvailability.PARTIAL_DATA) {
-            add("月途中")
+        if (MetricWarning.PARTIAL_PERIOD in result.warnings) {
+            add(result.period.progressLabel())
         }
         if (result.missingInputs.isNotEmpty()) {
             add("不足: ${result.missingInputs.joinToString { it.name }}")
@@ -133,10 +135,16 @@ private fun <T> metricPresentation(
     }
 }
 
+private fun MetricPeriod.progressLabel(): String = when (this) {
+    is MetricPeriod.Daily -> "当日途中"
+    is MetricPeriod.Monthly -> "月途中"
+    is MetricPeriod.CustomRange -> "期間途中"
+}
+
 private fun unavailableAnalysis(
     text: String,
     status: String,
-): BalanceMonthlyAnalysisPresentation = BalanceMonthlyAnalysisPresentation(
+): BalanceAnalysisPresentation = BalanceAnalysisPresentation(
     referenceCostLabel = "参考原価",
     referenceCostRateLabel = "参考原価率",
     referenceCost = BalanceMetricPresentation(null, text, status),
