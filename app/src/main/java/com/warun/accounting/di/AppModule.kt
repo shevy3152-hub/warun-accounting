@@ -224,6 +224,68 @@ object DatabaseModule {
         }
     }
 
+    internal val MIGRATION_14_15 = object : Migration(14, 15) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                """
+                CREATE TABLE expense_cancellations_v15 (
+                    expenseId TEXT NOT NULL,
+                    operationKey TEXT NOT NULL,
+                    requestFingerprint TEXT NOT NULL,
+                    originalPurchaseTransactionId TEXT,
+                    reversalTransactionId TEXT,
+                    cancellationDate TEXT NOT NULL,
+                    cancelledAt INTEGER NOT NULL,
+                    reason TEXT,
+                    PRIMARY KEY(expenseId),
+                    FOREIGN KEY(expenseId) REFERENCES expense_records(id)
+                        ON UPDATE RESTRICT ON DELETE RESTRICT,
+                    FOREIGN KEY(originalPurchaseTransactionId) REFERENCES prepaid_transactions(id)
+                        ON UPDATE RESTRICT ON DELETE RESTRICT,
+                    FOREIGN KEY(reversalTransactionId) REFERENCES prepaid_transactions(id)
+                        ON UPDATE RESTRICT ON DELETE RESTRICT
+                )
+                """.trimIndent()
+            )
+            db.execSQL(
+                """
+                INSERT INTO expense_cancellations_v15 (
+                    expenseId, operationKey, requestFingerprint,
+                    originalPurchaseTransactionId, reversalTransactionId,
+                    cancellationDate, cancelledAt, reason
+                )
+                SELECT expenseId, operationKey, requestFingerprint,
+                    originalPurchaseTransactionId, reversalTransactionId,
+                    cancellationDate, cancelledAt, reason
+                FROM expense_cancellations
+                """.trimIndent()
+            )
+            db.execSQL("DROP TABLE expense_cancellations")
+            db.execSQL(
+                "ALTER TABLE expense_cancellations_v15 RENAME TO expense_cancellations"
+            )
+            db.execSQL(
+                """
+                CREATE UNIQUE INDEX index_expense_cancellations_operationKey
+                ON expense_cancellations(operationKey)
+                """.trimIndent()
+            )
+            db.execSQL(
+                """
+                CREATE UNIQUE INDEX
+                    index_expense_cancellations_originalPurchaseTransactionId
+                ON expense_cancellations(originalPurchaseTransactionId)
+                """.trimIndent()
+            )
+            db.execSQL(
+                """
+                CREATE UNIQUE INDEX index_expense_cancellations_reversalTransactionId
+                ON expense_cancellations(reversalTransactionId)
+                """.trimIndent()
+            )
+        }
+    }
+
     internal val PREPAID_DATABASE_CALLBACK = object : RoomDatabase.Callback() {
         override fun onCreate(db: SupportSQLiteDatabase) {
             db.insertInitialPrepaidAccounts()
@@ -427,7 +489,8 @@ object DatabaseModule {
                 MIGRATION_10_11,
                 MIGRATION_11_12,
                 MIGRATION_12_13,
-                MIGRATION_13_14
+                MIGRATION_13_14,
+                MIGRATION_14_15
             )
             .addCallback(PREPAID_DATABASE_CALLBACK)
             .build()

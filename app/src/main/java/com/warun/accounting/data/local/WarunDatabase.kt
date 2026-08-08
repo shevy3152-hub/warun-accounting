@@ -19,7 +19,7 @@ import androidx.room.RoomDatabase
         ExpenseEditOperationRecord::class,
         ExpenseCancellationRecord::class
     ],
-    version = 14,
+    version = 15,
     exportSchema = true
 )
 abstract class WarunDatabase : RoomDatabase() {

@@ -59,11 +59,12 @@
 
 ### 2.3 Room・Migration
 
-- **実装済み**: 現在の`WarunDatabase`はversion 14。
-- **実装済み**: schema JSONはversion 6〜14が保存されている。
-- **実装済み**: `MIGRATION_6_7`〜`MIGRATION_13_14`を`Room.databaseBuilder(...).addMigrations(...)`へ登録している。
+- **実装済み**: 現在の`WarunDatabase`はversion 15。
+- **実装済み**: schema JSONはversion 6〜15が保存されている。
+- **実装済み**: `MIGRATION_6_7`〜`MIGRATION_14_15`を`Room.databaseBuilder(...).addMigrations(...)`へ登録している。
 - **実装済み**: 10→11では既存テーブルを変更せず、`evidence_records`と`expense_evidence_links`だけを追加するMigrationテストがある。
 - **実装済み**: 13→14では既存テーブルへのALTER／UPDATE／backfillを行わず、`expense_cancellations`と一意Indexだけを追加する。
+- **実装済み**: 14→15では既存取消行、FK、UNIQUE indexを保持し、プリペイド台帳参照だけをnullable化して非プリペイド取消を一般化する。
 - **実装済み**: version 7→8のlegacy支出移行では、既存`ExpenseRecord`との一致確認、競合時rollback、二重作成防止のAndroidテストがある。
 - **一部実装**: 6→10の全開始versionを通したMigration回帰テストは、現在確認できるテスト構成だけでは網羅されていない。将来schemaを変更するときは、新Migrationとschema JSONに加えて、影響する開始versionからの移行テスト範囲を確認する。
 - `fallbackToDestructiveMigration`は使用しない。
@@ -82,6 +83,7 @@
 - **実装済み（C-3A）**: 新規プリペイド支出でExpense、PURCHASE、ExpensePrepaidLink、EvidenceをTransaction保存する。
 - **実装済み（C-3B）**: 保存済み支出の金額・口座・プリペイド属性変更に対応し、元PURCHASEを不変に保ってREVERSALと新PURCHASEを追加する。operationKey／fingerprintによる永続的冪等性とSavedState復元を行う。
 - **実装済み（C-3C）**: 保存済みプリペイド支出を論理取消し、元Expense、元PURCHASE、Link、Evidenceを保持したままREVERSALで残高を復元する。
+- **実装済み**: 現金・クレジット・電子マネー・掛けの保存済み支出も物理削除せず、元ExpenseとEvidenceを保持したまま取消監査へ記録する。非プリペイド取消はプリペイド台帳を操作しない。
 - **実装済み**: 取消済みExpenseを通常一覧・集計・編集から除外し、legacy fallbackによる再計上を防ぎ、日報詳細の監査表示から台帳とEvidenceを参照できる。
 - **実装済み**: C-3のA90最終手動受入に合格した。A90ではInstrumentationを実行せず、通常版Debug APKの`adb install -r`と手動確認だけを行った。
 - **未実装／別Phase**: REFUND、部分返金、複数返金、プリペイド口座削除、Expense物理削除、Evidence削除・差し替え、Journal v2、スマホ最適化。

@@ -6,6 +6,8 @@ import com.warun.accounting.data.cancellation.ExpenseCancellationFailure
 import com.warun.accounting.data.cancellation.ExpenseCancellationRequest
 import com.warun.accounting.data.cancellation.ExpenseCancellationResult
 import com.warun.accounting.data.cancellation.ExpenseCancellationSnapshot
+import com.warun.accounting.util.PaymentMethodCash
+import com.warun.accounting.util.PaymentMethodPrepaid
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -92,6 +94,36 @@ class ExpenseCancellationViewModelTest {
         assertEquals("2026-07-30", restored.state.value.cancellationDate)
         assertEquals("  仕入取消  ", restored.state.value.reason)
         assertEquals(savedKey, restored.state.value.operationKey)
+    }
+
+    @Test
+    fun nonPrepaidSnapshotAndRecreationKeepNullLedgerReferences() = runTest(dispatcher) {
+        val handle = SavedStateHandle()
+        val gateway = FakeGateway(
+            snapshots = mapOf(
+                "expense-1" to snapshot().copy(
+                    originalPurchaseTransactionId = null,
+                    prepaidAccountId = null,
+                    paymentMethod = PaymentMethodCash
+                )
+            )
+        )
+        val first = viewModel(gateway = gateway, handle = handle)
+        first.startCancellation("expense-1")
+        advanceUntilIdle()
+
+        val restored = viewModel(gateway = gateway, handle = handle)
+        assertNull(restored.state.value.originalPurchaseTransactionId)
+        assertNull(restored.state.value.prepaidAccountId)
+        assertEquals(PaymentMethodCash, restored.state.value.expectedPaymentMethod)
+
+        restored.saveCancellation()
+        advanceUntilIdle()
+
+        val request = gateway.cancelCalls.single()
+        assertNull(request.expectedOriginalPurchaseTransactionId)
+        assertNull(request.expectedPrepaidAccountId)
+        assertEquals(PaymentMethodCash, request.expectedPaymentMethod)
     }
 
     @Test
@@ -524,13 +556,20 @@ class ExpenseCancellationViewModelTest {
         fun result(request: ExpenseCancellationRequest) = ExpenseCancellationResult(
             expenseId = request.expenseId,
             originalPurchaseTransactionId = request.expectedOriginalPurchaseTransactionId,
-            reversalTransactionId = "reversal-1",
+            reversalTransactionId = if (
+                request.expectedPaymentMethod == PaymentMethodPrepaid
+            ) {
+                "reversal-1"
+            } else {
+                null
+            },
             prepaidAccountId = request.expectedPrepaidAccountId,
             amount = request.expectedAmount,
             cancellationDate = request.cancellationDate,
             cancelledAt = 20L,
             reason = request.reason,
-            idempotentReplay = false
+            idempotentReplay = false,
+            paymentMethod = request.expectedPaymentMethod
         )
     }
 }

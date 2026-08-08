@@ -11,6 +11,7 @@ import com.warun.accounting.data.local.PrepaidAccountRecord
 import com.warun.accounting.data.local.PrepaidAccountType
 import com.warun.accounting.data.local.PrepaidTransactionRecord
 import com.warun.accounting.data.local.PrepaidTransactionType
+import com.warun.accounting.util.PaymentMethodCash
 import com.warun.accounting.util.PaymentMethodPrepaid
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -28,6 +29,32 @@ class ExpenseCancellationAuditModelTest {
         assertEquals(PrepaidAccountId.Majica, item.prepaidAccount?.id)
         assertEquals("purchase-1", item.originalPurchase?.id)
         assertEquals("reversal-1", item.reversal?.id)
+        assertEquals(listOf("evidence-1"), item.evidence.map { it.evidenceId })
+        assertTrue(item.isPrepaidCancellation)
+        assertTrue(item.hasCompleteLedgerRelation)
+    }
+
+    @Test
+    fun nonPrepaidCancellationIsCompleteWithoutInventedLedgerReferences() {
+        val item = buildExpenseCancellationAuditItems(
+            expenses = listOf(expense().copy(paymentMethod = PaymentMethodCash)),
+            cancellations = listOf(
+                cancellation().copy(
+                    originalPurchaseTransactionId = null,
+                    reversalTransactionId = null
+                )
+            ),
+            links = emptyList(),
+            transactions = emptyList(),
+            accounts = emptyList(),
+            evidence = listOf(evidence())
+        ).single()
+
+        assertFalse(item.isPrepaidCancellation)
+        assertNull(item.prepaidLink)
+        assertNull(item.originalPurchase)
+        assertNull(item.reversal)
+        assertNull(item.prepaidAccount)
         assertEquals(listOf("evidence-1"), item.evidence.map { it.evidenceId })
         assertTrue(item.hasCompleteLedgerRelation)
     }

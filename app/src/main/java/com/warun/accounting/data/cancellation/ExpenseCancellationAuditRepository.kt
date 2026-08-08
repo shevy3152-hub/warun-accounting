@@ -10,6 +10,8 @@ import com.warun.accounting.data.local.PrepaidAccountRecord
 import com.warun.accounting.data.local.PrepaidTransactionRecord
 import com.warun.accounting.data.local.PrepaidTransactionType
 import com.warun.accounting.data.prepaid.PrepaidRepository
+import com.warun.accounting.util.PaymentMethodPrepaid
+import com.warun.accounting.util.normalizePaymentMethod
 import javax.inject.Inject
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
@@ -22,6 +24,7 @@ data class ExpenseCancellationAuditItem(
     val reversal: PrepaidTransactionRecord?,
     val prepaidAccount: PrepaidAccountRecord?,
     val evidence: List<ExpenseEvidenceRecord>,
+    val isPrepaidCancellation: Boolean,
     val hasCompleteLedgerRelation: Boolean
 )
 
@@ -87,27 +90,37 @@ internal fun buildExpenseCancellationAuditItems(
     return expenses.mapNotNull { expense ->
         val cancellation = cancellationByExpense[expense.id] ?: return@mapNotNull null
         val link = linkByExpense[expense.id]
-        val purchase = transactionById[cancellation.originalPurchaseTransactionId]
-        val reversal = transactionById[cancellation.reversalTransactionId]
+        val purchase = cancellation.originalPurchaseTransactionId?.let(transactionById::get)
+        val reversal = cancellation.reversalTransactionId?.let(transactionById::get)
         val account = purchase?.accountId?.let(accountById::get)
-        val complete = link?.purchaseTransactionId == purchase?.id &&
-            expense.amount > 0L &&
-            purchase?.transactionType == PrepaidTransactionType.Purchase &&
-            purchase.expenseId == expense.id &&
-            purchase.reversalOfTransactionId == null &&
-            purchase.balanceDelta == -expense.amount &&
-            purchase.transactionDate == expense.expenseDate &&
-            reversal?.transactionType == PrepaidTransactionType.Reversal &&
-            reversal.reversalOfTransactionId == purchase.id &&
-            reversal.expenseId == expense.id &&
-            reversal.accountId == purchase.accountId &&
-            reversal.balanceDelta == expense.amount &&
-            reversal.transactionDate == cancellation.cancellationDate &&
-            reversal.createdAt == cancellation.cancelledAt &&
-            reversal.chargeSource == null &&
-            reversal.operationKey == "${cancellation.operationKey}:reversal" &&
-            reversal.memo == cancellation.reason.orEmpty() &&
-            account != null
+        val isPrepaid = normalizePaymentMethod(expense.paymentMethod) == PaymentMethodPrepaid
+        val complete = if (isPrepaid) {
+            link?.purchaseTransactionId == purchase?.id &&
+                expense.amount > 0L &&
+                purchase?.transactionType == PrepaidTransactionType.Purchase &&
+                purchase.expenseId == expense.id &&
+                purchase.reversalOfTransactionId == null &&
+                purchase.balanceDelta == -expense.amount &&
+                purchase.transactionDate == expense.expenseDate &&
+                reversal?.transactionType == PrepaidTransactionType.Reversal &&
+                reversal.reversalOfTransactionId == purchase.id &&
+                reversal.expenseId == expense.id &&
+                reversal.accountId == purchase.accountId &&
+                reversal.balanceDelta == expense.amount &&
+                reversal.transactionDate == cancellation.cancellationDate &&
+                reversal.createdAt == cancellation.cancelledAt &&
+                reversal.chargeSource == null &&
+                reversal.operationKey == "${cancellation.operationKey}:reversal" &&
+                reversal.memo == cancellation.reason.orEmpty() &&
+                account != null
+        } else {
+            link == null &&
+                cancellation.originalPurchaseTransactionId == null &&
+                cancellation.reversalTransactionId == null &&
+                purchase == null &&
+                reversal == null &&
+                account == null
+        }
         ExpenseCancellationAuditItem(
             expense = expense,
             cancellation = cancellation,
@@ -116,6 +129,7 @@ internal fun buildExpenseCancellationAuditItems(
             reversal = reversal,
             prepaidAccount = account,
             evidence = evidenceByExpense[expense.id].orEmpty(),
+            isPrepaidCancellation = isPrepaid,
             hasCompleteLedgerRelation = complete
         )
     }

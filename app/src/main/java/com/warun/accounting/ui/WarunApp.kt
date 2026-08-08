@@ -136,9 +136,7 @@ import com.warun.accounting.ui.input.DateInputTextField
 import com.warun.accounting.ui.cancellation.ExpenseCancellationDialog
 import com.warun.accounting.ui.cancellation.ExpenseCancellationDialogSummary
 import com.warun.accounting.ui.cancellation.ExpenseCancellationUiAction
-import com.warun.accounting.ui.cancellation.SavedExpenseSecondaryAction
 import com.warun.accounting.ui.cancellation.cancellationFailureMessage
-import com.warun.accounting.ui.cancellation.savedExpenseSecondaryAction
 import com.warun.accounting.ui.cancellation.toUiAction
 import com.warun.accounting.ui.model.BusinessAnalysisSummary
 import com.warun.accounting.ui.model.breakEvenStatusMessage
@@ -715,7 +713,6 @@ private fun AppNavHost(
                 uiState = uiState,
                 onSaveReport = viewModel::saveDailyReportWithExpenseAndEvidence,
                 onSaveExpense = viewModel::saveExpenseWithEvidence,
-                onDeleteExpense = viewModel::deleteExpense,
                 onAddSupplierCandidate = viewModel::addSupplierCandidate,
                 onHideSupplierCandidate = viewModel::hideSupplierCandidate,
                 onOpenReceiptCamera = { navController.navigate(ReceiptRoutes.Camera) },
@@ -810,7 +807,6 @@ private fun AppNavHost(
                 initialDate = backStackEntry.arguments?.getString(ReportRoutes.ReportDateArg),
                 onSaveReport = viewModel::saveDailyReportWithExpenseAndEvidence,
                 onSaveExpense = viewModel::saveExpenseWithEvidence,
-                onDeleteExpense = viewModel::deleteExpense,
                 onAddSupplierCandidate = viewModel::addSupplierCandidate,
                 onHideSupplierCandidate = viewModel::hideSupplierCandidate,
                 onOpenReceiptCamera = { navController.navigate(ReceiptRoutes.Camera) },
@@ -1466,7 +1462,6 @@ private fun ReportEntryScreen(
     initialDate: String? = null,
     onSaveReport: (DailyReportInput, ExpenseInput?, ReceiptCaptureResult?, (Result<Unit>) -> Unit) -> Unit,
     onSaveExpense: (ExpenseInput, ReceiptCaptureResult?, (Result<Unit>) -> Unit) -> Unit,
-    onDeleteExpense: (ExpenseRecord) -> Unit,
     onAddSupplierCandidate: (String, String, String) -> Unit,
     onHideSupplierCandidate: (SupplierCandidateRecord) -> Unit,
     onOpenReceiptCamera: () -> Unit,
@@ -1655,7 +1650,7 @@ private fun ReportEntryScreen(
             when (val action = event.toUiAction()) {
                 is ExpenseCancellationUiAction.ShowSuccess -> {
                     saveFeedback = SaveFeedback(
-                        title = "プリペイド支出を取り消しました",
+                        title = "保存済み支出を取り消しました",
                         body = "支出とレシートは取消済みの記録として保持されています。",
                         isError = false
                     )
@@ -1685,7 +1680,7 @@ private fun ReportEntryScreen(
             return@LaunchedEffect
         }
         saveFeedback = SaveFeedback(
-            title = "プリペイド支出を取り消せませんでした",
+            title = "保存済み支出を取り消せませんでした",
             body = cancellationFailureMessage(failure),
             isError = true
         )
@@ -1954,7 +1949,14 @@ private fun ReportEntryScreen(
                     supplierName = expense.supplierName.orEmpty(),
                     expenseDate = expense.expenseDate,
                     amount = expense.amount,
-                    prepaidAccountName = account?.name ?: "関連口座を確認できません",
+                    paymentMethod = paymentMethodDisplayName(expense.paymentMethod),
+                    prepaidAccountName = if (
+                        normalizePaymentMethod(expense.paymentMethod) == PaymentMethodPrepaid
+                    ) {
+                        account?.name ?: "関連口座を確認できません"
+                    } else {
+                        null
+                    },
                     evidenceCount = uiState.expenseEvidence.count {
                         it.expenseId == expense.id
                     }
@@ -2093,7 +2095,6 @@ private fun ReportEntryScreen(
             },
             onCalendarDateSelected = { requestOpenReportDate(it) },
             onSaveExpense = ::saveExpenseWithPendingEvidence,
-            onDeleteExpense = onDeleteExpense,
             onCancelExpense = expenseCancellationViewModel::startCancellation,
             cancellationBusyExpenseId = cancellationState.expenseId.takeIf {
                 cancellationState.isLoading || cancellationState.isSaving
@@ -2131,7 +2132,6 @@ private fun DailyReportForm(
     onUtilityInputChange: (DailyReportInput, String) -> Unit,
     onCalendarDateSelected: (String) -> Unit,
     onSaveExpense: (ExpenseInput, (Result<Unit>) -> Unit) -> Unit,
-    onDeleteExpense: (ExpenseRecord) -> Unit,
     onCancelExpense: (String) -> Unit,
     cancellationBusyExpenseId: String?,
     onAddSupplierCandidate: (String, String, String) -> Unit,
@@ -2177,7 +2177,6 @@ private fun DailyReportForm(
                 onInputChange = onInputChange,
                 onUtilityInputChange = onUtilityInputChange,
                 onSaveExpense = onSaveExpense,
-                onDeleteExpense = onDeleteExpense,
                 onCancelExpense = onCancelExpense,
                 cancellationBusyExpenseId = cancellationBusyExpenseId,
                 onAddSupplierCandidate = onAddSupplierCandidate,
@@ -2463,7 +2462,6 @@ private fun ExpenseCard(
     onInputChange: (DailyReportInput) -> Unit,
     onUtilityInputChange: (DailyReportInput, String) -> Unit,
     onSaveExpense: (ExpenseInput, (Result<Unit>) -> Unit) -> Unit,
-    onDeleteExpense: (ExpenseRecord) -> Unit,
     onCancelExpense: (String) -> Unit,
     cancellationBusyExpenseId: String?,
     supplierCandidates: List<SupplierCandidateRecord>,
@@ -2511,7 +2509,6 @@ private fun ExpenseCard(
                         expenseEvidence = expenseEvidence,
                         onClose = { selectedCategory = null },
                         onSaveExpense = onSaveExpense,
-                        onDeleteExpense = onDeleteExpense,
                         onCancelExpense = onCancelExpense,
                         cancellationBusyExpenseId = cancellationBusyExpenseId,
                         supplierCandidates = supplierCandidates,
@@ -2564,7 +2561,6 @@ private fun ExpenseCard(
                         onAbandonExpenseSaveSession = onAbandonExpenseSaveSession,
                         onClose = { selectedCategory = null },
                         onSaveExpense = onSaveExpense,
-                        onDeleteExpense = onDeleteExpense,
                         onCancelExpense = onCancelExpense,
                         cancellationBusyExpenseId = cancellationBusyExpenseId,
                         onAddSupplierCandidate = onAddSupplierCandidate,
@@ -2614,7 +2610,6 @@ private fun ExpenseCard(
                         onAbandonExpenseSaveSession = onAbandonExpenseSaveSession,
                         onClose = { selectedCategory = null },
                         onSaveExpense = onSaveExpense,
-                        onDeleteExpense = onDeleteExpense,
                         onCancelExpense = onCancelExpense,
                         cancellationBusyExpenseId = cancellationBusyExpenseId,
                         onAddSupplierCandidate = onAddSupplierCandidate,
@@ -2642,7 +2637,6 @@ private fun ExpenseCard(
                         expenseEvidence = expenseEvidence,
                         onClose = { selectedCategory = null },
                         onSaveExpense = onSaveExpense,
-                        onDeleteExpense = onDeleteExpense,
                         onCancelExpense = onCancelExpense,
                         cancellationBusyExpenseId = cancellationBusyExpenseId,
                         supplierCandidates = supplierCandidates,
@@ -2700,7 +2694,6 @@ private fun ExpenseDetailPanel(
     onAbandonExpenseSaveSession: (String) -> Unit,
     onClose: () -> Unit,
     onSaveExpense: (ExpenseInput, (Result<Unit>) -> Unit) -> Unit,
-    onDeleteExpense: (ExpenseRecord) -> Unit,
     onCancelExpense: (String) -> Unit,
     cancellationBusyExpenseId: String?,
     supplierCandidates: List<SupplierCandidateRecord>,
@@ -2751,7 +2744,6 @@ private fun ExpenseDetailPanel(
                         editingExpense = expense
                         showForm = true
                     },
-                    onDelete = { onDeleteExpense(expense) },
                     onCancel = { onCancelExpense(expense.id) },
                     cancellationInProgress = cancellationBusyExpenseId == expense.id
                 )
@@ -2913,7 +2905,6 @@ private fun ExpenseRecordRow(
     prepaidAccount: PrepaidAccountRecord?,
     onOpenEvidence: (ExpenseEvidenceRecord) -> Unit,
     onEdit: () -> Unit,
-    onDelete: () -> Unit,
     onCancel: () -> Unit,
     cancellationInProgress: Boolean
 ) {
@@ -2936,18 +2927,11 @@ private fun ExpenseRecordRow(
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = onEdit) { Text("編集") }
-                if (
-                    savedExpenseSecondaryAction(isPrepaidExpense) ==
-                    SavedExpenseSecondaryAction.Cancel
+                OutlinedButton(
+                    onClick = onCancel,
+                    enabled = !cancellationInProgress
                 ) {
-                    OutlinedButton(
-                        onClick = onCancel,
-                        enabled = !cancellationInProgress
-                    ) {
-                        Text(if (cancellationInProgress) "確認中…" else "取消")
-                    }
-                } else {
-                    OutlinedButton(onClick = onDelete) { Text("削除") }
+                    Text(if (cancellationInProgress) "確認中…" else "取消")
                 }
             }
         }
@@ -4251,39 +4235,49 @@ private fun CancelledExpenseAuditSection(
                     )
                     Text("元支出日: ${item.expense.expenseDate}")
                     Text("元金額: ${item.expense.amount.toYen()}")
-                    Text(
-                        "プリペイド口座: ${
-                            item.prepaidAccount?.name ?: "関連口座を確認できません"
-                        }"
-                    )
+                    Text("支払方法: ${paymentMethodDisplayName(item.expense.paymentMethod)}")
+                    if (item.isPrepaidCancellation) {
+                        Text(
+                            "プリペイド口座: ${
+                                item.prepaidAccount?.name ?: "関連口座を確認できません"
+                            }"
+                        )
+                    }
                     Text("取消日: ${item.cancellation.cancellationDate}")
                     item.cancellation.reason?.takeIf { it.isNotBlank() }?.let { reason ->
                         Text("取消理由: $reason")
                     }
-                    Text(
-                        "元PURCHASE: ${
-                            item.originalPurchase?.takeIf {
-                                item.hasCompleteLedgerRelation
-                            }?.let {
-                                "${it.transactionDate} / ${it.balanceDelta.toYen()}"
-                            } ?: "確認できません"
-                        }",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        "REVERSAL: ${
-                            item.reversal?.takeIf {
-                                item.hasCompleteLedgerRelation
-                            }?.let {
-                                "${it.transactionDate} / ${it.balanceDelta.toYen()}"
-                            } ?: "確認できません"
-                        }",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    if (!item.hasCompleteLedgerRelation) {
+                    if (item.isPrepaidCancellation) {
                         Text(
-                            "プリペイド履歴の関連を確認できません。",
-                            color = MaterialTheme.colorScheme.error
+                            "元PURCHASE: ${
+                                item.originalPurchase?.takeIf {
+                                    item.hasCompleteLedgerRelation
+                                }?.let {
+                                    "${it.transactionDate} / ${it.balanceDelta.toYen()}"
+                                } ?: "確認できません"
+                            }",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            "REVERSAL: ${
+                                item.reversal?.takeIf {
+                                    item.hasCompleteLedgerRelation
+                                }?.let {
+                                    "${it.transactionDate} / ${it.balanceDelta.toYen()}"
+                                } ?: "確認できません"
+                            }",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (!item.hasCompleteLedgerRelation) {
+                            Text(
+                                "プリペイド履歴の関連を確認できません。",
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    } else {
+                        Text(
+                            "プリペイド台帳操作なし",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                     Text(

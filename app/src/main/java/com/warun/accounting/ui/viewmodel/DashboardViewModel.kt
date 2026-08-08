@@ -403,19 +403,6 @@ class DashboardViewModel @Inject constructor(
             )
         }
     }
-    fun deleteExpense(expense: ExpenseRecord) {
-        viewModelScope.launch {
-            if (
-                normalizePaymentMethod(expense.paymentMethod) == PaymentMethodPrepaid ||
-                prepaidRepository.getExpenseLink(expense.id) != null
-            ) {
-                Log.w(LogTag, "Blocked deletion of prepaid expense ${expense.id}")
-                return@launch
-            }
-            repository.deleteExpenseRecord(expense)
-        }
-    }
-
     fun deleteReceipt(receipt: ReceiptRecord) {
         viewModelScope.launch {
             repository.deleteReceipt(receipt)

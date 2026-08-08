@@ -9,11 +9,13 @@ import com.warun.accounting.data.cancellation.ExpenseCancellationRepository
 import com.warun.accounting.data.cancellation.ExpenseCancellationRequest
 import com.warun.accounting.data.cancellation.ExpenseCancellationRequestFingerprint
 import com.warun.accounting.data.cancellation.ExpenseCancellationRequestFingerprintInput
+import com.warun.accounting.data.cancellation.NonPrepaidExpenseCancellationRequestFingerprintInput
 import com.warun.accounting.data.cancellation.ExpenseCancellationResult
 import com.warun.accounting.data.cancellation.ExpenseCancellationRules
 import com.warun.accounting.data.cancellation.ExpenseCancellationSnapshot
 import com.warun.accounting.data.cancellation.ExpenseCancellationValidationException
 import com.warun.accounting.ui.util.todayString
+import com.warun.accounting.util.PaymentMethodPrepaid
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.util.UUID
 import javax.inject.Inject
@@ -55,6 +57,7 @@ data class CancellationUiState(
     val prepaidAccountId: String? = null,
     val expectedAmount: Long? = null,
     val expectedPurchaseDate: String? = null,
+    val expectedPaymentMethod: String? = null,
     val cancellationDate: String = "",
     /**
      * User-visible, unnormalized text. The repository's NFC/trim/blank-to-null
@@ -159,6 +162,7 @@ class ExpenseCancellationViewModel internal constructor(
                     prepaidAccountId = snapshot.prepaidAccountId,
                     expectedAmount = snapshot.amount,
                     expectedPurchaseDate = snapshot.purchaseDate,
+                    expectedPaymentMethod = snapshot.paymentMethod,
                     cancellationDate = dateProvider.today(),
                     operationKey = operationKeyGenerator.newOperationKey()
                 )
@@ -272,26 +276,49 @@ class ExpenseCancellationViewModel internal constructor(
     ): ExpenseCancellationRequest? {
         val expenseId = state.expenseId ?: return null
         val updatedAt = state.expectedExpenseUpdatedAt ?: return null
-        val purchaseId = state.originalPurchaseTransactionId ?: return null
-        val accountId = state.prepaidAccountId ?: return null
         val amount = state.expectedAmount ?: return null
         val purchaseDate = state.expectedPurchaseDate ?: return null
+        val paymentMethod = state.expectedPaymentMethod ?: return null
+        val purchaseId = state.originalPurchaseTransactionId
+        val accountId = state.prepaidAccountId
+        if (
+            paymentMethod == PaymentMethodPrepaid &&
+            (purchaseId == null || accountId == null)
+        ) return null
+        if (
+            paymentMethod != PaymentMethodPrepaid &&
+            (purchaseId != null || accountId != null)
+        ) return null
         val normalizedReason = ExpenseCancellationRules.normalizeReason(state.reason)
         if ((normalizedReason?.length ?: 0) > ExpenseCancellationReasonMaxLength) return null
         return try {
             ExpenseCancellationRules.validateOperationKey(operationKey)
-            ExpenseCancellationRequestFingerprint.create(
-                ExpenseCancellationRequestFingerprintInput(
-                    expenseId = expenseId,
-                    expectedExpenseUpdatedAt = updatedAt,
-                    originalPurchaseTransactionId = purchaseId,
-                    prepaidAccountId = accountId,
-                    amount = amount,
-                    purchaseDate = purchaseDate,
-                    cancellationDate = state.cancellationDate,
-                    reason = normalizedReason
+            if (paymentMethod == PaymentMethodPrepaid) {
+                ExpenseCancellationRequestFingerprint.create(
+                    ExpenseCancellationRequestFingerprintInput(
+                        expenseId = expenseId,
+                        expectedExpenseUpdatedAt = updatedAt,
+                        originalPurchaseTransactionId = requireNotNull(purchaseId),
+                        prepaidAccountId = requireNotNull(accountId),
+                        amount = amount,
+                        purchaseDate = purchaseDate,
+                        cancellationDate = state.cancellationDate,
+                        reason = normalizedReason
+                    )
                 )
-            )
+            } else {
+                ExpenseCancellationRequestFingerprint.createNonPrepaid(
+                    NonPrepaidExpenseCancellationRequestFingerprintInput(
+                        expenseId = expenseId,
+                        expectedExpenseUpdatedAt = updatedAt,
+                        paymentMethod = paymentMethod,
+                        amount = amount,
+                        expenseDate = purchaseDate,
+                        cancellationDate = state.cancellationDate,
+                        reason = normalizedReason
+                    )
+                )
+            }
             ExpenseCancellationRequest(
                 operationKey = operationKey,
                 expenseId = expenseId,
@@ -301,7 +328,8 @@ class ExpenseCancellationViewModel internal constructor(
                 expectedAmount = amount,
                 expectedPurchaseDate = purchaseDate,
                 cancellationDate = state.cancellationDate,
-                reason = normalizedReason
+                reason = normalizedReason,
+                expectedPaymentMethod = paymentMethod
             )
         } catch (_: ExpenseCancellationValidationException) {
             null
@@ -376,6 +404,7 @@ class ExpenseCancellationViewModel internal constructor(
             savedStateHandle[PrepaidAccountIdKey] = value.prepaidAccountId
             savedStateHandle[ExpectedAmountKey] = value.expectedAmount
             savedStateHandle[ExpectedPurchaseDateKey] = value.expectedPurchaseDate
+            savedStateHandle[ExpectedPaymentMethodKey] = value.expectedPaymentMethod
             savedStateHandle[CancellationDateKey] = value.cancellationDate
             savedStateHandle[ReasonKey] = value.reason
             savedStateHandle[OperationKey] = value.operationKey
@@ -390,10 +419,16 @@ class ExpenseCancellationViewModel internal constructor(
         val expenseId: String = savedStateHandle[ExpenseIdKey] ?: return invalidRestoredState()
         val updatedAt: Long = savedStateHandle[ExpectedUpdatedAtKey]
             ?: return invalidRestoredState()
-        val purchaseId: String = savedStateHandle[OriginalPurchaseIdKey]
+        val paymentMethod: String = savedStateHandle[ExpectedPaymentMethodKey]
             ?: return invalidRestoredState()
-        val accountId: String = savedStateHandle[PrepaidAccountIdKey]
-            ?: return invalidRestoredState()
+        val purchaseId: String? = savedStateHandle[OriginalPurchaseIdKey]
+        val accountId: String? = savedStateHandle[PrepaidAccountIdKey]
+        if (
+            (paymentMethod == PaymentMethodPrepaid &&
+                (purchaseId == null || accountId == null)) ||
+            (paymentMethod != PaymentMethodPrepaid &&
+                (purchaseId != null || accountId != null))
+        ) return invalidRestoredState()
         val amount: Long = savedStateHandle[ExpectedAmountKey] ?: return invalidRestoredState()
         val purchaseDate: String = savedStateHandle[ExpectedPurchaseDateKey]
             ?: return invalidRestoredState()
@@ -409,6 +444,7 @@ class ExpenseCancellationViewModel internal constructor(
             prepaidAccountId = accountId,
             expectedAmount = amount,
             expectedPurchaseDate = purchaseDate,
+            expectedPaymentMethod = paymentMethod,
             cancellationDate = cancellationDate,
             reason = savedStateHandle[ReasonKey] ?: "",
             operationKey = operationKey,
@@ -449,6 +485,7 @@ class ExpenseCancellationViewModel internal constructor(
         const val PrepaidAccountIdKey = "expenseCancellation.prepaidAccountId"
         const val ExpectedAmountKey = "expenseCancellation.expectedAmount"
         const val ExpectedPurchaseDateKey = "expenseCancellation.expectedPurchaseDate"
+        const val ExpectedPaymentMethodKey = "expenseCancellation.expectedPaymentMethod"
         const val CancellationDateKey = "expenseCancellation.cancellationDate"
         const val ReasonKey = "expenseCancellation.reason"
         const val OperationKey = "expenseCancellation.operationKey"
@@ -463,6 +500,7 @@ class ExpenseCancellationViewModel internal constructor(
             PrepaidAccountIdKey,
             ExpectedAmountKey,
             ExpectedPurchaseDateKey,
+            ExpectedPaymentMethodKey,
             CancellationDateKey,
             ReasonKey,
             OperationKey,

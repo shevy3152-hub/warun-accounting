@@ -40,8 +40,8 @@ data class ExpenseCancellationRecord(
     @PrimaryKey val expenseId: String,
     val operationKey: String,
     val requestFingerprint: String,
-    val originalPurchaseTransactionId: String,
-    val reversalTransactionId: String,
+    val originalPurchaseTransactionId: String?,
+    val reversalTransactionId: String?,
     val cancellationDate: String,
     val cancelledAt: Long,
     val reason: String?

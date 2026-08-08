@@ -12,18 +12,6 @@ import org.junit.Test
 
 class ExpenseCancellationUiContractTest {
     @Test
-    fun prepaidUsesCancelAndNonPrepaidKeepsDelete() {
-        assertEquals(
-            SavedExpenseSecondaryAction.Cancel,
-            savedExpenseSecondaryAction(isPrepaidExpense = true)
-        )
-        assertEquals(
-            SavedExpenseSecondaryAction.Delete,
-            savedExpenseSecondaryAction(isPrepaidExpense = false)
-        )
-    }
-
-    @Test
     fun reasonLimitAndSavingDisableConfirmationAndDismiss() {
         val valid = cancellationDialogPolicy(
             CancellationUiState(dialogVisible = true, reason = "a".repeat(200))

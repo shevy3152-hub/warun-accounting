@@ -33,7 +33,8 @@ data class ExpenseCancellationDialogSummary(
     val supplierName: String,
     val expenseDate: String,
     val amount: Long,
-    val prepaidAccountName: String,
+    val paymentMethod: String,
+    val prepaidAccountName: String?,
     val evidenceCount: Int
 )
 
@@ -43,21 +44,11 @@ sealed interface ExpenseCancellationUiAction {
     data class OpenAudit(val expenseId: String) : ExpenseCancellationUiAction
 }
 
-enum class SavedExpenseSecondaryAction {
-    Delete,
-    Cancel
-}
-
 data class CancellationDialogPolicy(
     val dismissEnabled: Boolean,
     val confirmEnabled: Boolean,
     val confirmLabel: String
 )
-
-internal fun savedExpenseSecondaryAction(isPrepaidExpense: Boolean):
-    SavedExpenseSecondaryAction =
-    if (isPrepaidExpense) SavedExpenseSecondaryAction.Cancel
-    else SavedExpenseSecondaryAction.Delete
 
 internal fun ExpenseCancellationEvent.toUiAction(): ExpenseCancellationUiAction = when (this) {
     is ExpenseCancellationEvent.Success ->
@@ -143,19 +134,26 @@ fun ExpenseCancellationDialog(
                     .padding(20.dp)
             ) {
                 Text(
-                    "プリペイド支出を取り消しますか？",
+                    "保存済み支出を取り消しますか？",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
                     "この支出は削除されません。\n" +
-                        "支出、プリペイド履歴、レシートは取消済みの記録として保持されます。\n" +
-                        "プリペイド残高は取消額分だけ戻ります。"
+                        "元の支出と保存済みレシートは取消記録として保持されます。" +
+                        if (summary.prepaidAccountName != null) {
+                            "\nプリペイド残高は取消額分だけ戻ります。"
+                        } else {
+                            "\nプリペイド残高や台帳は変更しません。"
+                        }
                 )
-                CancellationSummaryRow("支払先", summary.supplierName.ifBlank { "支払先未入力" })
+                CancellationSummaryRow("対象", summary.supplierName.ifBlank { "支払先未入力" })
                 CancellationSummaryRow("支出日", summary.expenseDate)
                 CancellationSummaryRow("金額", summary.amount.toYen())
-                CancellationSummaryRow("プリペイド口座", summary.prepaidAccountName)
+                CancellationSummaryRow("支払方法", summary.paymentMethod)
+                summary.prepaidAccountName?.let {
+                    CancellationSummaryRow("プリペイド口座", it)
+                }
                 CancellationSummaryRow("取消日", state.cancellationDate)
                 CancellationSummaryRow("保存済みレシート", "${summary.evidenceCount}件（削除されません）")
                 OutlinedTextField(

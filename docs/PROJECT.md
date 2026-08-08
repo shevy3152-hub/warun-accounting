@@ -43,7 +43,7 @@
 | 言語・UI | Kotlin 2.0.21、Jetpack Compose、Material 3 |
 | Android | AGP 8.7.3、compileSdk/targetSdk 35、minSdk 26、Java/JVM 17 |
 | DI・状態 | Hilt 2.52、ViewModel、Coroutines/Flow、SavedStateHandle |
-| DB | Room 2.6.1、KSP、`warun-accounting.db`、schema version 14 |
+| DB | Room 2.6.1、KSP、`warun-accounting.db`、schema version 15 |
 | カメラ | CameraX 1.5.3 |
 | OCR | ML Kit Japanese Text Recognition 16.0.1 |
 
@@ -107,9 +107,9 @@ CameraX、ML Kit、ReceiptParserはこの保存レイヤーと責務を分離し
 - `PrepaidTransactionRecord`: CHARGE、PURCHASE、REVERSALを記録する不変台帳。
 - `ExpensePrepaidLinkRecord`: ExpenseRecordと現在のPURCHASEを関連付ける。
 - `ExpenseEditOperationRecord`: 保存済み支出編集のoperationKey、fingerprint、完了状態を保持する。
-- `ExpenseCancellationRecord`: 元Expense、元PURCHASE、REVERSAL、取消理由と永続的冪等性情報を関連付ける。
+- `ExpenseCancellationRecord`: 元Expense、取消理由と永続的冪等性情報を保持し、プリペイド取消の場合だけ元PURCHASEとREVERSALを関連付ける。
 
-PURCHASEを物理削除・上書きせず、編集・取消はREVERSALと必要な新PURCHASEで履歴を残します。取消時も元Expense、Link、Evidenceを保持し、通常表示と監査表示を分離します。
+保存済みExpenseは物理削除せず、取消時も元ExpenseとEvidenceを保持して通常表示と監査表示を分離します。プリペイドではPURCHASEを物理削除・上書きせず、編集・取消をREVERSALと必要な新PURCHASEで記録します。非プリペイド取消はプリペイド台帳を操作しません。
 
 #### 補助データ
 
@@ -119,10 +119,11 @@ PURCHASEを物理削除・上書きせず、編集・取消はREVERSALと必要�
 
 ### Room
 
-- `WarunDatabase`の現在versionは14。
-- schema JSONはversion 6〜14を保持。
-- `MIGRATION_6_7`〜`MIGRATION_13_14`を明示登録。
+- `WarunDatabase`の現在versionは15。
+- schema JSONはversion 6〜15を保持。
+- `MIGRATION_6_7`〜`MIGRATION_14_15`を明示登録。
 - 13→14は`expense_cancellations`と一意Indexだけを追加し、既存テーブルへのALTER／UPDATE／backfillは行わない。
+- 14→15は既存取消行、FK、UNIQUE indexを保持し、プリペイド台帳参照をnullable化する。
 - `fallbackToDestructiveMigration`は使用しない。
 - DAOにはFlowによる監視、単体保存、削除、日報＋支出、ReceiptRecord＋支出のTransactionがある。
 
@@ -137,7 +138,7 @@ PURCHASEを物理削除・上書きせず、編集・取消はREVERSALと必要�
 - 日報、支出、ReceiptRecord、支払先候補、月別提出状況、設定のFlow監視。
 - 日報、支出、ReceiptRecord、設定等の保存・削除。
 - 日報＋支出、ReceiptRecord＋支出のTransaction経路の維持。
-- プリペイド支出の新規保存、保存済み支出編集、論理取消を、台帳・Link・Evidence・operation記録とともにTransaction処理する。
+- プリペイド支出の新規保存と保存済み支出編集、および全支払方法の論理取消を、必要な台帳・Link・Evidence・operation記録とともにTransaction処理する。
 - 取消済みExpenseの監査取得と、active Expenseの通常取得を分離する。
 
 ComposeからDAOを直接呼ばず、ViewModelからRepositoryを経由します。
@@ -260,8 +261,8 @@ OCR反映時点で保持されるのはcapture参照だけです。「支出入�
 - 今日・今月の売上、支出、差額、現金関連値、客単価等の基本表示。
 - 新規プリペイド支出のExpense／PURCHASE／Link／EvidenceのTransaction保存。
 - 保存済み支出の金額・口座・プリペイド属性変更、REVERSALと新PURCHASE、Link遷移、Evidence追加、永続的冪等性、SavedState復元。
-- 保存済みプリペイド支出の論理取消、REVERSALによる残高復元、通常一覧・集計からの除外、legacy fallback再計上防止、日報詳細の監査表示。
-- Room version 14とschema 6〜14のMigration経路。
+- 全支払方法の保存済み支出の論理取消、通常一覧・集計からの除外、legacy fallback再計上防止、日報詳細の監査表示。プリペイドだけREVERSALで残高を復元する。
+- Room version 15とschema 6〜15のMigration経路。
 - JVMテストとAndroidテストによる計算、状態保持、OCR、Parser、Transaction、Migrationの検証基盤。
 
 ## Phase C-3 完了記録

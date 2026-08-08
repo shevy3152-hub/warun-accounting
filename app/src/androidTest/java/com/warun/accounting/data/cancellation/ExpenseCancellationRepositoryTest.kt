@@ -117,7 +117,9 @@ class ExpenseCancellationRepositoryTest {
                 database.prepaidTransactionDao().getById(fixture.purchase.id)
             )
             val reversal = requireNotNull(
-                database.prepaidTransactionDao().getById(result.reversalTransactionId)
+                database.prepaidTransactionDao().getById(
+                    requireNotNull(result.reversalTransactionId)
+                )
             )
             assertEquals(PrepaidTransactionType.Reversal, reversal.transactionType)
             assertEquals(fixture.purchase.id, reversal.reversalOfTransactionId)
@@ -299,7 +301,9 @@ class ExpenseCancellationRepositoryTest {
         )
 
         val newReversal = requireNotNull(
-            database.prepaidTransactionDao().getById(result.reversalTransactionId)
+            database.prepaidTransactionDao().getById(
+                requireNotNull(result.reversalTransactionId)
+            )
         )
         assertEquals(currentPurchase.id, newReversal.reversalOfTransactionId)
         assertEquals(700L, newReversal.balanceDelta)

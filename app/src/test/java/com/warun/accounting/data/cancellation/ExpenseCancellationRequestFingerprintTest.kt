@@ -1,6 +1,7 @@
 package com.warun.accounting.data.cancellation
 
 import com.warun.accounting.data.local.ExpenseCancellationRecord
+import com.warun.accounting.util.PaymentMethodCash
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
@@ -126,6 +127,52 @@ class ExpenseCancellationRequestFingerprintTest {
         }
     }
 
+    @Test
+    fun nonPrepaidFingerprintIsStableAndIncludesEveryBusinessField() {
+        val original = nonPrepaidInput(reason = "  reason  ")
+        val fingerprint = ExpenseCancellationRequestFingerprint.createNonPrepaid(original)
+
+        assertEquals(
+            fingerprint,
+            ExpenseCancellationRequestFingerprint.createNonPrepaid(
+                nonPrepaidInput(reason = "reason")
+            )
+        )
+        listOf(
+            original.copy(expenseId = "expense-2"),
+            original.copy(expectedExpenseUpdatedAt = 43L),
+            original.copy(paymentMethod = "クレジット"),
+            original.copy(amount = 1_541L),
+            original.copy(expenseDate = "2026-07-29"),
+            original.copy(cancellationDate = "2026-07-30"),
+            original.copy(reason = "different")
+        ).forEach { changed ->
+            assertNotEquals(
+                fingerprint,
+                ExpenseCancellationRequestFingerprint.createNonPrepaid(changed)
+            )
+        }
+    }
+
+    @Test
+    fun cancellationRecordAllowsEitherBothLedgerIdsOrNeither() {
+        ExpenseCancellationRules.validateRecord(
+            record().copy(
+                originalPurchaseTransactionId = null,
+                reversalTransactionId = null
+            )
+        )
+
+        listOf(
+            record().copy(originalPurchaseTransactionId = null),
+            record().copy(reversalTransactionId = null)
+        ).forEach { invalid ->
+            assertFailure(ExpenseCancellationValidationFailure.InvalidIdentifier) {
+                ExpenseCancellationRules.validateRecord(invalid)
+            }
+        }
+    }
+
     private fun input(
         expenseId: String = "expense-1",
         expectedExpenseUpdatedAt: Long = 42L,
@@ -142,6 +189,24 @@ class ExpenseCancellationRequestFingerprintTest {
         prepaidAccountId = prepaidAccountId,
         amount = amount,
         purchaseDate = purchaseDate,
+        cancellationDate = cancellationDate,
+        reason = reason
+    )
+
+    private fun nonPrepaidInput(
+        expenseId: String = "expense-1",
+        expectedExpenseUpdatedAt: Long = 42L,
+        paymentMethod: String = PaymentMethodCash,
+        amount: Long = 1_540L,
+        expenseDate: String = "2026-07-28",
+        cancellationDate: String = "2026-07-29",
+        reason: String? = null
+    ) = NonPrepaidExpenseCancellationRequestFingerprintInput(
+        expenseId = expenseId,
+        expectedExpenseUpdatedAt = expectedExpenseUpdatedAt,
+        paymentMethod = paymentMethod,
+        amount = amount,
+        expenseDate = expenseDate,
         cancellationDate = cancellationDate,
         reason = reason
     )

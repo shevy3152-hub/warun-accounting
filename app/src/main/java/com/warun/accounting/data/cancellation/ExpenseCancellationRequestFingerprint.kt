@@ -20,6 +20,16 @@ data class ExpenseCancellationRequestFingerprintInput(
     val reason: String?
 )
 
+data class NonPrepaidExpenseCancellationRequestFingerprintInput(
+    val expenseId: String,
+    val expectedExpenseUpdatedAt: Long,
+    val paymentMethod: String,
+    val amount: Long,
+    val expenseDate: String,
+    val cancellationDate: String,
+    val reason: String?
+)
+
 enum class ExpenseCancellationValidationFailure {
     InvalidOperationKey,
     InvalidIdentifier,
@@ -65,15 +75,18 @@ object ExpenseCancellationRules {
 
     fun validateRecord(record: ExpenseCancellationRecord) {
         validateOperationKey(record.operationKey)
-        listOf(
-            record.expenseId,
-            record.originalPurchaseTransactionId,
-            record.reversalTransactionId
-        ).forEach(::canonicalIdentifier)
+        canonicalIdentifier(record.expenseId)
+        val purchaseId = record.originalPurchaseTransactionId
+        val reversalId = record.reversalTransactionId
+        if ((purchaseId == null) != (reversalId == null)) {
+            fail(ExpenseCancellationValidationFailure.InvalidIdentifier)
+        }
+        purchaseId?.let(::canonicalIdentifier)
+        reversalId?.let(::canonicalIdentifier)
         if (!FingerprintPattern.matches(record.requestFingerprint)) {
             fail(ExpenseCancellationValidationFailure.InvalidFingerprint)
         }
-        if (record.originalPurchaseTransactionId == record.reversalTransactionId) {
+        if (purchaseId != null && purchaseId == reversalId) {
             fail(ExpenseCancellationValidationFailure.SamePurchaseAndReversal)
         }
         canonicalDate(record.cancellationDate)
@@ -105,20 +118,43 @@ object ExpenseCancellationRules {
 }
 
 object ExpenseCancellationRequestFingerprint {
-    private const val CanonicalSchemaVersion = 1
+    private const val PrepaidCanonicalSchemaVersion = 1
+    private const val NonPrepaidCanonicalSchemaVersion = 2
     private val HexDigits = "0123456789abcdef".toCharArray()
 
     fun create(input: ExpenseCancellationRequestFingerprintInput): String {
         val canonical = canonicalize(input)
         val payload = ByteArrayOutputStream().use { bytes ->
             DataOutputStream(bytes).use { output ->
-                output.writeInt(CanonicalSchemaVersion)
+                output.writeInt(PrepaidCanonicalSchemaVersion)
                 output.writeString(canonical.expenseId)
                 output.writeLong(canonical.expectedExpenseUpdatedAt)
                 output.writeString(canonical.originalPurchaseTransactionId)
                 output.writeString(canonical.prepaidAccountId)
                 output.writeLong(canonical.amount)
                 output.writeString(canonical.purchaseDate)
+                output.writeString(canonical.cancellationDate)
+                output.writeNullableString(canonical.reason)
+            }
+            bytes.toByteArray()
+        }
+        return MessageDigest.getInstance("SHA-256")
+            .digest(payload)
+            .toLowerHex()
+    }
+
+    fun createNonPrepaid(
+        input: NonPrepaidExpenseCancellationRequestFingerprintInput
+    ): String {
+        val canonical = canonicalizeNonPrepaid(input)
+        val payload = ByteArrayOutputStream().use { bytes ->
+            DataOutputStream(bytes).use { output ->
+                output.writeInt(NonPrepaidCanonicalSchemaVersion)
+                output.writeString(canonical.expenseId)
+                output.writeLong(canonical.expectedExpenseUpdatedAt)
+                output.writeString(canonical.paymentMethod)
+                output.writeLong(canonical.amount)
+                output.writeString(canonical.expenseDate)
                 output.writeString(canonical.cancellationDate)
                 output.writeNullableString(canonical.reason)
             }
@@ -158,6 +194,31 @@ object ExpenseCancellationRequestFingerprint {
         reason = ExpenseCancellationRules.canonicalReason(input.reason)
     )
 
+    internal fun canonicalizeNonPrepaid(
+        input: NonPrepaidExpenseCancellationRequestFingerprintInput
+    ): CanonicalNonPrepaidExpenseCancellationRequest =
+        CanonicalNonPrepaidExpenseCancellationRequest(
+            expenseId = ExpenseCancellationRules.canonicalIdentifier(input.expenseId),
+            expectedExpenseUpdatedAt = input.expectedExpenseUpdatedAt.also {
+                if (it < 0L) {
+                    ExpenseCancellationRules.fail(
+                        ExpenseCancellationValidationFailure.InvalidTimestamp
+                    )
+                }
+            },
+            paymentMethod = ExpenseCancellationRules.canonicalIdentifier(input.paymentMethod),
+            amount = input.amount.also {
+                if (it <= 0L) {
+                    ExpenseCancellationRules.fail(
+                        ExpenseCancellationValidationFailure.InvalidAmount
+                    )
+                }
+            },
+            expenseDate = ExpenseCancellationRules.canonicalDate(input.expenseDate),
+            cancellationDate = ExpenseCancellationRules.canonicalDate(input.cancellationDate),
+            reason = ExpenseCancellationRules.canonicalReason(input.reason)
+        )
+
     private fun DataOutputStream.writeString(value: String) {
         val encoded = value.toByteArray(StandardCharsets.UTF_8)
         writeInt(encoded.size)
@@ -187,6 +248,16 @@ internal data class CanonicalExpenseCancellationRequest(
     val prepaidAccountId: String,
     val amount: Long,
     val purchaseDate: String,
+    val cancellationDate: String,
+    val reason: String?
+)
+
+internal data class CanonicalNonPrepaidExpenseCancellationRequest(
+    val expenseId: String,
+    val expectedExpenseUpdatedAt: Long,
+    val paymentMethod: String,
+    val amount: Long,
+    val expenseDate: String,
     val cancellationDate: String,
     val reason: String?
 )

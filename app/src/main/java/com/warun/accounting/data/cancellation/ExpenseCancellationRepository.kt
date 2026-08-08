@@ -15,6 +15,7 @@ import com.warun.accounting.data.local.WarunDao
 import com.warun.accounting.data.local.WarunDatabase
 import com.warun.accounting.data.prepaid.PrepaidLedgerRules
 import com.warun.accounting.data.prepaid.PrepaidValidationException
+import com.warun.accounting.util.isSupportedPaymentMethod
 import com.warun.accounting.util.PaymentMethodPrepaid
 import com.warun.accounting.util.normalizePaymentMethod
 import java.util.UUID
@@ -24,33 +25,36 @@ data class ExpenseCancellationRequest(
     val operationKey: String,
     val expenseId: String,
     val expectedExpenseUpdatedAt: Long,
-    val expectedOriginalPurchaseTransactionId: String,
-    val expectedPrepaidAccountId: String,
+    val expectedOriginalPurchaseTransactionId: String?,
+    val expectedPrepaidAccountId: String?,
     val expectedAmount: Long,
     val expectedPurchaseDate: String,
     val cancellationDate: String,
-    val reason: String?
+    val reason: String?,
+    val expectedPaymentMethod: String = PaymentMethodPrepaid
 )
 
 data class ExpenseCancellationResult(
     val expenseId: String,
-    val originalPurchaseTransactionId: String,
-    val reversalTransactionId: String,
-    val prepaidAccountId: String,
+    val originalPurchaseTransactionId: String?,
+    val reversalTransactionId: String?,
+    val prepaidAccountId: String?,
     val amount: Long,
     val cancellationDate: String,
     val cancelledAt: Long,
     val reason: String?,
-    val idempotentReplay: Boolean
+    val idempotentReplay: Boolean,
+    val paymentMethod: String = PaymentMethodPrepaid
 )
 
 data class ExpenseCancellationSnapshot(
     val expenseId: String,
     val expectedExpenseUpdatedAt: Long,
-    val originalPurchaseTransactionId: String,
-    val prepaidAccountId: String,
+    val originalPurchaseTransactionId: String?,
+    val prepaidAccountId: String?,
     val amount: Long,
-    val purchaseDate: String
+    val purchaseDate: String,
+    val paymentMethod: String = PaymentMethodPrepaid
 )
 
 enum class ExpenseCancellationFailure {
@@ -107,7 +111,8 @@ internal fun planExpenseCancellation(
     if (
         savedExpense.updatedAt != normalized.expectedExpenseUpdatedAt ||
         savedExpense.amount != normalized.expectedAmount ||
-        normalizePaymentMethod(savedExpense.paymentMethod) != PaymentMethodPrepaid
+        normalizePaymentMethod(savedExpense.paymentMethod) != PaymentMethodPrepaid ||
+        normalized.expectedPaymentMethod != PaymentMethodPrepaid
     ) {
         fail(ExpenseCancellationFailure.StaleState)
     }
@@ -194,35 +199,45 @@ class ExpenseCancellationRepository internal constructor(
                     } else {
                         fail(ExpenseCancellationFailure.StaleState)
                     }
-                if (normalizePaymentMethod(expense.paymentMethod) != PaymentMethodPrepaid) {
+                val paymentMethod = normalizePaymentMethod(expense.paymentMethod)
+                if (!isSupportedPaymentMethod(paymentMethod) || expense.amount <= 0L) {
                     fail(ExpenseCancellationFailure.InvalidRequest)
                 }
                 val link = prepaidLinkDao.getByExpenseId(canonicalExpenseId)
-                    ?: fail(ExpenseCancellationFailure.PrepaidStateInconsistent)
-                val purchase = transactionDao.getById(link.purchaseTransactionId)
-                    ?: fail(ExpenseCancellationFailure.PrepaidStateInconsistent)
-                if (
-                    link.expenseId != expense.id ||
-                    purchase.id != link.purchaseTransactionId ||
-                    purchase.transactionType != PrepaidTransactionType.Purchase ||
-                    purchase.reversalOfTransactionId != null ||
-                    purchase.expenseId != expense.id ||
-                    expense.amount <= 0L ||
-                    purchase.balanceDelta != negateExact(expense.amount) ||
-                    purchase.accountId.isBlank() ||
-                    purchase.transactionDate.isBlank() ||
-                    transactionDao.getByReversalOfTransactionId(purchase.id) != null ||
-                    accountDao.getById(purchase.accountId) == null
+                val purchase = if (paymentMethod == PaymentMethodPrepaid) {
+                    val requiredLink = link
+                        ?: fail(ExpenseCancellationFailure.PrepaidStateInconsistent)
+                    transactionDao.getById(requiredLink.purchaseTransactionId)
+                        ?: fail(ExpenseCancellationFailure.PrepaidStateInconsistent)
+                } else {
+                    if (link != null) {
+                        fail(ExpenseCancellationFailure.PrepaidStateInconsistent)
+                    }
+                    null
+                }
+                if (purchase != null && (
+                    link?.expenseId != expense.id ||
+                        purchase.id != link?.purchaseTransactionId ||
+                        purchase.transactionType != PrepaidTransactionType.Purchase ||
+                        purchase.reversalOfTransactionId != null ||
+                        purchase.expenseId != expense.id ||
+                        purchase.balanceDelta != negateExact(expense.amount) ||
+                        purchase.accountId.isBlank() ||
+                        purchase.transactionDate.isBlank() ||
+                        transactionDao.getByReversalOfTransactionId(purchase.id) != null ||
+                        accountDao.getById(purchase.accountId) == null
+                    )
                 ) {
                     fail(ExpenseCancellationFailure.PrepaidStateInconsistent)
                 }
                 ExpenseCancellationSnapshot(
                     expenseId = expense.id,
                     expectedExpenseUpdatedAt = expense.updatedAt,
-                    originalPurchaseTransactionId = purchase.id,
-                    prepaidAccountId = purchase.accountId,
+                    originalPurchaseTransactionId = purchase?.id,
+                    prepaidAccountId = purchase?.accountId,
                     amount = expense.amount,
-                    purchaseDate = purchase.transactionDate
+                    purchaseDate = purchase?.transactionDate ?: expense.expenseDate,
+                    paymentMethod = paymentMethod
                 )
             }
         } catch (error: ExpenseCancellationException) {
@@ -257,66 +272,21 @@ class ExpenseCancellationRepository internal constructor(
                 if (cancellationDao.getByExpenseId(normalized.expenseId) != null) {
                     fail(ExpenseCancellationFailure.AlreadyCancelled)
                 }
-
                 val expense = warunDao.getExpenseRecord(normalized.expenseId)
-                val link = prepaidLinkDao.getByExpenseId(normalized.expenseId)
-                val purchase = link?.let {
-                    transactionDao.getById(it.purchaseTransactionId)
+                    ?: fail(ExpenseCancellationFailure.ExpenseNotFound)
+                if (normalized.expectedPaymentMethod == PaymentMethodPrepaid) {
+                    cancelPrepaid(
+                        request = normalized,
+                        requestFingerprint = requestFingerprint,
+                        expense = expense
+                    )
+                } else {
+                    cancelNonPrepaid(
+                        request = normalized,
+                        requestFingerprint = requestFingerprint,
+                        expense = expense
+                    )
                 }
-                val existingReversal = purchase?.let {
-                    transactionDao.getByReversalOfTransactionId(it.id)
-                }
-                val plan = planExpenseCancellation(
-                    request = normalized,
-                    expense = expense,
-                    link = link,
-                    purchase = purchase,
-                    existingReversal = existingReversal
-                )
-                cancellationDao.getByOriginalPurchaseTransactionId(plan.purchase.id)?.let {
-                    fail(ExpenseCancellationFailure.AlreadyCancelled)
-                }
-
-                val cancelledAt = clock.nowMillis()
-                if (cancelledAt < 0L) {
-                    fail(ExpenseCancellationFailure.InvalidRequest)
-                }
-                val reversal = createExpenseCancellationReversal(
-                    plan = plan,
-                    reversalId = idGenerator.newId(),
-                    cancelledAt = cancelledAt
-                )
-                validateReversalForInsert(plan, reversal)
-                transactionDao.insert(reversal)
-
-                val cancellation = ExpenseCancellationRecord(
-                    expenseId = plan.expense.id,
-                    operationKey = plan.request.operationKey,
-                    requestFingerprint = plan.requestFingerprint,
-                    originalPurchaseTransactionId = plan.purchase.id,
-                    reversalTransactionId = reversal.id,
-                    cancellationDate = plan.request.cancellationDate,
-                    cancelledAt = cancelledAt,
-                    reason = plan.request.reason
-                )
-                validateCancellationRecord(cancellation)
-                cancellationDao.insert(cancellation)
-
-                val savedCancellation = cancellationDao.getByExpenseId(plan.expense.id)
-                    ?: fail(ExpenseCancellationFailure.CancellationStateCorrupted)
-                if (
-                    savedCancellation != cancellation ||
-                    warunDao.getExpenseRecord(plan.expense.id) != plan.expense ||
-                    prepaidLinkDao.getByExpenseId(plan.expense.id) != plan.link ||
-                    transactionDao.getById(plan.purchase.id) != plan.purchase
-                ) {
-                    fail(ExpenseCancellationFailure.CancellationStateCorrupted)
-                }
-                resultOf(
-                    cancellation = savedCancellation,
-                    reversal = requireValidReversal(savedCancellation, plan.request),
-                    idempotentReplay = false
-                )
             }
         } catch (error: ExpenseCancellationException) {
             throw error
@@ -331,6 +301,111 @@ class ExpenseCancellationRepository internal constructor(
                 error
             )
         }
+    }
+
+    private suspend fun cancelPrepaid(
+        request: ExpenseCancellationRequest,
+        requestFingerprint: String,
+        expense: ExpenseRecord
+    ): ExpenseCancellationResult {
+        val link = prepaidLinkDao.getByExpenseId(expense.id)
+        val purchase = link?.let { transactionDao.getById(it.purchaseTransactionId) }
+        val existingReversal = purchase?.let {
+            transactionDao.getByReversalOfTransactionId(it.id)
+        }
+        val plan = planExpenseCancellation(
+            request = request,
+            expense = expense,
+            link = link,
+            purchase = purchase,
+            existingReversal = existingReversal
+        )
+        cancellationDao.getByOriginalPurchaseTransactionId(plan.purchase.id)?.let {
+            fail(ExpenseCancellationFailure.AlreadyCancelled)
+        }
+
+        val cancelledAt = requireValidCancelledAt()
+        val reversal = createExpenseCancellationReversal(
+            plan = plan,
+            reversalId = idGenerator.newId(),
+            cancelledAt = cancelledAt
+        )
+        validateReversalForInsert(plan, reversal)
+        transactionDao.insert(reversal)
+
+        val cancellation = ExpenseCancellationRecord(
+            expenseId = plan.expense.id,
+            operationKey = plan.request.operationKey,
+            requestFingerprint = requestFingerprint,
+            originalPurchaseTransactionId = plan.purchase.id,
+            reversalTransactionId = reversal.id,
+            cancellationDate = plan.request.cancellationDate,
+            cancelledAt = cancelledAt,
+            reason = plan.request.reason
+        )
+        validateCancellationRecord(cancellation)
+        cancellationDao.insert(cancellation)
+
+        val savedCancellation = cancellationDao.getByExpenseId(plan.expense.id)
+            ?: fail(ExpenseCancellationFailure.CancellationStateCorrupted)
+        if (
+            savedCancellation != cancellation ||
+            warunDao.getExpenseRecord(plan.expense.id) != plan.expense ||
+            prepaidLinkDao.getByExpenseId(plan.expense.id) != plan.link ||
+            transactionDao.getById(plan.purchase.id) != plan.purchase
+        ) {
+            fail(ExpenseCancellationFailure.CancellationStateCorrupted)
+        }
+        val savedReversal = requireValidPrepaidReversal(savedCancellation, plan.request)
+        return resultOf(savedCancellation, plan.request, savedReversal, false)
+    }
+
+    private suspend fun cancelNonPrepaid(
+        request: ExpenseCancellationRequest,
+        requestFingerprint: String,
+        expense: ExpenseRecord
+    ): ExpenseCancellationResult {
+        if (
+            expense.updatedAt != request.expectedExpenseUpdatedAt ||
+            expense.amount != request.expectedAmount ||
+            expense.expenseDate != request.expectedPurchaseDate ||
+            normalizePaymentMethod(expense.paymentMethod) != request.expectedPaymentMethod
+        ) {
+            fail(ExpenseCancellationFailure.StaleState)
+        }
+        if (
+            request.expectedPaymentMethod == PaymentMethodPrepaid ||
+            prepaidLinkDao.getByExpenseId(expense.id) != null
+        ) {
+            fail(ExpenseCancellationFailure.PrepaidStateInconsistent)
+        }
+        val cancellation = ExpenseCancellationRecord(
+            expenseId = expense.id,
+            operationKey = request.operationKey,
+            requestFingerprint = requestFingerprint,
+            originalPurchaseTransactionId = null,
+            reversalTransactionId = null,
+            cancellationDate = request.cancellationDate,
+            cancelledAt = requireValidCancelledAt(),
+            reason = request.reason
+        )
+        validateCancellationRecord(cancellation)
+        cancellationDao.insert(cancellation)
+
+        val savedCancellation = cancellationDao.getByExpenseId(expense.id)
+            ?: fail(ExpenseCancellationFailure.CancellationStateCorrupted)
+        if (
+            savedCancellation != cancellation ||
+            warunDao.getExpenseRecord(expense.id) != expense ||
+            prepaidLinkDao.getByExpenseId(expense.id) != null
+        ) {
+            fail(ExpenseCancellationFailure.CancellationStateCorrupted)
+        }
+        return resultOf(savedCancellation, request, reversal = null, idempotentReplay = false)
+    }
+
+    private fun requireValidCancelledAt(): Long = clock.nowMillis().also {
+        if (it < 0L) fail(ExpenseCancellationFailure.InvalidRequest)
     }
 
     private suspend fun replayResult(
@@ -353,21 +428,50 @@ class ExpenseCancellationRepository internal constructor(
         ) {
             fail(ExpenseCancellationFailure.CancellationStateCorrupted)
         }
-        val reversal = requireValidReversal(existing, request)
-        return resultOf(existing, reversal, idempotentReplay = true)
+        val expense = warunDao.getExpenseRecord(request.expenseId)
+            ?: fail(ExpenseCancellationFailure.CancellationStateCorrupted)
+        if (
+            expense.updatedAt != request.expectedExpenseUpdatedAt ||
+            expense.amount != request.expectedAmount ||
+            normalizePaymentMethod(expense.paymentMethod) != request.expectedPaymentMethod ||
+            (
+                request.expectedPaymentMethod != PaymentMethodPrepaid &&
+                    expense.expenseDate != request.expectedPurchaseDate
+                )
+        ) {
+            fail(ExpenseCancellationFailure.CancellationStateCorrupted)
+        }
+        val reversal = if (request.expectedPaymentMethod == PaymentMethodPrepaid) {
+            requireValidPrepaidReversal(existing, request)
+        } else {
+            if (
+                existing.originalPurchaseTransactionId != null ||
+                existing.reversalTransactionId != null ||
+                prepaidLinkDao.getByExpenseId(request.expenseId) != null
+            ) {
+                fail(ExpenseCancellationFailure.CancellationStateCorrupted)
+            }
+            null
+        }
+        return resultOf(existing, request, reversal, idempotentReplay = true)
     }
 
-    private suspend fun requireValidReversal(
+    private suspend fun requireValidPrepaidReversal(
         cancellation: ExpenseCancellationRecord,
         request: ExpenseCancellationRequest
     ): PrepaidTransactionRecord {
-        val reversal = transactionDao.getById(cancellation.reversalTransactionId)
+        val purchaseId = cancellation.originalPurchaseTransactionId
+            ?: fail(ExpenseCancellationFailure.CancellationStateCorrupted)
+        val reversalId = cancellation.reversalTransactionId
+            ?: fail(ExpenseCancellationFailure.CancellationStateCorrupted)
+        val accountId = request.expectedPrepaidAccountId
+            ?: fail(ExpenseCancellationFailure.CancellationStateCorrupted)
+        val reversal = transactionDao.getById(reversalId)
             ?: fail(ExpenseCancellationFailure.CancellationStateCorrupted)
         if (
             reversal.transactionType != PrepaidTransactionType.Reversal ||
-            reversal.reversalOfTransactionId !=
-            cancellation.originalPurchaseTransactionId ||
-            reversal.accountId != request.expectedPrepaidAccountId ||
+            reversal.reversalOfTransactionId != purchaseId ||
+            reversal.accountId != accountId ||
             reversal.balanceDelta != request.expectedAmount ||
             reversal.expenseId != request.expenseId ||
             reversal.transactionDate != request.cancellationDate ||
@@ -396,18 +500,20 @@ class ExpenseCancellationRepository internal constructor(
 
     private fun resultOf(
         cancellation: ExpenseCancellationRecord,
-        reversal: PrepaidTransactionRecord,
+        request: ExpenseCancellationRequest,
+        reversal: PrepaidTransactionRecord?,
         idempotentReplay: Boolean
     ) = ExpenseCancellationResult(
         expenseId = cancellation.expenseId,
         originalPurchaseTransactionId = cancellation.originalPurchaseTransactionId,
         reversalTransactionId = cancellation.reversalTransactionId,
-        prepaidAccountId = reversal.accountId,
-        amount = reversal.balanceDelta,
+        prepaidAccountId = reversal?.accountId,
+        amount = request.expectedAmount,
         cancellationDate = cancellation.cancellationDate,
         cancelledAt = cancellation.cancelledAt,
         reason = cancellation.reason,
-        idempotentReplay = idempotentReplay
+        idempotentReplay = idempotentReplay,
+        paymentMethod = request.expectedPaymentMethod
     )
 }
 
@@ -439,30 +545,68 @@ private fun normalizeCancellationRequest(
 ): ExpenseCancellationRequest {
     return try {
         ExpenseCancellationRules.validateOperationKey(request.operationKey)
-        val canonical = ExpenseCancellationRequestFingerprint.canonicalize(
-            ExpenseCancellationRequestFingerprintInput(
-                expenseId = request.expenseId,
-                expectedExpenseUpdatedAt = request.expectedExpenseUpdatedAt,
-                originalPurchaseTransactionId =
-                request.expectedOriginalPurchaseTransactionId,
-                prepaidAccountId = request.expectedPrepaidAccountId,
-                amount = request.expectedAmount,
-                purchaseDate = request.expectedPurchaseDate,
-                cancellationDate = request.cancellationDate,
-                reason = request.reason
+        val paymentMethod = normalizePaymentMethod(request.expectedPaymentMethod)
+        if (!isSupportedPaymentMethod(paymentMethod)) {
+            fail(ExpenseCancellationFailure.InvalidRequest)
+        }
+        if (paymentMethod == PaymentMethodPrepaid) {
+            val canonical = ExpenseCancellationRequestFingerprint.canonicalize(
+                ExpenseCancellationRequestFingerprintInput(
+                    expenseId = request.expenseId,
+                    expectedExpenseUpdatedAt = request.expectedExpenseUpdatedAt,
+                    originalPurchaseTransactionId =
+                        request.expectedOriginalPurchaseTransactionId
+                            ?: fail(ExpenseCancellationFailure.InvalidRequest),
+                    prepaidAccountId = request.expectedPrepaidAccountId
+                        ?: fail(ExpenseCancellationFailure.InvalidRequest),
+                    amount = request.expectedAmount,
+                    purchaseDate = request.expectedPurchaseDate,
+                    cancellationDate = request.cancellationDate,
+                    reason = request.reason
+                )
             )
-        )
-        request.copy(
-            expenseId = canonical.expenseId,
-            expectedExpenseUpdatedAt = canonical.expectedExpenseUpdatedAt,
-            expectedOriginalPurchaseTransactionId =
-            canonical.originalPurchaseTransactionId,
-            expectedPrepaidAccountId = canonical.prepaidAccountId,
-            expectedAmount = canonical.amount,
-            expectedPurchaseDate = canonical.purchaseDate,
-            cancellationDate = canonical.cancellationDate,
-            reason = canonical.reason
-        )
+            request.copy(
+                expenseId = canonical.expenseId,
+                expectedExpenseUpdatedAt = canonical.expectedExpenseUpdatedAt,
+                expectedOriginalPurchaseTransactionId =
+                    canonical.originalPurchaseTransactionId,
+                expectedPrepaidAccountId = canonical.prepaidAccountId,
+                expectedAmount = canonical.amount,
+                expectedPurchaseDate = canonical.purchaseDate,
+                cancellationDate = canonical.cancellationDate,
+                reason = canonical.reason,
+                expectedPaymentMethod = paymentMethod
+            )
+        } else {
+            if (
+                request.expectedOriginalPurchaseTransactionId != null ||
+                request.expectedPrepaidAccountId != null
+            ) {
+                fail(ExpenseCancellationFailure.InvalidRequest)
+            }
+            val canonical = ExpenseCancellationRequestFingerprint.canonicalizeNonPrepaid(
+                NonPrepaidExpenseCancellationRequestFingerprintInput(
+                    expenseId = request.expenseId,
+                    expectedExpenseUpdatedAt = request.expectedExpenseUpdatedAt,
+                    paymentMethod = paymentMethod,
+                    amount = request.expectedAmount,
+                    expenseDate = request.expectedPurchaseDate,
+                    cancellationDate = request.cancellationDate,
+                    reason = request.reason
+                )
+            )
+            request.copy(
+                expenseId = canonical.expenseId,
+                expectedExpenseUpdatedAt = canonical.expectedExpenseUpdatedAt,
+                expectedOriginalPurchaseTransactionId = null,
+                expectedPrepaidAccountId = null,
+                expectedAmount = canonical.amount,
+                expectedPurchaseDate = canonical.expenseDate,
+                cancellationDate = canonical.cancellationDate,
+                reason = canonical.reason,
+                expectedPaymentMethod = canonical.paymentMethod
+            )
+        }
     } catch (error: ExpenseCancellationValidationException) {
         throw ExpenseCancellationException(
             ExpenseCancellationFailure.InvalidRequest,
@@ -472,19 +616,33 @@ private fun normalizeCancellationRequest(
 }
 
 private fun fingerprint(request: ExpenseCancellationRequest): String =
-    ExpenseCancellationRequestFingerprint.create(
-        ExpenseCancellationRequestFingerprintInput(
-            expenseId = request.expenseId,
-            expectedExpenseUpdatedAt = request.expectedExpenseUpdatedAt,
-            originalPurchaseTransactionId =
-            request.expectedOriginalPurchaseTransactionId,
-            prepaidAccountId = request.expectedPrepaidAccountId,
-            amount = request.expectedAmount,
-            purchaseDate = request.expectedPurchaseDate,
-            cancellationDate = request.cancellationDate,
-            reason = request.reason
+    if (request.expectedPaymentMethod == PaymentMethodPrepaid) {
+        ExpenseCancellationRequestFingerprint.create(
+            ExpenseCancellationRequestFingerprintInput(
+                expenseId = request.expenseId,
+                expectedExpenseUpdatedAt = request.expectedExpenseUpdatedAt,
+                originalPurchaseTransactionId =
+                    requireNotNull(request.expectedOriginalPurchaseTransactionId),
+                prepaidAccountId = requireNotNull(request.expectedPrepaidAccountId),
+                amount = request.expectedAmount,
+                purchaseDate = request.expectedPurchaseDate,
+                cancellationDate = request.cancellationDate,
+                reason = request.reason
+            )
         )
-    )
+    } else {
+        ExpenseCancellationRequestFingerprint.createNonPrepaid(
+            NonPrepaidExpenseCancellationRequestFingerprintInput(
+                expenseId = request.expenseId,
+                expectedExpenseUpdatedAt = request.expectedExpenseUpdatedAt,
+                paymentMethod = request.expectedPaymentMethod,
+                amount = request.expectedAmount,
+                expenseDate = request.expectedPurchaseDate,
+                cancellationDate = request.cancellationDate,
+                reason = request.reason
+            )
+        )
+    }
 
 private fun validateCancellationRecord(record: ExpenseCancellationRecord) {
     try {
