@@ -40,7 +40,6 @@ import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Dashboard
-import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.EditNote
 import androidx.compose.material.icons.outlined.ListAlt
 import androidx.compose.material.icons.outlined.ReceiptLong
@@ -147,6 +146,7 @@ import com.warun.accounting.ui.model.MaxRecentSupplierCandidates
 import com.warun.accounting.ui.model.canDeleteOwnedPendingCapture
 import com.warun.accounting.ui.model.formatBusinessRate
 import com.warun.accounting.ui.model.normalizeSupplierCandidateName
+import com.warun.accounting.ui.model.PaperSubmissionCopy
 import com.warun.accounting.ui.model.shouldPersistSupplierCandidateAfterExpenseSave
 import com.warun.accounting.ui.model.shouldSaveCustomSupplierCandidate
 import com.warun.accounting.ui.receipt.ReceiptCameraScreen
@@ -237,7 +237,7 @@ private sealed class AppDestination(
     data object Prepaid : AppDestination("prepaid", "プリペイド管理", Icons.Outlined.AccountBalanceWallet)
     data object MonthlyOrganization : AppDestination("monthly_organization", "月別整理", Icons.Outlined.ListAlt)
     data object ReportList : AppDestination("report_list", "日報一覧", Icons.Outlined.ListAlt)
-    data object Submit : AppDestination("submit", "税理士へ提出", Icons.Outlined.Download)
+    data object Submit : AppDestination("submit", "紙提出記録", Icons.Outlined.CheckCircle)
     data object Settings : AppDestination("settings", "設定", Icons.Outlined.Settings)
     data object BusinessMetricDiagnostic : AppDestination(
         "business_metric_diagnostic",
@@ -769,7 +769,6 @@ private fun AppNavHost(
         composable(AppDestination.MonthlyOrganization.route) {
             MonthlyOrganizationScreen(
                 uiState = uiState,
-                onMarkSubmitted = viewModel::markMonthSubmitted,
                 onOpenSubmit = {
                     onNavigateSingleTop(AppDestination.Submit.route)
                 }
@@ -1081,7 +1080,7 @@ private fun HomePrimaryActions(onNavigate: (String) -> Unit) {
                 modifier = buttonModifier
             )
             PrimaryActionButton(
-                label = "税理士へ提出",
+                label = "紙提出を記録",
                 onClick = { onNavigate(AppDestination.Submit.route) },
                 modifier = buttonModifier
             )
@@ -1263,7 +1262,8 @@ private fun SaveActionCard(
     completeLabel: String,
     onSaveDraft: () -> Unit,
     onSaveComplete: () -> Unit,
-    isSaving: Boolean = false
+    isSaving: Boolean = false,
+    completeEnabled: Boolean = true
 ) {
     DashboardCard(containerColor = Color(0xFFEFF6FF)) {
         BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
@@ -1281,7 +1281,7 @@ private fun SaveActionCard(
                         label = completeLabel,
                         onClick = onSaveComplete,
                         modifier = Modifier.fillMaxWidth(),
-                        enabled = !isSaving
+                        enabled = !isSaving && completeEnabled
                     )
                 }
             } else {
@@ -1302,7 +1302,7 @@ private fun SaveActionCard(
                         label = completeLabel,
                         onClick = onSaveComplete,
                         modifier = Modifier.width(220.dp),
-                        enabled = !isSaving
+                        enabled = !isSaving && completeEnabled
                     )
                 }
             }
@@ -3898,7 +3898,6 @@ private fun DailyBalanceList(rows: List<DailyBalanceRow>) {
 @Composable
 private fun MonthlyOrganizationScreen(
     uiState: DashboardUiState,
-    onMarkSubmitted: (String) -> Unit,
     onOpenSubmit: () -> Unit
 ) {
     var selectedMonth by remember { mutableStateOf(YearMonth.now()) }
@@ -3930,12 +3929,18 @@ private fun MonthlyOrganizationScreen(
             TotalRow("レシート支出", summary.receiptExpenses.toYen())
             TotalRow("概算差額", summary.balance.toYen())
         }
-        SaveActionCard(
-            draftLabel = "税理士提出へ進む",
-            completeLabel = "この月を提出済みにする",
-            onSaveDraft = onOpenSubmit,
-            onSaveComplete = { onMarkSubmitted(summary.targetMonth) }
-        )
+        DashboardCard(containerColor = Color(0xFFEFF6FF)) {
+            Text("紙提出の記録", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(
+                "紙資料を税理士へ渡した後のローカル記録は、確認画面から行います。",
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            PrimaryActionButton(
+                label = "紙提出記録へ進む",
+                onClick = onOpenSubmit,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
         DailyReportList(summary.monthReports.take(8))
         ReceiptList(summary.monthReceipts.take(8))
     }
@@ -4396,12 +4401,13 @@ private fun SubmitScreen(
     onOpenMonthlyOrganization: () -> Unit
 ) {
     var selectedMonth by remember { mutableStateOf(YearMonth.now()) }
+    var showPaperSubmissionConfirmation by rememberSaveable(selectedMonth) { mutableStateOf(false) }
     val summary = remember(uiState, selectedMonth) {
         buildMonthlyOrganizationSummary(uiState, selectedMonth)
     }
 
     ScreenColumn {
-        ScreenTitle("税理士へ提出", "月末に対象月を選んで提出するための確認画面です。")
+        ScreenTitle("税理士への紙提出記録", "紙での提出完了をこの端末に記録する確認画面です。")
         ReportMonthSelector(
             selectedMonth = selectedMonth,
             onPreviousMonth = { selectedMonth = selectedMonth.minusMonths(1) },
@@ -4414,15 +4420,57 @@ private fun SubmitScreen(
             TotalRow("支出合計", (summary.reportExpenses + summary.receiptExpenses).toYen())
             TotalRow("概算差額", summary.balance.toYen())
             TotalRow("提出状況", summary.submissionLabel)
-            Text("CSV、PDF、ZIP出力は次フェーズで追加します。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        DashboardCard(containerColor = Color(0xFFFFF4E5)) {
+            Text(
+                "電子送信は行いません",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                PaperSubmissionCopy.ElectronicSendNotice,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                PaperSubmissionCopy.RecordTimingNotice,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
         SaveActionCard(
             draftLabel = "月別整理を続ける",
-            completeLabel = "提出済みにする",
+            completeLabel = if (summary.isPaperSubmissionRecorded) {
+                "紙提出済みとして記録済み"
+            } else {
+                "紙提出済みとして記録"
+            },
             onSaveDraft = onOpenMonthlyOrganization,
-            onSaveComplete = { onMarkSubmitted(summary.targetMonth) }
+            onSaveComplete = { showPaperSubmissionConfirmation = true },
+            completeEnabled = !summary.isPaperSubmissionRecorded
         )
         DailyReportList(summary.monthReports.take(5))
+    }
+
+    if (showPaperSubmissionConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showPaperSubmissionConfirmation = false },
+            title = { Text("紙提出済みとして記録しますか？") },
+            text = { Text(PaperSubmissionCopy.confirmationMessage(summary.targetMonth)) },
+            confirmButton = {
+                OutlinedButton(
+                    onClick = {
+                        showPaperSubmissionConfirmation = false
+                        onMarkSubmitted(summary.targetMonth)
+                    }
+                ) {
+                    Text("紙提出済みとして記録")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPaperSubmissionConfirmation = false }) {
+                    Text("キャンセル")
+                }
+            }
+        )
     }
 }
 @Composable
@@ -4856,6 +4904,7 @@ private data class MonthlyOrganizationSummary(
     val unconfirmedReceipts: Int,
     val dateUnknownReceipts: Int,
     val draftReports: Int,
+    val isPaperSubmissionRecorded: Boolean,
     val submissionLabel: String,
     val monthReports: List<DailyReport>,
     val monthReceipts: List<ReceiptRecord>
@@ -4951,7 +5000,8 @@ private fun buildMonthlyOrganizationSummary(
         unconfirmedReceipts = monthReceipts.count { !it.isConfirmed },
         dateUnknownReceipts = uiState.receipts.count { it.purchaseDate.isNullOrBlank() },
         draftReports = monthReports.count { it.status == DailyReportStatus.Draft },
-        submissionLabel = if (submitted) "提出済み" else "未提出",
+        isPaperSubmissionRecorded = submitted,
+        submissionLabel = PaperSubmissionCopy.statusLabel(submitted),
         monthReports = monthReports.sortedByDescending { it.reportDate },
         monthReceipts = monthReceipts.sortedByDescending { it.purchaseDate.orEmpty() }
     )

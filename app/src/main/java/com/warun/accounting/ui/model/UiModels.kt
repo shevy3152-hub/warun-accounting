@@ -130,7 +130,7 @@ data class DashboardUiState(
     val currentMonthSubmitted: Boolean = monthlySubmissions.any {
         it.targetMonth == currentMonth && it.status == MonthlySubmissionStatus.Submitted
     }
-    val currentMonthSubmissionLabel: String = if (currentMonthSubmitted) "提出済み" else "未提出"
+    val currentMonthSubmissionLabel: String = PaperSubmissionCopy.statusLabel(currentMonthSubmitted)
     val latestGuestUnitPrice: Long = latestReport
         ?.takeIf { it.customerCount > 0 }
         ?.let { it.salesTotal() / it.customerCount }

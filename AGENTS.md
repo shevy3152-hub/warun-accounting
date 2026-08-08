@@ -57,6 +57,7 @@
 - 新規プリペイド支出、保存済み支出のプリペイド属性編集、全支払方法の保存済み支出の論理取消
 - 取消済み支出の通常一覧・集計からの除外、legacy fallback再計上防止、日報詳細の監査表示
 - SAFによるRoom v15＋正式Evidenceの検証可能な手動バックアップ／復元、復元journalとrollback、別環境での正式Evidence URI再割当
+- 税理士への紙提出済みローカル記録。実際に紙資料を渡した後だけ記録し、電子ファイル生成・メール送信・電子提出は行わない
 
 Android Auto Backup／端末間転送は、Roomと正式Evidenceの部分復元を実運用保証にしないため無効化している。手動バックアップはv15からv15だけを許可し、cache、OCR一時ファイル、pending撮影画像、Evidence finalization journalを含めない。
 
