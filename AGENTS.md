@@ -56,6 +56,9 @@
 - プリペイド口座、CHARGE／PURCHASE／REVERSALの不変台帳、ExpenseRecordとの永続リンク
 - 新規プリペイド支出、保存済み支出のプリペイド属性編集、全支払方法の保存済み支出の論理取消
 - 取消済み支出の通常一覧・集計からの除外、legacy fallback再計上防止、日報詳細の監査表示
+- SAFによるRoom v15＋正式Evidenceの検証可能な手動バックアップ／復元、復元journalとrollback、別環境での正式Evidence URI再割当
+
+Android Auto Backup／端末間転送は、Roomと正式Evidenceの部分復元を実運用保証にしないため無効化している。手動バックアップはv15からv15だけを許可し、cache、OCR一時ファイル、pending撮影画像、Evidence finalization journalを含めない。
 
 現時点では、OCRフローからのExpenseRecord自動保存およびReceiptRecord保存、正式Evidenceの削除・差し替え、複数画像追加UI、通帳画像管理、カテゴリ／支払方法の自動判定は未実装です。Phase 4Aで過去に正式化済みでも永続リンクがない孤立画像は自動関連付けしません。通常のReceiptRecord保存経路は既に存在するため、OCRフローの未実装事項と混同しないでください。
 
@@ -315,7 +318,7 @@ git diff --check
 - 正式Evidenceの削除・差し替え、複数ページ通帳画像、保持期限
 - ReceiptRecordとEvidenceの関連付け、および1支出へ複数画像を追加するUI
 - Phase 4Aで過去に保存された孤立画像を安全に関連付ける方針
-- リリース署名、配布、バックアップ、復元、production DBの運用手順
+- リリース署名、配布、手動バックアップファイルの保管・世代管理、production DBの正式運用手順
 - CI、必須Lint／フォーマット、コードレビュー、PRの正式ルール
 - REFUND、部分返金、複数返金、プリペイド口座削除、Expense物理削除、Journal v2、スマホ最適化はPhase C-3の実装範囲外。
 - A90に受入開始前から残るpending画像1件は、読取専用調査でも一時UI状態による所有を完全には否定できず、分類E「判定不能」とした。永続データ上は孤立pendingの可能性が高いが、削除可能とは扱わず、手動削除、自動復旧の強制、Journal／EvidenceRecord／Linkの人工的な作成を行わない。

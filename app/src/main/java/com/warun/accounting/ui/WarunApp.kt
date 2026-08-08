@@ -125,6 +125,7 @@ import com.warun.accounting.ui.balance.BalanceAnalysisPresentation
 import com.warun.accounting.ui.balance.BalanceAnalysisSource
 import com.warun.accounting.ui.balance.resolveBalanceAnalysis
 import com.warun.accounting.ui.balance.resolveBalanceMetricPeriod
+import com.warun.accounting.ui.backup.BackupRestoreSection
 import com.warun.accounting.ui.home.HomeMetricPresentation
 import com.warun.accounting.ui.home.HomeMetricSource
 import com.warun.accounting.ui.home.homeDailyMetricPeriod
@@ -262,7 +263,8 @@ private val phoneDestinations = listOf(
     AppDestination.ReportEntry,
     AppDestination.Receipt,
     AppDestination.Balance,
-    AppDestination.MonthlyOrganization
+    AppDestination.MonthlyOrganization,
+    AppDestination.Settings
 )
 
 internal object ReportRoutes {
@@ -4478,6 +4480,7 @@ private fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth()
             )
         }
+        BackupRestoreSection()
         onOpenBusinessMetricDiagnostic?.let { onOpen ->
             FormCard {
                 Text(
