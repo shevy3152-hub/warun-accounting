@@ -6,7 +6,7 @@
 
 - ブランチ: `feature/ui-foundation`
 - 実装開始時のHEAD: `89241cae34a978f7358bfd2483e44f4b72b81f03`
-- 電子提出対応、Room v16、関連テスト・文書とversion更新はローカルcommit対象であり、push前である。
+- 電子提出対応、Room v16、関連テスト・文書とversion更新はローカルcommit済みである。
 - `output/manual/warun_accounting_manual.docx` と `output/pdf/warun_accounting_manual.pdf` はユーザー作成の未追跡ファイルとして保持し、変更・削除していない。
 - Androidアプリのversionは`versionCode = 2`、`versionName = "0.2.0"`。
 
@@ -75,10 +75,17 @@ JVMテストが`app/build/monthly-export-samples/`へ作成した合成テスト
 - 現在のv16 Debug APKへ更新後、v15バックアップを通常版UIから復元した。候補のv16移行、アプリ再起動、日報・支出・Evidence・紙提出履歴の表示、復元データからのXLSX 2件とPDF 1件の生成・SAF保存を確認し、PASSした。
 - MyKomonへの自動ログイン・自動アップロード・API連携・認証情報保存は行わない。生成ファイルを利用者がMyKomonへ手動アップロードする。
 
+## 署名済みrelease APK受入
+
+- `versionCode = 2`、`versionName = "0.2.0"`の署名済みrelease APK受入はPASSした。
+- APK SHA-256は`a72e8ab67866d2e73ee97f3031cda8c1845ee8e686db53a17d191250c2470524`。旧v15正式署名APKとの署名証明書一致を確認し、PASSした。
+- Pixel 8 API 34で旧v15正式署名版から新v16正式署名版への通常更新インストールを行い、PASSした。
+- Room v15からv16へのMigration、既存のテスト用日報・支出データ、Evidence、過去の紙提出履歴の保持を確認し、PASSした。
+- 更新後の署名版で日報XLSX、支出明細XLSX、Evidence PDFの生成、SAF保存、Android共有を確認し、PASSした。
+- MyKomonへの提出は、利用者が生成ファイルを確認して手動アップロードする。
+
 ## 今後の運用確認事項
 
-- 税理士による最終的なXLSX／PDF内容確認と、MyKomonへの手動アップロード運用確認。
-- 銀行明細PDFは利用者がネットバンキングから取得し、アプリ生成ファイルとは別に提出する。
-- 正式Evidenceの削除・差し替え、複数画像追加UI、Photo Picker元画像削除は今回の実装範囲外。
+- 残件は、税理士による実ファイルの最終確認と、実際のMyKomonへの手動送信確認のみ。
 
 機密情報、パスワード、APIキー、MyKomon認証情報、実際の会計データやEvidence画像はこの文書へ記録していない。
