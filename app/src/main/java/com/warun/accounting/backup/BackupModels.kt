@@ -2,8 +2,14 @@ package com.warun.accounting.backup
 
 object BackupContract {
     const val FormatVersion = 1
-    const val CurrentRoomSchemaVersion = 15
-    const val CurrentRoomIdentityHash = "5bb4c7c0a1ea7a4dd3f4351778db558b"
+    const val CurrentRoomSchemaVersion = 16
+    const val CurrentRoomIdentityHash = "e2b19e095274ae3cace88936de475a41"
+    const val PreviousRoomSchemaVersion = 15
+    const val PreviousRoomIdentityHash = "5bb4c7c0a1ea7a4dd3f4351778db558b"
+    val SupportedRoomIdentityHashes = mapOf(
+        PreviousRoomSchemaVersion to PreviousRoomIdentityHash,
+        CurrentRoomSchemaVersion to CurrentRoomIdentityHash
+    )
     const val ManifestEntry = "manifest.xml"
     const val DatabaseEntry = "database/warun-accounting.db"
     const val MimeType = "application/octet-stream"
@@ -111,7 +117,7 @@ internal fun BackupManifest.validateContract() {
     if (formatVersion != BackupContract.FormatVersion) {
         backupFail(BackupFailure.UnsupportedFormat, "Unsupported backup format")
     }
-    if (roomSchemaVersion != BackupContract.CurrentRoomSchemaVersion) {
+    if (roomSchemaVersion !in BackupContract.SupportedRoomIdentityHashes) {
         backupFail(BackupFailure.UnsupportedSchema, "Unsupported Room schema")
     }
     if (createdAtEpochMillis < 0L || appVersion.isBlank() || appVersion.length > 100) {

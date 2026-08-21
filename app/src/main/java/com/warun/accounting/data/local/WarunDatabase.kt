@@ -12,6 +12,7 @@ import androidx.room.RoomDatabase
         ExpenseEvidenceLinkRecord::class,
         SupplierCandidateRecord::class,
         MonthlySubmission::class,
+        ElectronicSubmissionRecord::class,
         AppSettings::class,
         PrepaidAccountRecord::class,
         PrepaidTransactionRecord::class,
@@ -19,7 +20,7 @@ import androidx.room.RoomDatabase
         ExpenseEditOperationRecord::class,
         ExpenseCancellationRecord::class
     ],
-    version = 15,
+    version = 16,
     exportSchema = true
 )
 abstract class WarunDatabase : RoomDatabase() {

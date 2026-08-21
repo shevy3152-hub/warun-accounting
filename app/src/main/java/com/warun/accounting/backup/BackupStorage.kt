@@ -4,6 +4,7 @@ import android.content.Context
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import com.warun.accounting.BuildConfig
+import com.warun.accounting.data.local.Migration15To16Schema
 import com.warun.accounting.data.local.WarunDatabase
 import java.io.File
 import java.io.FileInputStream
@@ -78,7 +79,8 @@ class BackupDatabaseInspector {
                 }
             }
             val schema = database.longValue("PRAGMA user_version").toInt()
-            if (schema != BackupContract.CurrentRoomSchemaVersion) {
+            val expectedIdentityHash = BackupContract.SupportedRoomIdentityHashes[schema]
+            if (expectedIdentityHash == null) {
                 backupFail(BackupFailure.UnsupportedSchema, "Backup schema is not supported")
             }
             val identityHash = database.rawQuery(
@@ -87,7 +89,7 @@ class BackupDatabaseInspector {
             ).use { cursor ->
                 cursor.takeIf(Cursor::moveToFirst)?.getString(0)
             }
-            if (identityHash != BackupContract.CurrentRoomIdentityHash) {
+            if (identityHash != expectedIdentityHash) {
                 backupFail(BackupFailure.UnsupportedSchema, "Room schema identity is not supported")
             }
             val evidence = database.rawQuery(
@@ -335,6 +337,12 @@ class BackupBundleBuilder(
         try {
             snapshotter.createConsolidatedSnapshot(databaseFile)
             val inspection = inspector.inspect(databaseFile)
+            if (inspection.schemaVersion != BackupContract.CurrentRoomSchemaVersion) {
+                backupFail(
+                    BackupFailure.UnsupportedSchema,
+                    "New backups require the current Room schema"
+                )
+            }
             if (!evidenceDirectory.mkdirs() && !evidenceDirectory.isDirectory) {
                 backupFail(BackupFailure.SnapshotFailure, "Cannot create Evidence staging")
             }
@@ -479,6 +487,81 @@ class StagedEvidenceUriRebaser(
             evidence = bundle.manifest.evidence.map { item ->
                 item.copy(storedUri = replacementById[item.evidenceId] ?: item.storedUri)
             }
+        )
+        FileOutputStream(File(bundle.rootDirectory, BackupContract.ManifestEntry)).use { output ->
+            BackupManifestXml.write(updatedManifest, output)
+            output.fd.sync()
+        }
+        return bundle.copy(manifest = updatedManifest).also(inspector::validateBundle)
+    }
+}
+
+fun interface StagedDatabaseUpgradeInterceptor {
+    fun afterSchemaStatements()
+
+    companion object {
+        val None = StagedDatabaseUpgradeInterceptor {}
+    }
+}
+
+/**
+ * Upgrades an already extracted and Evidence-rebased v15 candidate before it can become live.
+ * Only the isolated candidate database is opened. The manifest is rewritten and the v16 bundle is
+ * fully inspected before stageRestore publishes its token.
+ */
+class StagedBackupDatabaseUpgrader(
+    private val inspector: BackupDatabaseInspector,
+    private val interceptor: StagedDatabaseUpgradeInterceptor =
+        StagedDatabaseUpgradeInterceptor.None
+) {
+    fun upgradeToCurrent(bundle: BackupBundle): BackupBundle {
+        inspector.validateBundle(bundle)
+        if (bundle.manifest.roomSchemaVersion == BackupContract.CurrentRoomSchemaVersion) {
+            return bundle
+        }
+        if (bundle.manifest.roomSchemaVersion != BackupContract.PreviousRoomSchemaVersion) {
+            backupFail(BackupFailure.UnsupportedSchema, "Staged database cannot be upgraded")
+        }
+
+        val database = try {
+            SQLiteDatabase.openDatabase(
+                bundle.databaseFile.absolutePath,
+                null,
+                SQLiteDatabase.OPEN_READWRITE or SQLiteDatabase.NO_LOCALIZED_COLLATORS
+            )
+        } catch (error: Exception) {
+            backupFail(BackupFailure.CorruptDatabase, "Staged database cannot be upgraded", error)
+        }
+        try {
+            database.beginTransaction()
+            Migration15To16Schema.Statements.forEach(database::execSQL)
+            interceptor.afterSchemaStatements()
+            val updatedIdentity = database.compileStatement(
+                "UPDATE room_master_table SET identity_hash = ? WHERE id = 42"
+            ).use { statement ->
+                statement.bindString(1, BackupContract.CurrentRoomIdentityHash)
+                statement.executeUpdateDelete()
+            }
+            if (updatedIdentity != 1) {
+                backupFail(BackupFailure.UnsupportedSchema, "Room identity metadata is missing")
+            }
+            database.version = BackupContract.CurrentRoomSchemaVersion
+            database.setTransactionSuccessful()
+        } catch (error: BackupException) {
+            throw error
+        } catch (error: Exception) {
+            backupFail(BackupFailure.RestoreFailure, "Staged database upgrade failed", error)
+        } finally {
+            if (database.inTransaction()) database.endTransaction()
+            database.close()
+        }
+
+        val updatedManifest = bundle.manifest.copy(
+            roomSchemaVersion = BackupContract.CurrentRoomSchemaVersion,
+            database = bundle.manifest.database.copy(
+                size = bundle.databaseFile.length(),
+                sha256 = BackupArchive.sha256(bundle.databaseFile)
+            )
         )
         FileOutputStream(File(bundle.rootDirectory, BackupContract.ManifestEntry)).use { output ->
             BackupManifestXml.write(updatedManifest, output)

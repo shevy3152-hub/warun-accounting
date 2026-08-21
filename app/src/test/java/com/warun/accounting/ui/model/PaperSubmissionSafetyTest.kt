@@ -4,8 +4,6 @@ import com.warun.accounting.data.local.MonthlySubmission
 import com.warun.accounting.data.local.MonthlySubmissionStatus
 import com.warun.accounting.ui.util.currentMonthString
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PaperSubmissionSafetyTest {
@@ -33,15 +31,15 @@ class PaperSubmissionSafetyTest {
     }
 
     @Test
-    fun noticesExplicitlyRejectElectronicGenerationAndSending() {
-        assertTrue(PaperSubmissionCopy.ElectronicSendNotice.contains("電子ファイルの生成"))
-        assertTrue(PaperSubmissionCopy.ElectronicSendNotice.contains("メール送信"))
-        assertTrue(PaperSubmissionCopy.ElectronicSendNotice.contains("行いません"))
-        assertFalse(PaperSubmissionCopy.ElectronicSendNotice.contains("送信しました"))
+    fun existingMonthlySubmissionRemainsIdentifiedAsPastPaperRecord() {
+        val record = MonthlySubmission(
+            targetMonth = "2026-06",
+            status = MonthlySubmissionStatus.Submitted,
+            submittedAt = 10L,
+            updatedAt = 10L
+        )
 
-        val confirmation = PaperSubmissionCopy.confirmationMessage("2026-08")
-        assertTrue(confirmation.contains("2026-08"))
-        assertTrue(confirmation.contains("この端末内だけ"))
-        assertTrue(confirmation.contains("行われません"))
+        assertEquals("2026-06", record.targetMonth)
+        assertEquals("紙提出済み（記録）", PaperSubmissionCopy.statusLabel(recorded = true))
     }
 }

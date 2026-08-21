@@ -9,8 +9,12 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import com.warun.accounting.BuildConfig
 import com.warun.accounting.data.AccountingRepository
 import com.warun.accounting.data.OfflineAccountingRepository
+import com.warun.accounting.data.export.MonthlyExportRepository
+import com.warun.accounting.data.export.OfflineMonthlyExportRepository
 import com.warun.accounting.data.prepaid.OfflinePrepaidRepository
 import com.warun.accounting.data.prepaid.PrepaidRepository
+import com.warun.accounting.data.submission.ElectronicSubmissionRepository
+import com.warun.accounting.data.submission.OfflineElectronicSubmissionRepository
 import com.warun.accounting.camera.ReceiptImageImportGateway
 import com.warun.accounting.camera.ReceiptPendingImageImporter
 import com.warun.accounting.data.local.ExpensePrepaidLinkDao
@@ -21,6 +25,7 @@ import com.warun.accounting.data.local.PrepaidAccountDao
 import com.warun.accounting.data.local.PrepaidTransactionDao
 import com.warun.accounting.data.local.WarunDao
 import com.warun.accounting.data.local.WarunDatabase
+import com.warun.accounting.data.local.Migration15To16Schema
 import com.warun.accounting.evidence.EvidenceFileStore
 import com.warun.accounting.evidence.EvidenceFilePromoter
 import com.warun.accounting.evidence.EvidenceFinalizationJournal
@@ -286,6 +291,12 @@ object DatabaseModule {
         }
     }
 
+    internal val MIGRATION_15_16 = object : Migration(15, 16) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            Migration15To16Schema.Statements.forEach(db::execSQL)
+        }
+    }
+
     internal val PREPAID_DATABASE_CALLBACK = object : RoomDatabase.Callback() {
         override fun onCreate(db: SupportSQLiteDatabase) {
             db.insertInitialPrepaidAccounts()
@@ -490,7 +501,8 @@ object DatabaseModule {
                 MIGRATION_11_12,
                 MIGRATION_12_13,
                 MIGRATION_13_14,
-                MIGRATION_14_15
+                MIGRATION_14_15,
+                MIGRATION_15_16
             )
             .addCallback(PREPAID_DATABASE_CALLBACK)
             .build()
@@ -645,6 +657,18 @@ abstract class RepositoryModule {
     abstract fun bindPrepaidRepository(
         repository: OfflinePrepaidRepository
     ): PrepaidRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindElectronicSubmissionRepository(
+        repository: OfflineElectronicSubmissionRepository
+    ): ElectronicSubmissionRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindMonthlyExportRepository(
+        repository: OfflineMonthlyExportRepository
+    ): MonthlyExportRepository
 
     @Binds
     @Singleton

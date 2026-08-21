@@ -50,7 +50,8 @@ class BackupRestoreManager internal constructor(
     private val database: WarunDatabase,
     private val paths: BackupPaths,
     private val inspector: BackupDatabaseInspector,
-    private val restoreInterceptor: RestoreInstallInterceptor
+    private val restoreInterceptor: RestoreInstallInterceptor,
+    private val stagedUpgradeInterceptor: StagedDatabaseUpgradeInterceptor
 ) {
     @Inject
     constructor(
@@ -61,7 +62,8 @@ class BackupRestoreManager internal constructor(
         database = database,
         paths = BackupPaths(context),
         inspector = BackupDatabaseInspector(),
-        restoreInterceptor = RestoreInstallInterceptor.None
+        restoreInterceptor = RestoreInstallInterceptor.None,
+        stagedUpgradeInterceptor = StagedDatabaseUpgradeInterceptor.None
     )
 
     private val snapshotter = DatabaseSnapshotter(database, paths.databaseFile)
@@ -132,7 +134,11 @@ class BackupRestoreManager internal constructor(
                 evidenceFiles = extracted.evidenceFiles
             )
             inspector.validateBundle(extractedBundle)
-            val bundle = StagedEvidenceUriRebaser(paths, inspector).rebase(extractedBundle)
+            val rebased = StagedEvidenceUriRebaser(paths, inspector).rebase(extractedBundle)
+            val bundle = StagedBackupDatabaseUpgrader(
+                inspector,
+                stagedUpgradeInterceptor
+            ).upgradeToCurrent(rebased)
             val token = candidate.name.removePrefix("candidate-")
             return RestorePreview(
                 token = token,

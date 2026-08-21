@@ -43,7 +43,7 @@
 | 言語・UI | Kotlin 2.0.21、Jetpack Compose、Material 3 |
 | Android | AGP 8.7.3、compileSdk/targetSdk 35、minSdk 26、Java/JVM 17 |
 | DI・状態 | Hilt 2.52、ViewModel、Coroutines/Flow、SavedStateHandle |
-| DB | Room 2.6.1、KSP、`warun-accounting.db`、schema version 15 |
+| DB | Room 2.6.1、KSP、`warun-accounting.db`、schema version 16 |
 | カメラ | CameraX 1.5.3 |
 | OCR | ML Kit Japanese Text Recognition 16.0.1 |
 
@@ -114,16 +114,18 @@ CameraX、ML Kit、ReceiptParserはこの保存レイヤーと責務を分離し
 #### 補助データ
 
 - `SupplierCandidateRecord`: カテゴリ別の支払先候補と既定支払方法。
-- `MonthlySubmission`: 月別の提出状況。
+- `MonthlySubmission`: 既存の月別紙提出記録。過去記録として保持する。
+- `ElectronicSubmissionRecord`: 月次ファイルの作成内容、MyKomon提出状態・日時、備考。キャッシュURIや実ファイルパスは保持しない。
 - `AppSettings`: 店舗情報と利用する決済方法。
 
 ### Room
 
-- `WarunDatabase`の現在versionは15。
-- schema JSONはversion 6〜15を保持。
-- `MIGRATION_6_7`〜`MIGRATION_14_15`を明示登録。
+- `WarunDatabase`の現在versionは16。
+- schema JSONはversion 6〜16を保持。
+- `MIGRATION_6_7`〜`MIGRATION_15_16`を明示登録。
 - 13→14は`expense_cancellations`と一意Indexだけを追加し、既存テーブルへのALTER／UPDATE／backfillは行わない。
 - 14→15は既存取消行、FK、UNIQUE indexを保持し、プリペイド台帳参照をnullable化する。
+- 15→16は`electronic_submission_records`と対象月・作成日時のIndexだけを追加し、既存テーブルへのUPDATE／backfill／削除は行わない。
 - `fallbackToDestructiveMigration`は使用しない。
 - DAOにはFlowによる監視、単体保存、削除、日報＋支出、ReceiptRecord＋支出のTransactionがある。
 
@@ -140,6 +142,7 @@ CameraX、ML Kit、ReceiptParserはこの保存レイヤーと責務を分離し
 - 日報＋支出、ReceiptRecord＋支出のTransaction経路の維持。
 - プリペイド支出の新規保存と保存済み支出編集、および全支払方法の論理取消を、必要な台帳・Link・Evidence・operation記録とともにTransaction処理する。
 - 取消済みExpenseの監査取得と、active Expenseの通常取得を分離する。
+- 電子提出の月次Snapshotと履歴は専用Repositoryを通し、UIから直接集計しない。
 
 ComposeからDAOを直接呼ばず、ViewModelからRepositoryを経由します。
 
@@ -262,7 +265,8 @@ OCR反映時点で保持されるのはcapture参照だけです。「支出入�
 - 新規プリペイド支出のExpense／PURCHASE／Link／EvidenceのTransaction保存。
 - 保存済み支出の金額・口座・プリペイド属性変更、REVERSALと新PURCHASE、Link遷移、Evidence追加、永続的冪等性、SavedState復元。
 - 全支払方法の保存済み支出の論理取消、通常一覧・集計からの除外、legacy fallback再計上防止、日報詳細の監査表示。プリペイドだけREVERSALで残高を復元する。
-- Room version 15とschema 6〜15のMigration経路。
+- 月次の日報Excel、支出明細Excel、stored EvidenceのレシートPDF作成、SAF保存、Android共有、MyKomon手動提出の履歴記録。既存の紙提出記録も過去記録として表示する。
+- Room version 16とschema 6〜16のMigration経路。v15バックアップはstaging候補内でEvidence URIを再割当してから15→16 Migrationと同じSQLでv16へ更新・再検証し、新規バックアップはv16で作成する。
 - JVMテストとAndroidテストによる計算、状態保持、OCR、Parser、Transaction、Migrationの検証基盤。
 
 ## Phase C-3 完了記録
@@ -288,9 +292,9 @@ OCR反映時点で保持されるのはcapture参照だけです。「支出入�
 - active Expenseがなく取消済みExpenseだけがある日付・カテゴリでは0円とし、DailyReportのlegacy値を再計上しない。
 - 取消Dialogと日報詳細の読取専用監査表示を実装し、Evidenceサムネイル、stored画像、ズーム、パンを再利用する。
 
-### 最終検証
+### C-3完了時点の検証
 
-- JVMテスト328件PASS。
+- C-3完了時点ではJVMテスト328件PASS。
 - Android Roomテストは各対象フェーズで、C-3B 10件、C-3C1 5件、C-3C2 11件、C-3C3A 2件、C-3C3B 3件、C-3C3D 14件PASS。対象が重複するため総数として単純合算しない。
 - Debug APKとinstrumented test APKの生成PASS。
 - A90ではInstrumentationを実行せず、通常版Debug APKの`adb install -r`と手動受入だけを実施した。
@@ -318,7 +322,7 @@ OCR反映時点で保持されるのはcapture参照だけです。「支出入�
 - OCRによるカテゴリ・支払方法の自動判定。
 - 原価率、固定費回収率、損益分岐、目標残額等の統一計算基盤。
 - 5秒で経営状態を把握するための完成版経営ダッシュボード。
-- CSV、PDF、証憑ZIP、メール共有等の税理士向け実ファイル出力。
+- MyKomonへの自動ログイン、自動アップロード、API連携（実装対象外。手動アップロード運用）。
 - 通帳画像管理。
 - クラウドバックアップ、同期、復元。
 - 外部AI API連携。
@@ -386,7 +390,9 @@ pending画像の正式化、`EvidenceRecord`、ExpenseRecordとのリンク、�
 
 ### 税理士提出
 
-月次単位でCSVと証憑ZIP等を生成し、出力前に期間、件数、金額、未確認データ、証憑不足を検証する構想です。現在は月別整理と、実際に紙資料を渡した後の紙提出済みローカル記録だけを実装しています。この記録操作では電子ファイル生成・メール送信・電子提出を行わず、実ファイル出力形式は税理士回答待ちです。
+月次単位で日報Excel、支出明細Excel、stored EvidenceのレシートPDFを別ファイルとして生成します。日報の売上合計は正式なBusinessMetric経路と照合し、支出明細は取消済みを除外した現在有効な`ExpenseRecord`だけを使用します。Evidenceが0件なら空のPDFは作りません。ファイルはSAFまたはAndroid共有で取り出し、利用者がMyKomonへ手動アップロードします。アプリは自動ログイン、自動送信、認証情報保存を行いません。
+
+電子提出の作成・提出履歴は`ElectronicSubmissionRecord`へ追加保存し、同じ月の再作成も上書きしません。既存の`MonthlySubmission`は過去の紙提出記録として変更せず表示します。銀行明細PDFはアプリ外で用意します。
 
 ### クラウドバックアップ
 

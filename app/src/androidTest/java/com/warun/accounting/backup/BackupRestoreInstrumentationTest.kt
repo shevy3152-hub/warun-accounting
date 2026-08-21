@@ -10,6 +10,8 @@ import com.warun.accounting.data.local.DailyReport
 import com.warun.accounting.data.local.DailyReportStatus
 import com.warun.accounting.data.local.EvidenceRecord
 import com.warun.accounting.data.local.EvidenceRecordState
+import com.warun.accounting.data.local.ElectronicSubmissionRecord
+import com.warun.accounting.data.local.ElectronicSubmissionStatus
 import com.warun.accounting.data.local.ExpenseCancellationRecord
 import com.warun.accounting.data.local.ExpenseCategory
 import com.warun.accounting.data.local.ExpenseEvidenceLinkRecord
@@ -104,6 +106,14 @@ class BackupRestoreInstrumentationTest {
         assertEquals(2L, count("expense_evidence_links"))
         assertEquals(1L, count("expense_cancellations"))
         assertEquals(2L, count("prepaid_transactions"))
+        assertEquals(1L, count("electronic_submission_records"))
+        assertEquals(
+            "2026年8月_日報.xlsx",
+            valueString(
+                "SELECT dailyReportFileName FROM electronic_submission_records " +
+                    "WHERE id = 'electronic-submission-1'"
+            )
+        )
         assertEquals(1_500L, database.prepaidTransactionDao().getBalance("backup-account"))
         assertNotNull(database.expenseCancellationDao().getByExpenseId("cancelled-expense"))
         assertEquals(
@@ -374,10 +384,11 @@ class BackupRestoreInstrumentationTest {
     ) = BackupRestoreManager(
         context = context,
         database = database,
-        paths = paths,
-        inspector = BackupDatabaseInspector(),
-        restoreInterceptor = interceptor
-    )
+            paths = paths,
+            inspector = BackupDatabaseInspector(),
+            restoreInterceptor = interceptor,
+            stagedUpgradeInterceptor = StagedDatabaseUpgradeInterceptor.None
+        )
 
     private fun openDatabase(): WarunDatabase = Room.databaseBuilder(
         context,
@@ -387,6 +398,21 @@ class BackupRestoreInstrumentationTest {
 
     private suspend fun insertCompleteFixture(target: WarunDatabase) {
         target.warunDao().insertDailyReport(report("report-1", "2026-08-08"))
+        target.warunDao().insertElectronicSubmissionRecord(
+            ElectronicSubmissionRecord(
+                id = "electronic-submission-1",
+                targetMonth = "2026-08",
+                generatedAt = 20L,
+                dailyReportFileName = "2026年8月_日報.xlsx",
+                expenseDetailFileName = "2026年8月_支出明細.xlsx",
+                receiptPdfFileName = "2026年8月_レシート.pdf",
+                status = ElectronicSubmissionStatus.NotSubmitted,
+                submittedAt = null,
+                note = null,
+                createdAt = 20L,
+                updatedAt = 20L
+            )
+        )
         val cancelledExpense = expense("cancelled-expense", "現金", 600L)
         val prepaidExpense = expense("prepaid-expense", "プリペイド", 500L)
         target.warunDao().insertExpenseRecord(cancelledExpense)
@@ -541,6 +567,12 @@ class BackupRestoreInstrumentationTest {
         cursor.moveToFirst()
         cursor.getLong(0)
     }
+
+    private fun valueString(sql: String): String =
+        database.openHelper.readableDatabase.query(sql).use { cursor ->
+            cursor.moveToFirst()
+            cursor.getString(0)
+        }
 
     companion object {
         private val TestJpeg = byteArrayOf(

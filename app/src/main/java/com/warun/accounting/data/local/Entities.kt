@@ -193,6 +193,32 @@ object MonthlySubmissionStatus {
     const val Submitted = "submitted"
 }
 
+@Entity(
+    tableName = "electronic_submission_records",
+    indices = [
+        Index(value = ["targetMonth"]),
+        Index(value = ["generatedAt"])
+    ]
+)
+data class ElectronicSubmissionRecord(
+    @PrimaryKey val id: String,
+    val targetMonth: String,
+    val generatedAt: Long,
+    val dailyReportFileName: String?,
+    val expenseDetailFileName: String?,
+    val receiptPdfFileName: String?,
+    val status: String,
+    val submittedAt: Long?,
+    val note: String?,
+    val createdAt: Long,
+    val updatedAt: Long
+)
+
+object ElectronicSubmissionStatus {
+    const val NotSubmitted = "not_submitted"
+    const val Submitted = "submitted"
+}
+
 @Entity(tableName = "store_settings")
 data class AppSettings(
     @PrimaryKey val id: Long = 1,

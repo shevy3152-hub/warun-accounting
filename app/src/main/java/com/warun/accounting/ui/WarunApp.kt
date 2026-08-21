@@ -147,6 +147,7 @@ import com.warun.accounting.ui.model.canDeleteOwnedPendingCapture
 import com.warun.accounting.ui.model.formatBusinessRate
 import com.warun.accounting.ui.model.normalizeSupplierCandidateName
 import com.warun.accounting.ui.model.PaperSubmissionCopy
+import com.warun.accounting.ui.submit.ElectronicSubmissionScreen
 import com.warun.accounting.ui.model.shouldPersistSupplierCandidateAfterExpenseSave
 import com.warun.accounting.ui.model.shouldSaveCustomSupplierCandidate
 import com.warun.accounting.ui.receipt.ReceiptCameraScreen
@@ -237,7 +238,7 @@ private sealed class AppDestination(
     data object Prepaid : AppDestination("prepaid", "プリペイド管理", Icons.Outlined.AccountBalanceWallet)
     data object MonthlyOrganization : AppDestination("monthly_organization", "月別整理", Icons.Outlined.ListAlt)
     data object ReportList : AppDestination("report_list", "日報一覧", Icons.Outlined.ListAlt)
-    data object Submit : AppDestination("submit", "紙提出記録", Icons.Outlined.CheckCircle)
+    data object Submit : AppDestination("submit", "電子提出", Icons.Outlined.CheckCircle)
     data object Settings : AppDestination("settings", "設定", Icons.Outlined.Settings)
     data object BusinessMetricDiagnostic : AppDestination(
         "business_metric_diagnostic",
@@ -824,13 +825,7 @@ private fun AppNavHost(
             )
         }
         composable(AppDestination.Submit.route) {
-            SubmitScreen(
-                uiState = uiState,
-                onMarkSubmitted = viewModel::markMonthSubmitted,
-                onOpenMonthlyOrganization = {
-                    onNavigateSingleTop(AppDestination.MonthlyOrganization.route)
-                }
-            )
+            ElectronicSubmissionScreen()
         }
         composable(AppDestination.Settings.route) {
             SettingsScreen(
@@ -1080,7 +1075,7 @@ private fun HomePrimaryActions(onNavigate: (String) -> Unit) {
                 modifier = buttonModifier
             )
             PrimaryActionButton(
-                label = "紙提出を記録",
+                label = "提出ファイルを作成",
                 onClick = { onNavigate(AppDestination.Submit.route) },
                 modifier = buttonModifier
             )
@@ -3930,13 +3925,13 @@ private fun MonthlyOrganizationScreen(
             TotalRow("概算差額", summary.balance.toYen())
         }
         DashboardCard(containerColor = Color(0xFFEFF6FF)) {
-            Text("紙提出の記録", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text("税理士向け電子提出", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Text(
-                "紙資料を税理士へ渡した後のローカル記録は、確認画面から行います。",
+                "月次ファイルを作成し、MyKomonへ手動アップロードした後に提出済みを記録します。",
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             PrimaryActionButton(
-                label = "紙提出記録へ進む",
+                label = "電子提出へ進む",
                 onClick = onOpenSubmit,
                 modifier = Modifier.fillMaxWidth()
             )
@@ -4392,85 +4387,6 @@ private fun DailyReportDetailCard(
         if (!report.memo.isNullOrBlank()) {
             Text(report.memo, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-    }
-}
-@Composable
-private fun SubmitScreen(
-    uiState: DashboardUiState,
-    onMarkSubmitted: (String) -> Unit,
-    onOpenMonthlyOrganization: () -> Unit
-) {
-    var selectedMonth by remember { mutableStateOf(YearMonth.now()) }
-    var showPaperSubmissionConfirmation by rememberSaveable(selectedMonth) { mutableStateOf(false) }
-    val summary = remember(uiState, selectedMonth) {
-        buildMonthlyOrganizationSummary(uiState, selectedMonth)
-    }
-
-    ScreenColumn {
-        ScreenTitle("税理士への紙提出記録", "紙での提出完了をこの端末に記録する確認画面です。")
-        ReportMonthSelector(
-            selectedMonth = selectedMonth,
-            onPreviousMonth = { selectedMonth = selectedMonth.minusMonths(1) },
-            onNextMonth = { selectedMonth = selectedMonth.plusMonths(1) },
-            onThisMonth = { selectedMonth = YearMonth.now() }
-        )
-        DashboardCard {
-            TotalRow("対象月", summary.targetMonth)
-            TotalRow("売上合計", summary.salesTotal.toYen())
-            TotalRow("支出合計", (summary.reportExpenses + summary.receiptExpenses).toYen())
-            TotalRow("概算差額", summary.balance.toYen())
-            TotalRow("提出状況", summary.submissionLabel)
-        }
-        DashboardCard(containerColor = Color(0xFFFFF4E5)) {
-            Text(
-                "電子送信は行いません",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-            Text(
-                PaperSubmissionCopy.ElectronicSendNotice,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Text(
-                PaperSubmissionCopy.RecordTimingNotice,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        SaveActionCard(
-            draftLabel = "月別整理を続ける",
-            completeLabel = if (summary.isPaperSubmissionRecorded) {
-                "紙提出済みとして記録済み"
-            } else {
-                "紙提出済みとして記録"
-            },
-            onSaveDraft = onOpenMonthlyOrganization,
-            onSaveComplete = { showPaperSubmissionConfirmation = true },
-            completeEnabled = !summary.isPaperSubmissionRecorded
-        )
-        DailyReportList(summary.monthReports.take(5))
-    }
-
-    if (showPaperSubmissionConfirmation) {
-        AlertDialog(
-            onDismissRequest = { showPaperSubmissionConfirmation = false },
-            title = { Text("紙提出済みとして記録しますか？") },
-            text = { Text(PaperSubmissionCopy.confirmationMessage(summary.targetMonth)) },
-            confirmButton = {
-                OutlinedButton(
-                    onClick = {
-                        showPaperSubmissionConfirmation = false
-                        onMarkSubmitted(summary.targetMonth)
-                    }
-                ) {
-                    Text("紙提出済みとして記録")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showPaperSubmissionConfirmation = false }) {
-                    Text("キャンセル")
-                }
-            }
-        )
     }
 }
 @Composable

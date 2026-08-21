@@ -1,0 +1,255 @@
+package com.warun.accounting.export
+
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Matrix
+import android.graphics.Paint
+import android.graphics.RectF
+import android.graphics.Typeface
+import android.graphics.pdf.PdfDocument
+import android.media.ExifInterface
+import com.warun.accounting.data.export.ExpenseDetailExportRow
+import com.warun.accounting.data.export.MonthlyExportSnapshot
+import com.warun.accounting.data.export.StoredEvidenceExportItem
+import com.warun.accounting.evidence.EvidenceFileReference
+import com.warun.accounting.evidence.EvidenceFileStore
+import java.io.File
+import java.io.FileOutputStream
+import java.text.NumberFormat
+import java.util.Locale
+import javax.inject.Inject
+
+enum class ReceiptPdfFailureReason {
+    EVIDENCE_MISSING,
+    EVIDENCE_METADATA_MISMATCH,
+    IMAGE_DECODE_FAILED,
+    PDF_WRITE_FAILED
+}
+
+class ReceiptPdfGenerationException(
+    val reason: ReceiptPdfFailureReason,
+    val evidenceId: String?,
+    message: String,
+    cause: Throwable? = null
+) : IllegalStateException(message, cause)
+
+class ReceiptEvidencePdfWriter @Inject constructor(
+    private val evidenceFileStore: EvidenceFileStore
+) {
+    fun write(snapshot: MonthlyExportSnapshot, destination: File): Int {
+        require(snapshot.storedEvidence.isNotEmpty())
+        val expenses = snapshot.expenses.associateBy(ExpenseDetailExportRow::expenseId)
+        val validated = snapshot.storedEvidence.map { evidence ->
+            val expense = expenses[evidence.expenseId]
+                ?: throw ReceiptPdfGenerationException(
+                    ReceiptPdfFailureReason.EVIDENCE_METADATA_MISMATCH,
+                    evidence.evidenceId,
+                    "Evidenceに対応する有効な支出がありません"
+                )
+            ValidatedEvidence(evidence, expense, validateEvidence(evidence))
+        }
+
+        val document = PdfDocument()
+        try {
+            validated.forEachIndexed { index, item ->
+                val bitmap = decodeSampledAndOriented(item.file, item.evidence.evidenceId)
+                try {
+                    val header = buildHeader(item.expense)
+                    val layout = ReceiptPdfPageLayoutPlanner.plan(
+                        imageWidth = bitmap.width,
+                        imageHeight = bitmap.height,
+                        headerLineCount = header.size
+                    )
+                    val page = document.startPage(
+                        PdfDocument.PageInfo.Builder(
+                            layout.pageWidth,
+                            layout.pageHeight,
+                            index + 1
+                        ).create()
+                    )
+                    try {
+                        drawPage(page.canvas, header, bitmap, layout)
+                    } finally {
+                        document.finishPage(page)
+                    }
+                } finally {
+                    bitmap.recycle()
+                }
+            }
+            destination.parentFile?.let { parent ->
+                check(parent.isDirectory) { "PDF出力先が存在しません" }
+            }
+            FileOutputStream(destination).use { output ->
+                document.writeTo(output)
+                output.flush()
+                output.fd.sync()
+            }
+            return validated.size
+        } catch (error: ReceiptPdfGenerationException) {
+            throw error
+        } catch (error: Throwable) {
+            throw ReceiptPdfGenerationException(
+                ReceiptPdfFailureReason.PDF_WRITE_FAILED,
+                null,
+                "レシートPDFを作成できませんでした",
+                error
+            )
+        } finally {
+            document.close()
+        }
+    }
+
+    private fun validateEvidence(item: StoredEvidenceExportItem): File {
+        val reference = try {
+            evidenceFileStore.resolve(item.evidenceId)
+        } catch (error: Throwable) {
+            throw ReceiptPdfGenerationException(
+                ReceiptPdfFailureReason.EVIDENCE_MISSING,
+                item.evidenceId,
+                "正式Evidenceを読み取れません",
+                error
+            )
+        } ?: throw ReceiptPdfGenerationException(
+            ReceiptPdfFailureReason.EVIDENCE_MISSING,
+            item.evidenceId,
+            "正式Evidenceが見つかりません"
+        )
+        if (!reference.matches(item)) {
+            throw ReceiptPdfGenerationException(
+                ReceiptPdfFailureReason.EVIDENCE_METADATA_MISMATCH,
+                item.evidenceId,
+                "正式EvidenceとDBメタデータが一致しません"
+            )
+        }
+        return evidenceFileStore.fileFor(item.evidenceId)
+    }
+
+    private fun EvidenceFileReference.matches(item: StoredEvidenceExportItem): Boolean =
+        evidenceId == item.evidenceId &&
+            localUri == item.storedUri &&
+            byteSize == item.byteSize &&
+            sha256.equals(item.sha256, ignoreCase = true)
+
+    private fun buildHeader(expense: ExpenseDetailExportRow): List<String> = buildList {
+        add("日付: ${expense.expenseDate}")
+        if (expense.supplierName.isNotBlank()) add("支出先: ${expense.supplierName}")
+        add("金額: ${NumberFormat.getIntegerInstance(Locale.JAPAN).format(expense.amount)}円")
+    }
+
+    private fun drawPage(
+        canvas: Canvas,
+        header: List<String>,
+        bitmap: Bitmap,
+        layout: ReceiptPdfPageLayout
+    ) {
+        canvas.drawColor(Color.WHITE)
+        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.BLACK
+            textSize = 13f
+            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
+        }
+        header.forEachIndexed { index, text ->
+            canvas.drawText(text, 36f, layout.headerBaselines[index], textPaint)
+        }
+        val bounds = layout.imageBounds
+        canvas.drawBitmap(
+            bitmap,
+            null,
+            RectF(bounds.left, bounds.top, bounds.right, bounds.bottom),
+            Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        )
+    }
+
+    private fun decodeSampledAndOriented(file: File, evidenceId: String): Bitmap {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.absolutePath, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+            decodeFailure(evidenceId)
+        }
+        var sample = 1
+        while (
+            bounds.outWidth / sample > MaxDecodedDimension ||
+            bounds.outHeight / sample > MaxDecodedDimension ||
+            bounds.outWidth.toLong() * bounds.outHeight.toLong() / sample / sample > MaxDecodedPixels
+        ) {
+            sample *= 2
+        }
+        val decoded = BitmapFactory.decodeFile(
+            file.absolutePath,
+            BitmapFactory.Options().apply {
+                inSampleSize = sample
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            }
+        ) ?: decodeFailure(evidenceId)
+        return orient(decoded, file, evidenceId)
+    }
+
+    private fun orient(bitmap: Bitmap, file: File, evidenceId: String): Bitmap {
+        val orientation = try {
+            ExifInterface(file.absolutePath).getAttributeInt(
+                ExifInterface.TAG_ORIENTATION,
+                ExifInterface.ORIENTATION_NORMAL
+            )
+        } catch (error: Throwable) {
+            bitmap.recycle()
+            throw ReceiptPdfGenerationException(
+                ReceiptPdfFailureReason.IMAGE_DECODE_FAILED,
+                evidenceId,
+                "Evidence画像の向きを確認できません",
+                error
+            )
+        }
+        val matrix = Matrix().apply {
+            when (orientation) {
+                ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> setScale(-1f, 1f)
+                ExifInterface.ORIENTATION_ROTATE_180 -> setRotate(180f)
+                ExifInterface.ORIENTATION_FLIP_VERTICAL -> setScale(1f, -1f)
+                ExifInterface.ORIENTATION_TRANSPOSE -> {
+                    setRotate(90f)
+                    postScale(-1f, 1f)
+                }
+                ExifInterface.ORIENTATION_ROTATE_90 -> setRotate(90f)
+                ExifInterface.ORIENTATION_TRANSVERSE -> {
+                    setRotate(-90f)
+                    postScale(-1f, 1f)
+                }
+                ExifInterface.ORIENTATION_ROTATE_270 -> setRotate(-90f)
+            }
+        }
+        if (orientation == ExifInterface.ORIENTATION_NORMAL ||
+            orientation == ExifInterface.ORIENTATION_UNDEFINED
+        ) return bitmap
+        return try {
+            Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+                .also { oriented -> if (oriented !== bitmap) bitmap.recycle() }
+        } catch (error: Throwable) {
+            bitmap.recycle()
+            throw ReceiptPdfGenerationException(
+                ReceiptPdfFailureReason.IMAGE_DECODE_FAILED,
+                evidenceId,
+                "Evidence画像の向きを反映できません",
+                error
+            )
+        }
+    }
+
+    private fun decodeFailure(evidenceId: String): Nothing =
+        throw ReceiptPdfGenerationException(
+            ReceiptPdfFailureReason.IMAGE_DECODE_FAILED,
+            evidenceId,
+            "Evidence画像をデコードできません"
+        )
+
+    private data class ValidatedEvidence(
+        val evidence: StoredEvidenceExportItem,
+        val expense: ExpenseDetailExportRow,
+        val file: File
+    )
+
+    private companion object {
+        const val MaxDecodedDimension = 4096
+        const val MaxDecodedPixels = 8_000_000L
+    }
+}

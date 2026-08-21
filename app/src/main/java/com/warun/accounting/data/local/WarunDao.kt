@@ -7,6 +7,7 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
 import androidx.room.Upsert
+import com.warun.accounting.data.export.MonthlyExportSourceSnapshot
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -70,6 +71,79 @@ interface WarunDao {
     fun observeStoredExpenseEvidence(): Flow<List<ExpenseEvidenceRecord>>
 
     @Query(
+        "SELECT * FROM daily_reports " +
+            "WHERE reportDate BETWEEN :from AND :to OR substr(reportDate, 1, 7) = :targetMonth " +
+            "ORDER BY reportDate ASC, id ASC"
+    )
+    suspend fun getDailyReportsForMonthlyExport(
+        targetMonth: String,
+        from: String,
+        to: String
+    ): List<DailyReport>
+
+    @Query(
+        """
+        SELECT expense.*,
+               EXISTS(
+                   SELECT 1
+                   FROM expense_cancellations AS cancellation
+                   WHERE cancellation.expenseId = expense.id
+               ) AS isCancelled
+        FROM expense_records AS expense
+        WHERE expense.expenseDate BETWEEN :from AND :to
+           OR substr(expense.expenseDate, 1, 7) = :targetMonth
+        ORDER BY expense.expenseDate ASC, expense.createdAt ASC, expense.id ASC
+        """
+    )
+    suspend fun getExpenseVisibilityForMonthlyExport(
+        targetMonth: String,
+        from: String,
+        to: String
+    ): List<ExpenseVisibilityRecord>
+
+    @Query(
+        """
+        SELECT link.expenseId AS expenseId,
+               evidence.id AS evidenceId,
+               evidence.captureId AS captureId,
+               evidence.storedUri AS storedUri,
+               evidence.byteSize AS byteSize,
+               evidence.sha256 AS sha256,
+               evidence.createdAt AS createdAt,
+               evidence.storedAt AS storedAt
+        FROM expense_evidence_links AS link
+        INNER JOIN evidence_records AS evidence ON evidence.id = link.evidenceId
+        INNER JOIN expense_records AS expense ON expense.id = link.expenseId
+        WHERE (expense.expenseDate BETWEEN :from AND :to
+           OR substr(expense.expenseDate, 1, 7) = :targetMonth)
+          AND evidence.state = 'stored'
+          AND evidence.storedAt IS NOT NULL
+        ORDER BY expense.expenseDate ASC, expense.createdAt ASC, expense.id ASC,
+                 link.linkedAt ASC, evidence.id ASC
+        """
+    )
+    suspend fun getStoredExpenseEvidenceForMonthlyExport(
+        targetMonth: String,
+        from: String,
+        to: String
+    ): List<ExpenseEvidenceRecord>
+
+    /**
+     * Reads every monthly export input under one Room read transaction. The returned records are
+     * immutable source data; export generation never writes back to accounting tables.
+     */
+    @Transaction
+    suspend fun getMonthlyExportSourceSnapshot(
+        targetMonth: String,
+        from: String,
+        to: String
+    ): MonthlyExportSourceSnapshot = MonthlyExportSourceSnapshot(
+        dailyReports = getDailyReportsForMonthlyExport(targetMonth, from, to),
+        expenseVisibility = getExpenseVisibilityForMonthlyExport(targetMonth, from, to),
+        storedEvidence = getStoredExpenseEvidenceForMonthlyExport(targetMonth, from, to)
+    )
+
+    @Query(
         """
         SELECT expense.*
         FROM expense_records AS expense
@@ -111,6 +185,23 @@ interface WarunDao {
 
     @Query("SELECT * FROM monthly_submissions ORDER BY targetMonth DESC")
     fun observeMonthlySubmissions(): Flow<List<MonthlySubmission>>
+
+    @Query(
+        "SELECT * FROM electronic_submission_records " +
+            "ORDER BY generatedAt DESC, id DESC"
+    )
+    fun observeElectronicSubmissionRecords(): Flow<List<ElectronicSubmissionRecord>>
+
+    @Query(
+        "SELECT * FROM electronic_submission_records WHERE targetMonth = :targetMonth " +
+            "ORDER BY generatedAt DESC, id DESC"
+    )
+    fun observeElectronicSubmissionRecordsByMonth(
+        targetMonth: String
+    ): Flow<List<ElectronicSubmissionRecord>>
+
+    @Query("SELECT * FROM electronic_submission_records WHERE id = :id")
+    suspend fun getElectronicSubmissionRecord(id: String): ElectronicSubmissionRecord?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertDailyReport(report: DailyReport)
@@ -309,6 +400,30 @@ interface WarunDao {
 
     @Upsert
     suspend fun upsertMonthlySubmission(submission: MonthlySubmission)
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertElectronicSubmissionRecord(record: ElectronicSubmissionRecord)
+
+    @Query(
+        "UPDATE electronic_submission_records " +
+            "SET note = :note, updatedAt = :updatedAt WHERE id = :id"
+    )
+    suspend fun updateElectronicSubmissionNote(
+        id: String,
+        note: String?,
+        updatedAt: Long
+    ): Int
+
+    @Query(
+        "UPDATE electronic_submission_records " +
+            "SET status = 'submitted', submittedAt = :submittedAt, updatedAt = :updatedAt " +
+            "WHERE id = :id AND status = 'not_submitted' AND submittedAt IS NULL"
+    )
+    suspend fun markElectronicSubmissionSubmitted(
+        id: String,
+        submittedAt: Long,
+        updatedAt: Long
+    ): Int
 
     @Upsert
     suspend fun upsertAppSettings(settings: AppSettings)

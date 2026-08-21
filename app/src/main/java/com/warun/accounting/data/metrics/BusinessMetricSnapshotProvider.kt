@@ -81,6 +81,22 @@ class BusinessMetricSnapshotProvider private constructor(
     private val observeDailyReports: () -> Flow<List<DailyReport>>,
     private val observeExpenseVisibilityRecords: () -> Flow<List<ExpenseVisibilityRecord>>,
 ) {
+    companion object {
+        /**
+         * Maps an already consistent repository snapshot through the same production mapping
+         * rules used by [observe]. Export uses this boundary so it cannot invent a second sales
+         * calculation.
+         */
+        internal fun mapSourceSnapshot(
+            request: BusinessMetricSnapshotRequest,
+            reports: List<DailyReport>,
+            visibility: List<ExpenseVisibilityRecord>,
+        ): BusinessMetricSnapshotResult = BusinessMetricSnapshotProvider(
+            dailyReports = kotlinx.coroutines.flow.flowOf(reports),
+            expenseVisibilityRecords = kotlinx.coroutines.flow.flowOf(visibility),
+        ).mapSnapshot(request, reports, visibility)
+    }
+
     @Inject
     constructor(accountingRepository: AccountingRepository) : this(
         observeDailyReports = accountingRepository::observeDailyReports,
