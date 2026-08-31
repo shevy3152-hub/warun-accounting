@@ -96,8 +96,20 @@ JVMテストが`app/build/monthly-export-samples/`へ作成した合成テスト
 - Pixel 8 API 34のconnected instrumentationは118/118 PASS（skip 0、failure 0、error 0）。
 - JVMテストは552/552 PASS。
 - MyKomonへの実アップロードと税理士による実ファイル確認は未実施である。
-- 今回のversionは`versionCode = 3`、`versionName = "0.2.1"`。正式署名とpushは未実施である。
+- 今回のversionは`versionCode = 3`、`versionName = "0.2.1"`。正式署名APKの検証・更新受入はPASSした。
 - 旧v0.2.0署名済みAPKの所在は未確認である。
+
+## MyKomon提出運用checkpoint
+
+- versionCode 3／versionName 0.2.1のMyKomon手動提出支援機能の実装・テストはPASSした。
+- A90 Android 14／API 34の手動受入、Pixel 8 API 34のconnected instrumentation 118/118、正式署名APKの検証・更新受入はPASSした。
+- 正式保管先は`C:\\Users\\user\\Documents\\warun-private\\releases\\warun-accounting-0.2.1-vc3-release.apk`で、APK SHA-256は`985c8ab08fd11216de9a920a14f17e78676745e9b02d77ef4a822179736bfca8`である。
+- 旧正式署名APKとの証明書一致をPASSした。
+- 提出ファイル3件をPCへコピー済み。コピー先は`C:\\Users\\user\\Documents\\warun-private\\submissions\\2026-08`である。
+- MyKomonブラウザ版で共有フォルダを確認したが、現在の顧客設定ではアップロード操作が表示されなかった。
+- 税理士へ提出先または権限設定を問い合わせ中である。
+- MyKomon実アップロードは未実施で、「MyKomonへの提出完了を記録」も未操作である。
+- 税理士回答待ちとして、運用受入のみBLOCKEDである。
 
 ## 今後の運用確認事項
 
