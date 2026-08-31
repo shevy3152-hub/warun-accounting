@@ -23,6 +23,9 @@ data class MonthlyExportArtifacts(
 ) {
     val files: List<File>
         get() = listOfNotNull(dailyReportXlsx, expenseDetailXlsx, receiptPdf)
+
+    val totalBytes: Long
+        get() = files.sumOf { it.length() }
 }
 
 sealed interface ReceiptPdfArtifactResult {
@@ -226,6 +229,8 @@ object ExportCacheContract {
     const val RootDirectory = "submission-exports"
     const val TempSuffix = ".tmp"
     const val FileProviderAuthoritySuffix = ".submission-exports"
+    const val MyKomonSoftTotalBytesLimit = 90_000_000L
+    const val MyKomonHardTotalBytesLimit = 100_000_000L
     // Share targets may keep reading FileProvider URIs after this process or ViewModel is gone.
     const val RetentionMillis = 24L * 60L * 60L * 1_000L
 

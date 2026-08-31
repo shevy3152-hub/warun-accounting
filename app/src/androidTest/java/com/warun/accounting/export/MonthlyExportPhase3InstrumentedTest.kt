@@ -205,6 +205,33 @@ class MonthlyExportPhase3InstrumentedTest {
     }
 
     @Test
+    fun shareIntentIncludesTargetMonthStoreAndAllMimeTypes() {
+        val reference = saveEvidence("ev-share-metadata", 400, 800, Color.GREEN)
+        val snapshot = snapshot(listOf(reference))
+        val result = MonthlyExportArtifactGenerator(
+            context,
+            ReceiptEvidencePdfWriter(store)
+        ).generate(snapshot)
+        val success = result as MonthlyExportArtifactResult.Success
+
+        val intent = MonthlyExportShareGateway(context).createShareIntent(
+            files = success.artifacts.files,
+            targetMonth = "2026-06",
+            storeName = "テスト店舗"
+        )
+
+        assertEquals(
+            listOf(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "application/pdf"
+            ),
+            intent.getStringArrayExtra(Intent.EXTRA_MIME_TYPES)?.toList()
+        )
+        assertEquals("わるん会計 提出資料 テスト店舗 2026-06", intent.getStringExtra(Intent.EXTRA_SUBJECT))
+        assertEquals("店舗：テスト店舗\n対象月：2026-06", intent.getStringExtra(Intent.EXTRA_TEXT))
+    }
+
+    @Test
     fun retentionKeepsYoungGenerationAndDeletesOnlyExpiredUuidDirectChildren() {
         val exportRoot = File(context.cacheDir, ExportCacheContract.RootDirectory).apply {
             check(mkdirs() || isDirectory)

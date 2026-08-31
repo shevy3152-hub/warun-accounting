@@ -4,6 +4,7 @@ import android.net.Uri
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.warun.accounting.data.AccountingRepository
 import com.warun.accounting.data.local.ElectronicSubmissionRecord
 import com.warun.accounting.data.local.ElectronicSubmissionStatus
 import com.warun.accounting.data.local.MonthlySubmission
@@ -13,6 +14,7 @@ import com.warun.accounting.data.submission.ElectronicSubmissionGenerationResult
 import com.warun.accounting.data.submission.ElectronicSubmissionRepository
 import com.warun.accounting.export.MonthlyExportArtifacts
 import com.warun.accounting.export.ExportCacheCleanupResult
+import com.warun.accounting.export.ExportCacheContract
 import com.warun.accounting.export.MonthlyExportSafGateway
 import com.warun.accounting.export.ReceiptPdfArtifactResult
 import com.warun.accounting.export.SafExportCopyResult
@@ -30,6 +32,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -50,6 +54,7 @@ data class ActiveElectronicSubmissionGeneration(
 
 data class ElectronicSubmissionUiState(
     val selectedMonth: YearMonth = YearMonth.now(),
+    val storeName: String? = null,
     val isPreparing: Boolean = true,
     val isGenerating: Boolean = false,
     val activeGeneration: ActiveElectronicSubmissionGeneration? = null,
@@ -69,7 +74,11 @@ sealed interface ElectronicSubmissionUiEffect {
     data class ChooseSaveDestination(val artifact: SubmissionArtifact) :
         ElectronicSubmissionUiEffect
 
-    data class ShareFiles(val files: List<File>) : ElectronicSubmissionUiEffect
+    data class ShareFiles(
+        val files: List<File>,
+        val targetMonth: String? = null,
+        val storeName: String? = null
+    ) : ElectronicSubmissionUiEffect
 }
 
 internal suspend fun <T> runElectronicSubmissionIo(
@@ -81,6 +90,7 @@ internal suspend fun <T> runElectronicSubmissionIo(
 class ElectronicSubmissionViewModel internal constructor(
     private val savedStateHandle: SavedStateHandle,
     private val repository: ElectronicSubmissionRepository,
+    private val observeStoreName: () -> Flow<String?> = { flowOf(null) },
     private val prepareExports: suspend () -> ExportCacheCleanupResult,
     private val generateSubmission: suspend (YearMonth) -> ElectronicSubmissionGenerationResult,
     private val copyToSaf: (File, Uri) -> SafExportCopyResult,
@@ -91,11 +101,17 @@ class ElectronicSubmissionViewModel internal constructor(
     constructor(
         savedStateHandle: SavedStateHandle,
         repository: ElectronicSubmissionRepository,
+        accountingRepository: AccountingRepository,
         coordinator: ElectronicSubmissionGenerationCoordinator,
         safGateway: MonthlyExportSafGateway
     ) : this(
         savedStateHandle = savedStateHandle,
         repository = repository,
+        observeStoreName = {
+            accountingRepository.observeAppSettings().map { settings ->
+                settings?.storeName?.trim()?.takeIf { it.isNotEmpty() }
+            }
+        },
         prepareExports = coordinator::prepare,
         generateSubmission = coordinator::generate,
         copyToSaf = safGateway::copy,
@@ -144,6 +160,11 @@ class ElectronicSubmissionViewModel internal constructor(
                         noteDrafts = drafts
                     )
                 }
+            }
+        }
+        viewModelScope.launch {
+            observeStoreName().collect { storeName ->
+                _state.update { it.copy(storeName = storeName) }
             }
         }
     }
@@ -248,8 +269,27 @@ class ElectronicSubmissionViewModel internal constructor(
 
     fun requestShare() {
         if (_state.value.savingFileName != null) return
-        val files = _state.value.activeGeneration?.files?.map { it.file }.orEmpty()
-        if (files.isNotEmpty()) effectChannel.trySend(ElectronicSubmissionUiEffect.ShareFiles(files))
+        val generation = _state.value.activeGeneration
+        val files = generation?.files?.map { it.file }.orEmpty()
+        if (generation != null && generation.artifacts.totalBytes > ExportCacheContract.MyKomonHardTotalBytesLimit) {
+            _state.update {
+                it.copy(
+                    message = "提出ファイルの合計サイズがMyKomonの100MB上限を超えています。" +
+                        "不要なファイルを含めず、税理士へ別の受け渡し方法を確認してください。",
+                    isError = true
+                )
+            }
+            return
+        }
+        if (files.isNotEmpty() && generation != null) {
+            effectChannel.trySend(
+                ElectronicSubmissionUiEffect.ShareFiles(
+                    files = files,
+                    targetMonth = generation.targetMonth,
+                    storeName = _state.value.storeName
+                )
+            )
+        }
     }
 
     fun updateNoteDraft(id: String, input: String) {
@@ -294,9 +334,9 @@ class ElectronicSubmissionViewModel internal constructor(
                 it.copy(
                     submittingIds = it.submittingIds - id,
                     message = if (success) {
-                        "MyKomonへ手動アップロード済みとして記録しました。"
+                        "MyKomonへの提出完了をローカル記録しました。"
                     } else {
-                        "提出済み記録を更新できませんでした。すでに記録済みか確認してください。"
+                        "手動提出記録を更新できませんでした。すでに記録済みか確認してください。"
                     },
                     isError = !success
                 )

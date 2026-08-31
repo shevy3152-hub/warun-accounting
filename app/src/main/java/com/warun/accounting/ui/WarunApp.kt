@@ -1081,7 +1081,7 @@ private fun HomePrimaryActions(onNavigate: (String) -> Unit) {
             )
         }
         Text(
-            text = "レシート撮影は次フェーズです。初期実装では購入日ベースの仮登録を行います。",
+            text = "保存済みEvidenceを、対象月の提出用レシートPDFへまとめられます。",
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             style = MaterialTheme.typography.bodySmall
         )
@@ -3927,7 +3927,7 @@ private fun MonthlyOrganizationScreen(
         DashboardCard(containerColor = Color(0xFFEFF6FF)) {
             Text("税理士向け電子提出", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Text(
-                "月次ファイルを作成し、MyKomonへ手動アップロードした後に提出済みを記録します。",
+                "月次ファイルを作成し、MyKomonへ手動アップロードした後に手動提出記録を保存します。",
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             PrimaryActionButton(

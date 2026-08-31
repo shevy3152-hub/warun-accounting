@@ -19,6 +19,8 @@ import java.io.File
 import java.io.FileOutputStream
 import java.text.NumberFormat
 import java.util.Locale
+import kotlin.math.floor
+import kotlin.math.sqrt
 import javax.inject.Inject
 
 enum class ReceiptPdfFailureReason {
@@ -183,7 +185,38 @@ class ReceiptEvidencePdfWriter @Inject constructor(
                 inPreferredConfig = Bitmap.Config.ARGB_8888
             }
         ) ?: decodeFailure(evidenceId)
-        return orient(decoded, file, evidenceId)
+        return scaleForSubmission(orient(decoded, file, evidenceId), evidenceId)
+    }
+
+    /**
+     * PdfDocument stores Canvas bitmaps as raster image objects. Keep the original Evidence
+     * untouched, but cap the submission-only copy so a camera-resolution receipt does not turn
+     * into a hundreds-of-megabytes lossless PDF.
+     */
+    private fun scaleForSubmission(bitmap: Bitmap, evidenceId: String): Bitmap {
+        val scale = minOf(
+            1f,
+            MaxSubmissionDimension.toFloat() / bitmap.width,
+            MaxSubmissionDimension.toFloat() / bitmap.height,
+            sqrt(MaxSubmissionPixels.toDouble() / (bitmap.width.toLong() * bitmap.height))
+                .toFloat()
+        )
+        if (scale >= 1f) return bitmap
+        val targetWidth = maxOf(1, floor(bitmap.width * scale).toInt())
+        val targetHeight = maxOf(1, floor(bitmap.height * scale).toInt())
+        return try {
+            Bitmap.createScaledBitmap(bitmap, targetWidth, targetHeight, true).also { scaled ->
+                if (scaled !== bitmap) bitmap.recycle()
+            }
+        } catch (error: Throwable) {
+            bitmap.recycle()
+            throw ReceiptPdfGenerationException(
+                ReceiptPdfFailureReason.IMAGE_DECODE_FAILED,
+                evidenceId,
+                "提出用Evidence画像を縮小できません",
+                error
+            )
+        }
     }
 
     private fun orient(bitmap: Bitmap, file: File, evidenceId: String): Bitmap {
@@ -249,7 +282,12 @@ class ReceiptEvidencePdfWriter @Inject constructor(
     )
 
     private companion object {
-        const val MaxDecodedDimension = 4096
-        const val MaxDecodedPixels = 8_000_000L
+        // Decode one image at a time and keep the temporary working bitmap bounded.
+        const val MaxDecodedDimension = 2048
+        const val MaxDecodedPixels = 4_000_000L
+        // A4 output remains readable at roughly 2x the PDF point grid while keeping MyKomon
+        // submissions comfortably below its 100 MB / 10-file limit for ordinary camera images.
+        const val MaxSubmissionDimension = 1600
+        const val MaxSubmissionPixels = 1_600_000L
     }
 }

@@ -1,6 +1,10 @@
 package com.warun.accounting.ui.submit
 
+import android.content.ActivityNotFoundException
+import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -42,6 +46,7 @@ import com.warun.accounting.data.local.ElectronicSubmissionStatus
 import com.warun.accounting.data.local.MonthlySubmission
 import com.warun.accounting.data.local.MonthlySubmissionStatus
 import com.warun.accounting.export.MonthlyExportShareGateway
+import com.warun.accounting.export.ExportCacheContract
 import com.warun.accounting.ui.viewmodel.ElectronicSubmissionUiEffect
 import com.warun.accounting.ui.viewmodel.ElectronicSubmissionViewModel
 import com.warun.accounting.ui.viewmodel.SubmissionArtifact
@@ -85,9 +90,18 @@ fun ElectronicSubmissionScreen(
                     }
                 }
                 is ElectronicSubmissionUiEffect.ShareFiles -> {
-                    val shareIntent = MonthlyExportShareGateway(context.applicationContext)
-                        .createShareIntent(effect.files)
-                    context.startActivity(Intent.createChooser(shareIntent, "提出ファイルを共有"))
+                    val gateway = MonthlyExportShareGateway(context.applicationContext)
+                    val shareIntent = gateway.createShareIntent(
+                        files = effect.files,
+                        targetMonth = effect.targetMonth,
+                        storeName = effect.storeName
+                    )
+                    context.startActivity(
+                        Intent.createChooser(
+                            shareIntent,
+                            "提出ファイルを共有"
+                        )
+                    )
                 }
             }
         }
@@ -106,7 +120,7 @@ fun ElectronicSubmissionScreen(
             )
             Text(
                 "アプリは提出ファイルの作成・保存・共有だけを行います。" +
-                    "MyKomonへの自動送信は行いません。",
+                    "MyKomonへの自動送信は行いません。対応アプリがある場合だけ共有先として優先表示します。",
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
@@ -143,7 +157,8 @@ fun ElectronicSubmissionScreen(
                         modifier = Modifier.padding(16.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text("今回作成したファイル", fontWeight = FontWeight.Bold)
+                        Text("提出ファイルを端末に保存", fontWeight = FontWeight.Bold)
+                        SubmissionSizeSummary(active.artifacts.totalBytes)
                         active.files.forEach { artifact ->
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -170,7 +185,7 @@ fun ElectronicSubmissionScreen(
                             enabled = state.savingFileName == null,
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text("完成ファイルをまとめて共有")
+                            Text("その他の方法で共有")
                         }
                     }
                 }
@@ -219,18 +234,18 @@ fun ElectronicSubmissionScreen(
     confirmSubmitted?.let { record ->
         AlertDialog(
             onDismissRequest = { confirmSubmitted = null },
-            title = { Text("MyKomonへ提出済みとして記録しますか？") },
+            title = { Text("MyKomonへの提出完了を記録しますか？") },
             text = {
                 Text(
                     "利用者がMyKomonへ手動アップロードしたことを確認してから記録してください。" +
-                        "記録後は未提出へ戻せません。"
+                        "この操作自体はMyKomonへファイルを送信しません。記録後は未提出へ戻せません。"
                 )
             },
             confirmButton = {
                 OutlinedButton(onClick = {
                     confirmSubmitted = null
                     viewModel.markSubmitted(record.id)
-                }) { Text("提出済みとして記録") }
+                }) { Text("MyKomonへの提出完了を記録") }
             },
             dismissButton = {
                 TextButton(onClick = { confirmSubmitted = null }) { Text("キャンセル") }
@@ -302,6 +317,7 @@ private fun ReadOnlyCheck(label: String, checked: Boolean) {
 
 @Composable
 private fun ManualUploadCard() {
+    val context = LocalContext.current
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
@@ -315,13 +331,72 @@ private fun ManualUploadCard() {
             Text("2. 端末へ保存、または共有で取り出す")
             Text("3. 銀行明細PDFをネットバンキングから別途用意する")
             Text("4. 利用者がMyKomonへ手動アップロードする")
-            Text("5. 完了後、この画面で提出済みとして記録する")
+            Text("5. 完了後、この画面でMyKomonへの提出完了を記録する")
+            Button(
+                onClick = { openMyKomon(context) },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("MyKomonを開く") }
+            Text(
+                "公式アプリが起動できない場合は、公式ログインページをブラウザで開きます。",
+                color = MaterialTheme.colorScheme.onSecondaryContainer
+            )
             Text(
                 "アプリはMyKomonへのログイン・アップロード・認証情報保存を行いません。",
                 color = MaterialTheme.colorScheme.onSecondaryContainer,
                 fontWeight = FontWeight.Bold
             )
         }
+    }
+}
+
+@Composable
+private fun SubmissionSizeSummary(totalBytes: Long) {
+    val label = "提出ファイル合計：${formatBytes(totalBytes)}"
+    when {
+        totalBytes > ExportCacheContract.MyKomonHardTotalBytesLimit -> {
+            Text(
+                "$label（MyKomonの100MB上限を超過。共有前に受け渡し方法を確認してください）",
+                color = MaterialTheme.colorScheme.error,
+                fontWeight = FontWeight.Bold
+            )
+        }
+        totalBytes > ExportCacheContract.MyKomonSoftTotalBytesLimit -> {
+            Text(
+                "$label（90MBを超えています。MyKomonの100MB上限に注意してください）",
+                color = MaterialTheme.colorScheme.error
+            )
+        }
+        else -> Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+private fun formatBytes(value: Long): String = when {
+    value >= 1_000_000L -> String.format(java.util.Locale.JAPAN, "%.1fMB", value / 1_000_000.0)
+    value >= 1_000L -> String.format(java.util.Locale.JAPAN, "%.1fKB", value / 1_000.0)
+    else -> "${value}B"
+}
+
+private fun openMyKomon(context: Context) {
+    val launchIntent = context.packageManager
+        .getLaunchIntentForPackage(MonthlyExportShareGateway.OfficialMyKomonPackage)
+    if (launchIntent != null) {
+        try {
+            context.startActivity(launchIntent)
+            return
+        } catch (_: ActivityNotFoundException) {
+            // Fall through to the official browser login page.
+        } catch (_: SecurityException) {
+            // Fall through when the installed app does not permit external launches.
+        }
+    }
+    try {
+        context.startActivity(
+            Intent(Intent.ACTION_VIEW, Uri.parse(MonthlyExportShareGateway.MyKomonLoginUrl))
+        )
+    } catch (_: ActivityNotFoundException) {
+        Toast.makeText(context, "ブラウザを起動できませんでした。", Toast.LENGTH_SHORT).show()
+    } catch (_: SecurityException) {
+        Toast.makeText(context, "ブラウザを起動できませんでした。", Toast.LENGTH_SHORT).show()
     }
 }
 
@@ -350,9 +425,9 @@ private fun ElectronicHistoryCard(
             if (record.receiptPdfFileName == null) Text("・レシートPDF：Evidenceなしのため未作成")
             Text(
                 if (record.status == ElectronicSubmissionStatus.Submitted) {
-                    "MyKomon提出済み：${record.submittedAt?.let(::formatTime) ?: "日時不明"}"
+                    "手動提出記録済み（MyKomon）：${record.submittedAt?.let(::formatTime) ?: "日時不明"}"
                 } else {
-                    "MyKomon未提出"
+                    "手動提出未記録"
                 },
                 fontWeight = FontWeight.Bold
             )
@@ -378,7 +453,7 @@ private fun ElectronicHistoryCard(
                     onClick = onConfirmSubmitted,
                     enabled = !submitting,
                     modifier = Modifier.fillMaxWidth()
-                ) { Text(if (submitting) "記録中…" else "MyKomonへ提出済みとして記録") }
+                ) { Text(if (submitting) "記録中…" else "MyKomonへの提出完了を記録") }
             }
         }
     }

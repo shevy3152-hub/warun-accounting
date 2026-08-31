@@ -1,6 +1,6 @@
 # DEV_STATE
 
-最終確認日: 2026-08-21
+最終確認日: 2026-08-31
 
 ## Git基準
 
@@ -8,7 +8,7 @@
 - 実装開始時のHEAD: `89241cae34a978f7358bfd2483e44f4b72b81f03`
 - 電子提出対応、Room v16、関連テスト・文書とversion更新はローカルcommit済みである。
 - `output/manual/warun_accounting_manual.docx` と `output/pdf/warun_accounting_manual.pdf` はユーザー作成の未追跡ファイルとして保持し、変更・削除していない。
-- Androidアプリのversionは`versionCode = 2`、`versionName = "0.2.0"`。
+- Androidアプリの次回リリース準備 version は `versionCode = 3`、`versionName = "0.2.1"`。
 
 ## DB・Migration・バックアップ
 
@@ -83,6 +83,21 @@ JVMテストが`app/build/monthly-export-samples/`へ作成した合成テスト
 - Room v15からv16へのMigration、既存のテスト用日報・支出データ、Evidence、過去の紙提出履歴の保持を確認し、PASSした。
 - 更新後の署名版で日報XLSX、支出明細XLSX、Evidence PDFの生成、SAF保存、Android共有を確認し、PASSした。
 - MyKomonへの提出は、利用者が生成ファイルを確認して手動アップロードする。
+
+## 2026-08-31 MyKomon提出導線・PDF軽量化受入
+
+- MyKomon公式アプリはACTION_SEND／ACTION_SEND_MULTIPLEの共有先として検出されなかった。
+- MyKomon公式アプリの起動導線と、起動できない場合のブラウザフォールバックを実装した。
+- 提出ファイルの端末保存、その他の方法で共有、MyKomonへの手動提出完了記録を分離した。
+- Intent起動、ファイル保存、共有Chooser表示だけでは提出済みにならず、利用者の明示操作後だけローカル提出履歴を更新する。
+- A90 Android 14／API 34で手動受入をPASSした。Evidence原画像32件は変更していない。
+- レシートPDFは385,578,954 bytesから79,823,663 bytesへ軽量化し、32 Evidence＝32ページを確認した。
+- 日報XLSX、支出明細XLSX、レシートPDFの3ファイル合計は79,831,527 bytesで、MyKomon共有フォルダの合計100MB上限内だった。
+- Pixel 8 API 34のconnected instrumentationは118/118 PASS（skip 0、failure 0、error 0）。
+- JVMテストは552/552 PASS。
+- MyKomonへの実アップロードと税理士による実ファイル確認は未実施である。
+- 今回のversionは`versionCode = 3`、`versionName = "0.2.1"`。正式署名とpushは未実施である。
+- 旧v0.2.0署名済みAPKの所在は未確認である。
 
 ## 今後の運用確認事項
 
