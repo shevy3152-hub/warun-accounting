@@ -5406,7 +5406,8 @@ private fun DailyReport.cashExpense(
         ) +
         cashExpenseCategoryTotal(expenses, reportDate, OtherExpenseCategory) +
         cashExpenseCategoryTotal(expenses, reportDate, VehicleTransportCategory) +
-        utilityExpenseTotal() + communicationExpense + rentExpense + accountantFeeExpense + miscellaneousExpense
+        electricityExpense + waterExpense + communicationExpense + rentExpense +
+        accountantFeeExpense + miscellaneousExpense
 
 private fun DailyReport.totalExpense(
     expenses: List<ExpenseRecord>,

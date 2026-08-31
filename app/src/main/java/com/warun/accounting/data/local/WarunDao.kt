@@ -218,8 +218,49 @@ interface WarunDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertExpenseEvidenceLink(link: ExpenseEvidenceLinkRecord): Long
 
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertFixedCostReceiptApplication(
+        application: FixedCostReceiptApplicationRecord
+    ): Long
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertFixedCostEvidenceLink(link: FixedCostEvidenceLinkRecord): Long
+
     @Query("SELECT * FROM evidence_records WHERE id = :evidenceId")
     suspend fun getEvidenceRecord(evidenceId: String): EvidenceRecord?
+
+    @Query("SELECT * FROM fixed_cost_receipt_applications WHERE applicationId = :applicationId")
+    suspend fun getFixedCostReceiptApplication(applicationId: String): FixedCostReceiptApplicationRecord?
+
+    @Query("SELECT * FROM fixed_cost_receipt_applications WHERE receiptId = :receiptId")
+    suspend fun getFixedCostReceiptApplicationByReceipt(
+        receiptId: String
+    ): FixedCostReceiptApplicationRecord?
+
+    @Query(
+        "SELECT * FROM fixed_cost_receipt_applications " +
+            "WHERE dailyReportId = :dailyReportId AND fixedCostType = :fixedCostType"
+    )
+    suspend fun getFixedCostReceiptApplicationByReportAndType(
+        dailyReportId: String,
+        fixedCostType: String
+    ): FixedCostReceiptApplicationRecord?
+
+    @Query(
+        "SELECT * FROM fixed_cost_evidence_links " +
+            "WHERE applicationId = :applicationId ORDER BY sortOrder ASC"
+    )
+    suspend fun getFixedCostEvidenceLinks(
+        applicationId: String
+    ): List<FixedCostEvidenceLinkRecord>
+
+    @Query(
+        "SELECT COUNT(*) FROM fixed_cost_evidence_links AS link " +
+            "INNER JOIN evidence_records AS evidence ON evidence.id = link.evidenceId " +
+            "WHERE link.applicationId = :applicationId " +
+            "AND evidence.state = 'stored' AND evidence.storedAt IS NOT NULL"
+    )
+    suspend fun countStoredFixedCostEvidence(applicationId: String): Int
 
     @Query("SELECT * FROM expense_records WHERE id = :expenseId")
     suspend fun getExpenseRecord(expenseId: String): ExpenseRecord?
@@ -262,6 +303,9 @@ interface WarunDao {
 
     @Query("SELECT expenseId FROM expense_evidence_links WHERE evidenceId = :evidenceId")
     suspend fun getExpenseIdForEvidence(evidenceId: String): String?
+
+    @Query("SELECT applicationId FROM fixed_cost_evidence_links WHERE evidenceId = :evidenceId")
+    suspend fun getFixedCostApplicationIdForEvidence(evidenceId: String): String?
 
     @Query("SELECT * FROM expense_evidence_links WHERE expenseId = :expenseId ORDER BY linkedAt ASC")
     suspend fun getEvidenceLinksForExpense(expenseId: String): List<ExpenseEvidenceLinkRecord>
@@ -377,7 +421,8 @@ interface WarunDao {
             existing.captureId == evidence.captureId &&
                 existing.storedUri == evidence.storedUri &&
                 existing.byteSize == evidence.byteSize &&
-                existing.sha256 == evidence.sha256
+                existing.sha256 == evidence.sha256 &&
+                existing.mediaType == evidence.mediaType
         ) { "Evidence ID is already used by different content" }
     }
 
@@ -390,6 +435,49 @@ interface WarunDao {
         check(getExpenseIdForEvidence(link.evidenceId) == link.expenseId) {
             "Evidence link could not be persisted"
         }
+    }
+
+    /** Idempotent contract for the future fixed-cost apply flow; it does not create ExpenseRecord. */
+    @Transaction
+    suspend fun ensureFixedCostReceiptApplication(
+        application: FixedCostReceiptApplicationRecord
+    ) {
+        insertFixedCostReceiptApplication(application)
+        check(getFixedCostReceiptApplication(application.applicationId) == application) {
+            "Fixed-cost application ID is already used by different content"
+        }
+        check(getFixedCostReceiptApplicationByReceipt(application.receiptId) == application) {
+            "Receipt is already assigned to another fixed-cost application"
+        }
+        check(
+            getFixedCostReceiptApplicationByReportAndType(
+                application.dailyReportId,
+                application.fixedCostType
+            ) == application
+        ) { "Daily report fixed-cost type is already assigned" }
+    }
+
+    /** Prevents an Evidence record from being owned by both Expense and fixed-cost flows. */
+    @Transaction
+    suspend fun ensureFixedCostEvidenceLink(link: FixedCostEvidenceLinkRecord) {
+        val evidence = getEvidenceRecord(link.evidenceId)
+            ?: error("Fixed-cost Evidence does not exist")
+        check(evidence.state == EvidenceRecordState.Stored && evidence.storedAt != null) {
+            "Fixed-cost Evidence must be stored before linking"
+        }
+        val expenseOwner = getExpenseIdForEvidence(link.evidenceId)
+        check(expenseOwner == null) { "Evidence is already linked to an expense" }
+        val fixedCostOwner = getFixedCostApplicationIdForEvidence(link.evidenceId)
+        check(fixedCostOwner == null || fixedCostOwner == link.applicationId) {
+            "Evidence is already linked to another fixed-cost application"
+        }
+        require(link.sortOrder >= 0) { "Evidence sortOrder must be non-negative" }
+        insertFixedCostEvidenceLink(link)
+        check(
+            getFixedCostEvidenceLinks(link.applicationId).any {
+                it.evidenceId == link.evidenceId && it.sortOrder == link.sortOrder
+            }
+        ) { "Fixed-cost Evidence link could not be persisted" }
     }
 
     @Transaction

@@ -149,3 +149,16 @@ JVMテストが`app/build/monthly-export-samples/`へ作成した合成テスト
 - A90はdebug署名版のままで、正式版への移行は未実施である。
 - MyKomon実アップロードは税理士回答待ちである。
 - v0.2.2は安全なPhase A checkpointであり、固定費証憑フロー完成版ではない。
+
+## Phase C1固定費Evidence基盤checkpoint
+
+- Phase C1基盤を実装済み。
+- Room schema v17、Migration 16→17を追加した。
+- Backup formatVersion 2を採用し、formatVersion 1互換を維持した。
+- Migration16To17Testは1/1 PASS、connected instrumentationは119/119 PASS、JVMは560/560 PASS。
+- A90へinstrumented APKは未導入で、既存データも変更していない。
+- v0.2.2正式APKはRoom v16のまま正式保管済みである。
+- 現在のv17コードは未リリースである。
+- 次工程は固定費専用Journal、JPEG／PNG／PDF保存、固定費Receipt確認フローである。
+- UI、月次PDF統合、A90受入、正式署名は未実施である。
+- versionCode 4、versionName 0.2.2のままである。

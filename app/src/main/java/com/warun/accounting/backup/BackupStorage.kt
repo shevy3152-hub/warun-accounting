@@ -5,6 +5,7 @@ import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import com.warun.accounting.BuildConfig
 import com.warun.accounting.data.local.Migration15To16Schema
+import com.warun.accounting.data.local.Migration16To17Schema
 import com.warun.accounting.data.local.WarunDatabase
 import java.io.File
 import java.io.FileInputStream
@@ -505,8 +506,8 @@ fun interface StagedDatabaseUpgradeInterceptor {
 }
 
 /**
- * Upgrades an already extracted and Evidence-rebased v15 candidate before it can become live.
- * Only the isolated candidate database is opened. The manifest is rewritten and the v16 bundle is
+ * Upgrades an already extracted and Evidence-rebased v15/v16 candidate before it can become live.
+ * Only the isolated candidate database is opened. The manifest is rewritten and the upgraded bundle is
  * fully inspected before stageRestore publishes its token.
  */
 class StagedBackupDatabaseUpgrader(
@@ -519,7 +520,11 @@ class StagedBackupDatabaseUpgrader(
         if (bundle.manifest.roomSchemaVersion == BackupContract.CurrentRoomSchemaVersion) {
             return bundle
         }
-        if (bundle.manifest.roomSchemaVersion != BackupContract.PreviousRoomSchemaVersion) {
+        if (bundle.manifest.roomSchemaVersion !in setOf(
+                BackupContract.LegacyRoomSchemaVersion,
+                BackupContract.PreviousRoomSchemaVersion
+            )
+        ) {
             backupFail(BackupFailure.UnsupportedSchema, "Staged database cannot be upgraded")
         }
 
@@ -534,7 +539,10 @@ class StagedBackupDatabaseUpgrader(
         }
         try {
             database.beginTransaction()
-            Migration15To16Schema.Statements.forEach(database::execSQL)
+            if (bundle.manifest.roomSchemaVersion == BackupContract.LegacyRoomSchemaVersion) {
+                Migration15To16Schema.Statements.forEach(database::execSQL)
+            }
+            Migration16To17Schema.Statements.forEach(database::execSQL)
             interceptor.afterSchemaStatements()
             val updatedIdentity = database.compileStatement(
                 "UPDATE room_master_table SET identity_hash = ? WHERE id = 42"

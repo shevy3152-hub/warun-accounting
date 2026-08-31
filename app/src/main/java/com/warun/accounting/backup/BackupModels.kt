@@ -1,12 +1,16 @@
 package com.warun.accounting.backup
 
 object BackupContract {
-    const val FormatVersion = 1
-    const val CurrentRoomSchemaVersion = 16
-    const val CurrentRoomIdentityHash = "e2b19e095274ae3cace88936de475a41"
-    const val PreviousRoomSchemaVersion = 15
-    const val PreviousRoomIdentityHash = "5bb4c7c0a1ea7a4dd3f4351778db558b"
+    const val FormatVersion = 2
+    const val LegacyFormatVersion = 1
+    const val CurrentRoomSchemaVersion = 17
+    const val CurrentRoomIdentityHash = "43a2c87a4820fd4c21d76c9f2582f297"
+    const val PreviousRoomSchemaVersion = 16
+    const val PreviousRoomIdentityHash = "e2b19e095274ae3cace88936de475a41"
+    const val LegacyRoomSchemaVersion = 15
+    const val LegacyRoomIdentityHash = "5bb4c7c0a1ea7a4dd3f4351778db558b"
     val SupportedRoomIdentityHashes = mapOf(
+        LegacyRoomSchemaVersion to LegacyRoomIdentityHash,
         PreviousRoomSchemaVersion to PreviousRoomIdentityHash,
         CurrentRoomSchemaVersion to CurrentRoomIdentityHash
     )
@@ -114,7 +118,7 @@ internal fun BackupArchiveEntry.validate(
 }
 
 internal fun BackupManifest.validateContract() {
-    if (formatVersion != BackupContract.FormatVersion) {
+    if (formatVersion !in setOf(BackupContract.LegacyFormatVersion, BackupContract.FormatVersion)) {
         backupFail(BackupFailure.UnsupportedFormat, "Unsupported backup format")
     }
     if (roomSchemaVersion !in BackupContract.SupportedRoomIdentityHashes) {

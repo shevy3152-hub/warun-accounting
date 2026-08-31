@@ -128,6 +128,16 @@ class Phase3AggregationTest {
     }
 
     @Test
+    fun gasIsIncludedInExpenseTotalButExcludedFromCashExpense() {
+        val state = DashboardUiState(
+            reports = listOf(report(gas = 7_000, electricity = 2_000, water = 1_000))
+        )
+
+        assertEquals(10_000L, state.expenseTotal)
+        assertEquals(3_000L, state.cashExpenses)
+    }
+
+    @Test
     fun supplierCreditPurchaseTotalsSeparateTokinoYaAndSakatsuAndIgnoreOtherPayments() {
         val month = YearMonth.of(2026, 7)
         val totals = supplierCreditPurchaseTotals(
@@ -162,7 +172,10 @@ class Phase3AggregationTest {
         hasActual: Boolean = false,
         consumables: Long = 0,
         food: Long = 0,
-        alcohol: Long = 0
+        alcohol: Long = 0,
+        gas: Long = 0,
+        electricity: Long = 0,
+        water: Long = 0
     ) = DailyReport(
         id = date,
         reportDate = date,
@@ -177,9 +190,9 @@ class Phase3AggregationTest {
         alcoholPurchases = alcohol,
         consumablesExpense = consumables,
         utilitiesExpense = 0,
-        electricityExpense = 0,
-        gasExpense = 0,
-        waterExpense = 0,
+        electricityExpense = electricity,
+        gasExpense = gas,
+        waterExpense = water,
         communicationExpense = 0,
         rentExpense = 0,
         accountantFeeExpense = 0,

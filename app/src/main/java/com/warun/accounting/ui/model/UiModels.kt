@@ -84,10 +84,14 @@ data class DashboardUiState(
             ) +
             cashExpenseCategoryTotal(reportDate, ExpenseCategory.OtherExpense) +
             cashExpenseCategoryTotal(reportDate, ExpenseCategory.VehicleTransport) +
-            directExpenseTotal()
+            cashDirectExpenseTotal()
 
     private fun DailyReport.directExpenseTotal(): Long =
         utilityExpenseTotal() + communicationExpense + rentExpense + accountantFeeExpense + miscellaneousExpense
+
+    private fun DailyReport.cashDirectExpenseTotal(): Long =
+        electricityExpense + waterExpense + communicationExpense + rentExpense +
+            accountantFeeExpense + miscellaneousExpense
 
     val salesTotal: Long = reports.sumOf { it.salesTotal() }
     val expenseTotal: Long = reports.sumOf { it.expenseTotal() } + expensesWithoutReportsTotal(reports, expenses)

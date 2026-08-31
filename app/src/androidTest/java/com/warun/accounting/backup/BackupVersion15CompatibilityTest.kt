@@ -49,12 +49,12 @@ class BackupVersion15CompatibilityTest {
 
         val inspector = BackupDatabaseInspector()
         val inspection = inspector.inspect(databaseFile)
-        assertEquals(BackupContract.PreviousRoomSchemaVersion, inspection.schemaVersion)
+        assertEquals(BackupContract.LegacyRoomSchemaVersion, inspection.schemaVersion)
         val manifest = BackupManifest(
-            formatVersion = BackupContract.FormatVersion,
+            formatVersion = BackupContract.LegacyFormatVersion,
             createdAtEpochMillis = 1L,
             appVersion = "test-v15",
-            roomSchemaVersion = BackupContract.PreviousRoomSchemaVersion,
+            roomSchemaVersion = BackupContract.LegacyRoomSchemaVersion,
             database = BackupArchiveEntry(
                 path = BackupContract.DatabaseEntry,
                 size = databaseFile.length(),
@@ -73,11 +73,14 @@ class BackupVersion15CompatibilityTest {
         )
 
         val migrated = Room.databaseBuilder(context, WarunDatabase::class.java, databaseName)
-            .addMigrations(DatabaseModule.MIGRATION_15_16)
+            .addMigrations(
+                DatabaseModule.MIGRATION_15_16,
+                DatabaseModule.MIGRATION_16_17
+            )
             .build()
         try {
             val sqlite = migrated.openHelper.writableDatabase
-            assertEquals(16, sqlite.version)
+            assertEquals(17, sqlite.version)
             assertEquals(
                 1L,
                 sqlite.query("SELECT COUNT(*) FROM monthly_submissions").use { cursor ->
@@ -133,7 +136,7 @@ class BackupVersion15CompatibilityTest {
             assertEquals(BackupContract.CurrentRoomSchemaVersion, candidate.manifest.roomSchemaVersion)
             assertEquals(candidate.databaseFile.length(), candidate.manifest.database.size)
             assertEquals(BackupArchive.sha256(candidate.databaseFile), candidate.manifest.database.sha256)
-            assertEquals(16, BackupDatabaseInspector().inspect(candidate.databaseFile).schemaVersion)
+            assertEquals(17, BackupDatabaseInspector().inspect(candidate.databaseFile).schemaVersion)
             SQLiteDatabase.openDatabase(
                 candidate.databaseFile.absolutePath,
                 null,
@@ -152,7 +155,7 @@ class BackupVersion15CompatibilityTest {
             assertEquals(RestoreExecutionOutcome.Applied, manager.restore(preview.token).outcome)
             live = Room.databaseBuilder(context, WarunDatabase::class.java, liveName).build()
             val sqlite = live.openHelper.writableDatabase
-            assertEquals(16, sqlite.version)
+            assertEquals(17, sqlite.version)
             assertEquals(
                 1L,
                 sqlite.query("SELECT COUNT(*) FROM monthly_submissions").use { cursor ->
@@ -220,7 +223,7 @@ class BackupVersion15CompatibilityTest {
             assertTrue(
                 paths.restoreRoot.listFiles().orEmpty().none { it.name.startsWith("candidate-") }
             )
-            assertEquals(16, live.openHelper.readableDatabase.version)
+            assertEquals(17, live.openHelper.readableDatabase.version)
         } finally {
             live.close()
             context.deleteDatabase(sourceName)
@@ -264,7 +267,7 @@ class BackupVersion15CompatibilityTest {
             )
         )
         val manifest = BackupManifest(
-            formatVersion = BackupContract.FormatVersion,
+            formatVersion = BackupContract.LegacyFormatVersion,
             createdAtEpochMillis = 1L,
             appVersion = "test-v15",
             roomSchemaVersion = 15,

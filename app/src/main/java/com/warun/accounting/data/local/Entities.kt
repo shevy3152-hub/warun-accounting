@@ -126,7 +126,68 @@ data class EvidenceRecord(
     val state: String,
     val createdAt: Long,
     val storedAt: Long?,
+    val updatedAt: Long,
+    val mediaType: String = "image/jpeg"
+)
+
+@Entity(
+    tableName = "fixed_cost_receipt_applications",
+    foreignKeys = [
+        ForeignKey(
+            entity = ReceiptRecord::class,
+            parentColumns = ["id"],
+            childColumns = ["receiptId"],
+            onDelete = ForeignKey.RESTRICT
+        ),
+        ForeignKey(
+            entity = DailyReport::class,
+            parentColumns = ["id"],
+            childColumns = ["dailyReportId"],
+            onDelete = ForeignKey.RESTRICT
+        )
+    ],
+    indices = [
+        Index(value = ["receiptId"], unique = true),
+        Index(value = ["dailyReportId", "fixedCostType"], unique = true)
+    ]
+)
+data class FixedCostReceiptApplicationRecord(
+    @PrimaryKey val applicationId: String,
+    val receiptId: String,
+    val dailyReportId: String,
+    val fixedCostType: String,
+    val paymentMethod: String,
+    val appliedAt: Long,
     val updatedAt: Long
+)
+
+@Entity(
+    tableName = "fixed_cost_evidence_links",
+    primaryKeys = ["applicationId", "evidenceId"],
+    foreignKeys = [
+        ForeignKey(
+            entity = FixedCostReceiptApplicationRecord::class,
+            parentColumns = ["applicationId"],
+            childColumns = ["applicationId"],
+            onDelete = ForeignKey.CASCADE
+        ),
+        ForeignKey(
+            entity = EvidenceRecord::class,
+            parentColumns = ["id"],
+            childColumns = ["evidenceId"],
+            onDelete = ForeignKey.NO_ACTION
+        )
+    ],
+    indices = [
+        Index(value = ["applicationId", "sortOrder"], unique = true),
+        Index(value = ["evidenceId"], unique = true)
+    ]
+)
+data class FixedCostEvidenceLinkRecord(
+    val applicationId: String,
+    val evidenceId: String,
+    val sortOrder: Int,
+    val linkedAt: Long
 )
 
 @Entity(

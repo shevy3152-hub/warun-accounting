@@ -107,7 +107,7 @@ class BackupArchiveTest {
     @Test
     fun unsupportedSchemaIsRejectedFromManifest() {
         val fixture = fixture()
-        val manifest = fixture.manifest.copy(roomSchemaVersion = 17)
+        val manifest = fixture.manifest.copy(roomSchemaVersion = 18)
 
         assertFailure(BackupFailure.UnsupportedSchema) {
             BackupArchive.manifestBytes(manifest)
@@ -126,12 +126,21 @@ class BackupArchiveTest {
     }
 
     @Test
+    fun formatVersion1ManifestRemainsReadableAfterFormatVersion2() {
+        val fixture = fixture()
+        val legacy = fixture.manifest.copy(formatVersion = BackupContract.LegacyFormatVersion)
+
+        assertEquals(BackupContract.LegacyFormatVersion,
+            BackupManifestXml.read(ByteArrayInputStream(BackupArchive.manifestBytes(legacy))).formatVersion)
+    }
+
+    @Test
     fun restoreValidationRejectsFutureSchemaManifest() {
         val fixture = fixture()
         val futureManifest = String(
             BackupArchive.manifestBytes(fixture.manifest),
             Charsets.UTF_8
-        ).replace("roomSchemaVersion=\"16\"", "roomSchemaVersion=\"17\"")
+        ).replace("roomSchemaVersion=\"17\"", "roomSchemaVersion=\"18\"")
         val bytes = rawZip(
             BackupContract.ManifestEntry to futureManifest.toByteArray(),
             BackupContract.DatabaseEntry to fixture.database.readBytes(),
