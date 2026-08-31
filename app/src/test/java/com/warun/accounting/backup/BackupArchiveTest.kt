@@ -135,6 +135,31 @@ class BackupArchiveTest {
     }
 
     @Test
+    fun formatVersion2PreservesJpegPngAndPdfBytes() {
+        val database = temporaryFolder.newFile("multi-db").apply { writeBytes(byteArrayOf(1)) }
+        val files = listOf(
+            "jpeg" to ("image/jpeg" to byteArrayOf(0xff.toByte(), 0xd8.toByte(), 0xff.toByte(), 1, 0xff.toByte(), 0xd9.toByte())),
+            "png" to ("image/png" to byteArrayOf(137.toByte(), 80, 78, 71, 13, 10, 26, 10, 1)),
+            "pdf" to ("application/pdf" to "%PDF-1.7\n%%EOF".toByteArray())
+        ).associate { (id, pair) -> id to temporaryFolder.newFile("$id.data").apply { writeBytes(pair.second) } }
+        val types = mapOf("jpeg" to "image/jpeg", "png" to "image/png", "pdf" to "application/pdf")
+        val entries = files.map { (id, file) ->
+            BackupEvidenceEntry(id, file.toURI().toString(), BackupArchiveEntry(BackupContract.evidenceEntry(id, types.getValue(id)), file.length(), BackupArchive.sha256(file)), types.getValue(id))
+        }
+        val manifest = fixture().manifest.copy(
+            formatVersion = BackupContract.FormatVersion,
+            database = BackupArchiveEntry(BackupContract.DatabaseEntry, database.length(), BackupArchive.sha256(database)),
+            evidence = entries,
+            summary = fixture().manifest.summary.copy(evidenceCount = entries.size.toLong())
+        )
+        val restored = BackupArchive.extractAndValidate(
+            ByteArrayInputStream(ByteArrayOutputStream().use { output -> BackupArchive.write(output, manifest, database, files); output.toByteArray() }),
+            File(temporaryFolder.root, "multi-restored")
+        )
+        files.forEach { (id, file) -> assertEquals(file.readBytes().toList(), restored.evidenceFiles.getValue(id).readBytes().toList()) }
+    }
+
+    @Test
     fun restoreValidationRejectsFutureSchemaManifest() {
         val fixture = fixture()
         val futureManifest = String(
@@ -196,7 +221,7 @@ class BackupArchiveTest {
         val evidence = (1..evidenceCount).associate { index ->
             val id = "ev-$index"
             id to temporaryFolder.newFile("$id-${System.nanoTime()}.jpg").apply {
-                writeBytes(byteArrayOf(0xff.toByte(), 0xd8.toByte(), index.toByte(), 0xff.toByte(), 0xd9.toByte()))
+                writeBytes(byteArrayOf(0xff.toByte(), 0xd8.toByte(), 0xff.toByte(), index.toByte(), 0xff.toByte(), 0xd9.toByte()))
             }
         }
         val evidenceEntries = evidence.map { (id, file) ->

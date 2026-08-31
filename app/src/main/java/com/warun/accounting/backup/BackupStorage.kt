@@ -47,7 +47,8 @@ data class DatabaseEvidenceMetadata(
     val evidenceId: String,
     val storedUri: String,
     val byteSize: Long,
-    val sha256: String
+    val sha256: String,
+    val mediaType: String
 )
 
 data class DatabaseInspection(
@@ -93,9 +94,13 @@ class BackupDatabaseInspector {
             if (identityHash != expectedIdentityHash) {
                 backupFail(BackupFailure.UnsupportedSchema, "Room schema identity is not supported")
             }
+            val evidenceColumns = if (schema >= 17) {
+                "id, storedUri, byteSize, sha256, state, storedAt, mediaType"
+            } else {
+                "id, storedUri, byteSize, sha256, state, storedAt"
+            }
             val evidence = database.rawQuery(
-                "SELECT id, storedUri, byteSize, sha256, state, storedAt " +
-                    "FROM evidence_records ORDER BY id",
+                "SELECT $evidenceColumns FROM evidence_records ORDER BY id",
                 null
             ).use { cursor ->
                 buildList {
@@ -111,7 +116,8 @@ class BackupDatabaseInspector {
                             evidenceId = cursor.getString(0),
                             storedUri = cursor.getString(1),
                             byteSize = cursor.getLong(2),
-                            sha256 = cursor.getString(3)
+                            sha256 = cursor.getString(3),
+                            mediaType = if (schema >= 17) cursor.getString(6) else "image/jpeg"
                         )
                         if (!BackupContract.ValidEvidenceId.matches(item.evidenceId) ||
                             item.byteSize <= 0L ||
@@ -186,7 +192,7 @@ class BackupDatabaseInspector {
             evidenceFiles = manifest.evidence.associate { item ->
                 item.evidenceId to File(
                     paths.liveEvidenceDirectory,
-                    "evidence_${item.evidenceId}.jpg"
+                    "evidence_${item.evidenceId}.${item.archiveEntry.path.substringAfterLast('.')}"
                 )
             }
         )
@@ -194,7 +200,7 @@ class BackupDatabaseInspector {
         manifest.evidence.forEach { item ->
             val expectedUri = File(
                 paths.liveEvidenceDirectory,
-                "evidence_${item.evidenceId}.jpg"
+                "evidence_${item.evidenceId}.${item.archiveEntry.path.substringAfterLast('.')}"
             ).toURI().toString()
             if (item.storedUri != expectedUri) {
                 backupFail(BackupFailure.EvidenceMismatch, "Evidence URI is not restorable here")
@@ -351,7 +357,7 @@ class BackupBundleBuilder(
             val evidenceManifest = inspection.evidence.map { metadata ->
                 val source = File(
                     paths.liveEvidenceDirectory,
-                    "evidence_${metadata.evidenceId}.jpg"
+                    "evidence_${metadata.evidenceId}.${BackupContract.evidenceEntry(metadata.evidenceId, metadata.mediaType).substringAfterLast('.')}"
                 )
                 val expectedUri = source.toURI().toString()
                 if (!source.isFile) {
@@ -363,17 +369,18 @@ class BackupBundleBuilder(
                 ) {
                     backupFail(BackupFailure.EvidenceMismatch, "Formal Evidence does not match DB")
                 }
-                val staged = File(evidenceDirectory, "${metadata.evidenceId}.jpg")
+                val staged = File(evidenceDirectory, BackupContract.evidenceEntry(metadata.evidenceId, metadata.mediaType).substringAfterLast('/'))
                 copyAndSync(source, staged)
                 evidenceFiles[metadata.evidenceId] = staged
                 BackupEvidenceEntry(
                     evidenceId = metadata.evidenceId,
                     storedUri = metadata.storedUri,
                     archiveEntry = BackupArchiveEntry(
-                        path = BackupContract.evidenceEntry(metadata.evidenceId),
+                        path = BackupContract.evidenceEntry(metadata.evidenceId, metadata.mediaType),
                         size = metadata.byteSize,
                         sha256 = metadata.sha256
-                    )
+                    ),
+                    mediaType = metadata.mediaType
                 )
             }
             val manifest = BackupManifest(
@@ -437,7 +444,7 @@ class StagedEvidenceUriRebaser(
         val replacements = bundle.manifest.evidence.mapNotNull { item ->
             val currentUri = File(
                 paths.liveEvidenceDirectory,
-                "evidence_${item.evidenceId}.jpg"
+                "evidence_${item.evidenceId}.${item.archiveEntry.path.substringAfterLast('.')}"
             ).toURI().toString()
             item.takeIf { it.storedUri != currentUri }?.let { it to currentUri }
         }
@@ -608,7 +615,10 @@ class BackupLiveInstaller(
         bundle.manifest.evidence.forEach { item ->
             copyAndSync(
                 requireNotNull(bundle.evidenceFiles[item.evidenceId]),
-                File(preparedEvidence, "evidence_${item.evidenceId}.jpg")
+                File(
+                    preparedEvidence,
+                    "evidence_${item.evidenceId}.${item.archiveEntry.path.substringAfterLast('.')}"
+                )
             )
         }
         if (paths.liveEvidenceDirectory.exists()) {

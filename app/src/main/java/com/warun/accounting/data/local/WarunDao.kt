@@ -209,6 +209,15 @@ interface WarunDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertReceipt(receipt: ReceiptRecord)
 
+    @Query("SELECT * FROM daily_reports WHERE id = :dailyReportId")
+    suspend fun getDailyReport(dailyReportId: String): DailyReport?
+
+    @Query("SELECT * FROM receipts WHERE id = :receiptId")
+    suspend fun getReceipt(receiptId: String): ReceiptRecord?
+
+    @Query("UPDATE receipts SET isConfirmed = 1, updatedAt = :updatedAt WHERE id = :receiptId AND isConfirmed = 0")
+    suspend fun markReceiptConfirmed(receiptId: String, updatedAt: Long): Int
+
     @Upsert
     suspend fun insertExpenseRecord(expense: ExpenseRecord)
 
@@ -478,6 +487,27 @@ interface WarunDao {
                 it.evidenceId == link.evidenceId && it.sortOrder == link.sortOrder
             }
         ) { "Fixed-cost Evidence link could not be persisted" }
+    }
+
+    @Transaction
+    suspend fun applyFixedCostEvidence(
+        report: DailyReport,
+        receipt: ReceiptRecord,
+        application: FixedCostReceiptApplicationRecord,
+        evidence: List<EvidenceRecord>,
+        links: List<FixedCostEvidenceLinkRecord>
+    ) {
+        check(getDailyReport(report.id) != null) { "Target DailyReport does not exist" }
+        check(getReceipt(receipt.id) != null) { "Target Receipt does not exist" }
+        if (getDailyReport(report.id) != report) {
+            insertDailyReport(report)
+        }
+        ensureFixedCostReceiptApplication(application)
+        for (item in evidence) ensureEvidence(item)
+        for (link in links) ensureFixedCostEvidenceLink(link)
+        check(markReceiptConfirmed(receipt.id, receipt.updatedAt) == 1 || receipt.isConfirmed) {
+            "Receipt confirmation could not be persisted"
+        }
     }
 
     @Transaction

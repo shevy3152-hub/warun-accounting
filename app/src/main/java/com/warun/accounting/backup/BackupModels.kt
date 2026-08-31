@@ -25,10 +25,17 @@ object BackupContract {
     const val MaxEntries = 10_000
     val ValidEvidenceId = Regex("[A-Za-z0-9-]+")
     val ValidSha256 = Regex("[0-9a-f]{64}")
+    val SupportedEvidenceMediaTypes = setOf("image/jpeg", "image/png", "application/pdf")
 
-    fun evidenceEntry(evidenceId: String): String {
+    fun evidenceEntry(evidenceId: String, mediaType: String = "image/jpeg"): String {
         require(ValidEvidenceId.matches(evidenceId))
-        return "evidence/$evidenceId.jpg"
+        val extension = when (mediaType.substringBefore(';').lowercase()) {
+            "image/jpeg" -> "jpg"
+            "image/png" -> "png"
+            "application/pdf" -> "pdf"
+            else -> error("Unsupported Evidence MIME")
+        }
+        return "evidence/$evidenceId.$extension"
     }
 }
 
@@ -41,7 +48,8 @@ data class BackupArchiveEntry(
 data class BackupEvidenceEntry(
     val evidenceId: String,
     val storedUri: String,
-    val archiveEntry: BackupArchiveEntry
+    val archiveEntry: BackupArchiveEntry,
+    val mediaType: String = "image/jpeg"
 )
 
 data class BackupSummary(
@@ -137,11 +145,12 @@ internal fun BackupManifest.validateContract() {
         if (!BackupContract.ValidEvidenceId.matches(item.evidenceId) ||
             !ids.add(item.evidenceId) ||
             item.storedUri.isBlank() ||
-            item.storedUri.length > 4_096
+            item.storedUri.length > 4_096 ||
+            item.mediaType !in BackupContract.SupportedEvidenceMediaTypes
         ) {
             backupFail(BackupFailure.InvalidManifest, "Invalid Evidence metadata")
         }
-        val expectedPath = BackupContract.evidenceEntry(item.evidenceId)
+        val expectedPath = BackupContract.evidenceEntry(item.evidenceId, item.mediaType)
         item.archiveEntry.validate(expectedPath, BackupContract.MaxEvidenceBytes)
         if (!paths.add(item.archiveEntry.path)) {
             backupFail(BackupFailure.InvalidManifest, "Duplicate Evidence path")

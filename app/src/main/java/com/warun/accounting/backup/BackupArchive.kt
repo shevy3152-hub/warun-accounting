@@ -130,7 +130,8 @@ object BackupArchive {
         manifest.evidence.forEach { item ->
             validateExtracted(
                 item.archiveEntry,
-                requireNotNull(extracted[item.archiveEntry.path])
+                requireNotNull(extracted[item.archiveEntry.path]),
+                item.mediaType
             )
         }
         return ValidatedBackupArchive(
@@ -181,7 +182,7 @@ object BackupArchive {
         }
         val supported = path == BackupContract.ManifestEntry ||
             path == BackupContract.DatabaseEntry ||
-            Regex("evidence/[A-Za-z0-9-]+\\.jpg").matches(path)
+            Regex("evidence/[A-Za-z0-9-]+\\.(jpg|png|pdf)").matches(path)
         if (!supported) {
             backupFail(BackupFailure.UnexpectedArchiveEntry, "Unsupported archive path")
         }
@@ -207,13 +208,29 @@ object BackupArchive {
 
     private fun validateExtracted(
         expected: BackupArchiveEntry,
-        actual: ExtractedEntry
+        actual: ExtractedEntry,
+        mediaType: String? = null
     ) {
         if (expected.size != actual.size) {
             backupFail(BackupFailure.SizeMismatch, "Archive entry size mismatch")
         }
         if (expected.sha256 != actual.sha256) {
             backupFail(BackupFailure.ChecksumMismatch, "Archive checksum mismatch")
+        }
+        mediaType?.let { validateEvidenceSignature(actual.file, it) }
+    }
+
+    private fun validateEvidenceSignature(file: File, mediaType: String) {
+        FileInputStream(file).use { input ->
+            val first = ByteArray(8)
+            val count = input.read(first)
+            val valid = when (mediaType) {
+                "image/jpeg" -> count >= 3 && first[0] == 0xff.toByte() && first[1] == 0xd8.toByte() && first[2] == 0xff.toByte()
+                "image/png" -> count == 8 && first.contentEquals(byteArrayOf(137.toByte(), 80, 78, 71, 13, 10, 26, 10))
+                "application/pdf" -> count >= 5 && first.copyOf(5).contentEquals("%PDF-".toByteArray())
+                else -> false
+            }
+            if (!valid) backupFail(BackupFailure.EvidenceMismatch, "Evidence MIME and signature mismatch")
         }
     }
 

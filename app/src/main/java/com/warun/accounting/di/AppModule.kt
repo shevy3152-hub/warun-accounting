@@ -30,6 +30,10 @@ import com.warun.accounting.data.local.Migration16To17Schema
 import com.warun.accounting.evidence.EvidenceFileStore
 import com.warun.accounting.evidence.EvidenceFilePromoter
 import com.warun.accounting.evidence.EvidenceFinalizationJournal
+import com.warun.accounting.evidence.FixedCostEvidenceFileStore
+import com.warun.accounting.evidence.FixedCostFailureInjector
+import com.warun.accounting.evidence.NoOpFixedCostFailureInjector
+import com.warun.accounting.evidence.FixedCostFinalizationJournal
 import com.warun.accounting.evidence.EvidenceRecoveryNoticeController
 import com.warun.accounting.evidence.SharedPreferencesEvidenceRecoveryAcknowledgementStore
 import com.warun.accounting.future.ReceiptOcrGateway
@@ -713,6 +717,26 @@ object EvidenceStorageModule {
     ): EvidenceFinalizationJournal = EvidenceFinalizationJournal(
         journalDirectory = File(context.filesDir, "accounting-evidence/finalization-journal")
     )
+
+    @Provides
+    @Singleton
+    fun provideFixedCostEvidenceFileStore(@ApplicationContext context: Context): FixedCostEvidenceFileStore =
+        FixedCostEvidenceFileStore(
+            pendingDirectory = File(context.filesDir, "fixed-cost-evidence/pending"),
+            storedDirectory = File(context.filesDir, "fixed-cost-evidence/stored")
+        )
+
+    @Provides
+    @Singleton
+    fun provideFixedCostFinalizationJournal(
+        @ApplicationContext context: Context
+    ): FixedCostFinalizationJournal = FixedCostFinalizationJournal(
+        journalDirectory = File(context.filesDir, "fixed-cost-evidence/journal")
+    )
+
+    @Provides
+    @Singleton
+    fun provideFixedCostFailureInjector(): FixedCostFailureInjector = NoOpFixedCostFailureInjector
 
     @Provides
     @Singleton

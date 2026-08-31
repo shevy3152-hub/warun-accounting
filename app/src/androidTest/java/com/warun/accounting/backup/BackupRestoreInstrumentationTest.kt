@@ -576,10 +576,10 @@ class BackupRestoreInstrumentationTest {
 
     companion object {
         private val TestJpeg = byteArrayOf(
-            0xff.toByte(), 0xd8.toByte(), 0x01, 0x02, 0x03, 0xff.toByte(), 0xd9.toByte()
+            0xff.toByte(), 0xd8.toByte(), 0xff.toByte(), 0x01, 0x02, 0x03, 0xff.toByte(), 0xd9.toByte()
         )
         private val TestJpeg2 = byteArrayOf(
-            0xff.toByte(), 0xd8.toByte(), 0x04, 0x05, 0x06, 0xff.toByte(), 0xd9.toByte()
+            0xff.toByte(), 0xd8.toByte(), 0xff.toByte(), 0x04, 0x05, 0x06, 0xff.toByte(), 0xd9.toByte()
         )
         private fun sha256(bytes: ByteArray) = java.security.MessageDigest.getInstance("SHA-256")
             .digest(bytes)

@@ -234,7 +234,7 @@ class BackupVersion15CompatibilityTest {
 
     private fun version15Archive(context: Context, databaseName: String, root: File): ByteArray {
         val oldUri = "file:/data/user/99/old-warun/evidence_evidence-v15.jpg"
-        val evidenceBytes = byteArrayOf(0xff.toByte(), 0xd8.toByte(), 1, 2, 0xff.toByte(), 0xd9.toByte())
+        val evidenceBytes = byteArrayOf(0xff.toByte(), 0xd8.toByte(), 0xff.toByte(), 1, 2, 0xff.toByte(), 0xd9.toByte())
         val evidenceSha = java.security.MessageDigest.getInstance("SHA-256")
             .digest(evidenceBytes)
             .joinToString("") { "%02x".format(it) }

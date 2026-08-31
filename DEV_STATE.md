@@ -162,3 +162,20 @@ JVMテストが`app/build/monthly-export-samples/`へ作成した合成テスト
 - 次工程は固定費専用Journal、JPEG／PNG／PDF保存、固定費Receipt確認フローである。
 - UI、月次PDF統合、A90受入、正式署名は未実施である。
 - versionCode 4、versionName 0.2.2のままである。
+
+## Phase C2固定費Evidence保存・復旧checkpoint
+
+- Phase C2基盤を実装済み。
+- JPEG／PNG／PDF原本をstream保存し、MIME・実ファイルシグネチャ・サイズ・SHA-256を検証する。
+- Evidenceファイルの上限は50 MiBで、50 MiBちょうどを許可し、1 byte超過を拒否する。
+- 固定費専用Journalを追加し、pending、stored、DB反映、復旧、quarantineを管理する。
+- 複数EvidenceのsortOrderを保持し、全Evidence保存後だけDailyReport、application、link、Receipt確認済み化を行う。
+- ContentResolver途中例外時に部分pending、stored Evidence、EvidenceRecord、application、linkを残さないことを確認した。
+- DB反映後にJournalが残った場合の復旧は冪等で、DailyReport親行のREPLACEによる子行削除を行わない。
+- Backup format v2でJPEG／PNG／PDFの実ファイル往復を確認し、v1 `.jpg`読込互換を維持した。
+- Pixel 8 API 34 connected instrumentationは124/124 PASS、skip 0、failure 0、error 0。
+- JVMテストは564/564 PASS、assembleDebugはPASSした。
+- A90は未接続・未操作で、instrumented APKを導入していない。
+- UI、SAF Picker、Receipt確認画面、月次Evidence PDF統合は未実装である。
+- 現在のv17コードは未リリースである。
+- versionCode 4、versionName 0.2.2のままである。次の正式版では5／0.3.0へ更新予定である。

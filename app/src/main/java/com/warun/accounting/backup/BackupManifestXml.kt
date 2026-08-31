@@ -30,6 +30,9 @@ object BackupManifestXml {
                 evidenceRoot.appendChild(document.createElement("item").also { element ->
                     element.setAttribute("id", item.evidenceId)
                     element.setAttribute("storedUri", item.storedUri)
+                    if (manifest.formatVersion >= BackupContract.FormatVersion) {
+                        element.setAttribute("mediaType", item.mediaType)
+                    }
                     element.setAttribute("path", item.archiveEntry.path)
                     element.setAttribute("size", item.archiveEntry.size.toString())
                     element.setAttribute("sha256", item.archiveEntry.sha256)
@@ -88,15 +91,17 @@ object BackupManifestXml {
         val database = root.singleChild("database").toArchiveEntry()
         val evidenceRoot = root.singleChild("evidence")
         val evidence = evidenceRoot.childElements("item").map { element ->
-            BackupEvidenceEntry(
-                evidenceId = element.requiredAttribute("id"),
-                storedUri = element.requiredAttribute("storedUri"),
+                BackupEvidenceEntry(
+                    evidenceId = element.requiredAttribute("id"),
+                    storedUri = element.requiredAttribute("storedUri"),
                 archiveEntry = BackupArchiveEntry(
                     path = element.requiredAttribute("path"),
                     size = element.requiredLong("size"),
                     sha256 = element.requiredAttribute("sha256")
+                    ),
+                    mediaType = element.getAttribute("mediaType")
+                        .takeIf(String::isNotEmpty) ?: "image/jpeg"
                 )
-            )
         }
         val summary = root.singleChild("summary")
         return BackupManifest(

@@ -1,0 +1,251 @@
+package com.warun.accounting.evidence
+
+import android.content.ContentResolver
+import com.warun.accounting.data.local.DailyReport
+import com.warun.accounting.data.local.EvidenceRecord
+import com.warun.accounting.data.local.EvidenceRecordState
+import com.warun.accounting.data.local.FixedCostEvidenceLinkRecord
+import com.warun.accounting.data.local.FixedCostReceiptApplicationRecord
+import com.warun.accounting.data.local.ReceiptRecord
+import com.warun.accounting.data.local.WarunDao
+import java.io.File
+import java.util.UUID
+import javax.inject.Inject
+import javax.inject.Singleton
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+
+data class FixedCostEvidenceSaveRequest(
+    val receiptId: String,
+    val dailyReportId: String,
+    val fixedCostType: String,
+    val paymentMethod: String,
+    val appliedAmount: Long,
+    val sources: List<FixedCostEvidenceSource>
+)
+
+enum class FixedCostFailurePoint {
+    JournalPrepared,
+    PendingSavedPartially,
+    FirstEvidenceStored,
+    AllEvidenceStored,
+    DatabaseApplied
+}
+
+fun interface FixedCostFailureInjector {
+    fun after(point: FixedCostFailurePoint)
+}
+
+object NoOpFixedCostFailureInjector : FixedCostFailureInjector {
+    override fun after(point: FixedCostFailurePoint) = Unit
+}
+
+@Singleton
+class FixedCostEvidenceSaveCoordinator @Inject constructor(
+    private val dao: WarunDao,
+    private val store: FixedCostEvidenceFileStore,
+    private val journal: FixedCostFinalizationJournal,
+    private val failureInjector: FixedCostFailureInjector
+) {
+    private val mutex = Mutex()
+
+    suspend fun save(
+        resolver: ContentResolver,
+        request: FixedCostEvidenceSaveRequest
+    ) = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            require(request.sources.isNotEmpty()) { "At least one Evidence is required" }
+            require(request.sources.map { it.sortOrder }.distinct().size == request.sources.size) {
+                "Evidence sortOrder must be unique"
+            }
+            val report = dao.getDailyReport(request.dailyReportId)
+                ?: throw FixedCostSaveException("Target DailyReport does not exist")
+            val receipt = dao.getReceipt(request.receiptId)
+                ?: throw FixedCostSaveException("Target Receipt does not exist")
+            if (receipt.isConfirmed) throw FixedCostSaveException("Receipt is already confirmed")
+            if (dao.getFixedCostReceiptApplicationByReceipt(request.receiptId) != null ||
+                dao.getFixedCostReceiptApplicationByReportAndType(
+                    request.dailyReportId,
+                    request.fixedCostType
+                ) != null
+            ) throw FixedCostSaveException("Receipt or fixed-cost type was already applied")
+            val applicationId = UUID.randomUUID().toString()
+            val evidenceIds = request.sources.map { UUID.randomUUID().toString() }
+            val initialEvidence = request.sources.zip(evidenceIds).map { (source, id) ->
+                FixedCostJournalEvidence(
+                    evidenceId = id,
+                    mediaType = source.mediaType.substringBefore(';').lowercase(),
+                    pendingPath = store.pendingFileFor(id, source.mediaType).absolutePath,
+                    finalPath = store.storedFileFor(id, source.mediaType).absolutePath,
+                    sha256 = "",
+                    byteSize = 0L,
+                    sortOrder = source.sortOrder,
+                    state = FixedCostFinalizationState.Prepared
+                )
+            }
+            journal.prepare(
+                applicationId = applicationId,
+                receiptId = request.receiptId,
+                dailyReportId = request.dailyReportId,
+                fixedCostType = request.fixedCostType,
+                paymentMethod = request.paymentMethod,
+                appliedAmount = request.appliedAmount,
+                evidence = initialEvidence
+            )
+            failureInjector.after(FixedCostFailurePoint.JournalPrepared)
+            val pending = request.sources.zip(evidenceIds).mapIndexed { index, (source, id) ->
+                val result = store.savePending(resolver, source, id)
+                if (index == 0 && request.sources.size > 1) {
+                    failureInjector.after(FixedCostFailurePoint.PendingSavedPartially)
+                }
+                result
+            }
+            journal.markPendingSaved(applicationId)
+            val stored = pending.mapIndexed { index, _ ->
+                val result = store.promotePending(evidenceIds[index], request.sources[index].mediaType)
+                journal.markEvidenceStored(applicationId, result.evidenceId, result.finalPath, result.sha256, result.byteSize)
+                if (index == 0) failureInjector.after(FixedCostFailurePoint.FirstEvidenceStored)
+                result
+            }
+            val finalJournal = journal.find(applicationId)
+                ?: throw FixedCostSaveException("Fixed-cost journal disappeared")
+            check(finalJournal.state == FixedCostFinalizationState.AllFilesStored)
+            failureInjector.after(FixedCostFailurePoint.AllEvidenceStored)
+            val application = FixedCostReceiptApplicationRecord(
+                applicationId = applicationId,
+                receiptId = request.receiptId,
+                dailyReportId = request.dailyReportId,
+                fixedCostType = request.fixedCostType,
+                paymentMethod = request.paymentMethod,
+                appliedAt = finalJournal.createdAt,
+                updatedAt = finalJournal.updatedAt
+            )
+            val evidenceRecords = stored.map { result ->
+                EvidenceRecord(
+                    id = result.evidenceId,
+                    captureId = result.evidenceId,
+                    storedUri = File(result.finalPath).toURI().toString(),
+                    byteSize = result.byteSize,
+                    sha256 = result.sha256,
+                    state = EvidenceRecordState.Stored,
+                    createdAt = result.storedAt,
+                    storedAt = result.storedAt,
+                    updatedAt = result.storedAt,
+                    mediaType = result.mediaType
+                )
+            }
+            val links = finalJournal.evidence.map { item ->
+                FixedCostEvidenceLinkRecord(applicationId, item.evidenceId, item.sortOrder, System.currentTimeMillis())
+            }
+            val updatedReport = report.withFixedCostAmount(request.fixedCostType, request.appliedAmount)
+            dao.applyFixedCostEvidence(
+                report = updatedReport,
+                receipt = receipt,
+                application = application,
+                evidence = evidenceRecords,
+                links = links
+            )
+            failureInjector.after(FixedCostFailurePoint.DatabaseApplied)
+            journal.markDatabaseApplied(applicationId)
+            journal.complete(applicationId)
+        }
+    }
+
+    suspend fun recover() = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            journal.loadAll().entries.forEach { entry ->
+                if (entry.state == FixedCostFinalizationState.DatabaseApplied) {
+                    journal.complete(entry.applicationId)
+                    return@forEach
+                }
+                var current = entry
+                current.evidence.filter { it.state != FixedCostFinalizationState.AllFilesStored }
+                    .forEach { item ->
+                        try {
+                            val stored = store.promotePending(item.evidenceId, item.mediaType)
+                            current = journal.markEvidenceStored(
+                                current.applicationId,
+                                stored.evidenceId,
+                                stored.finalPath,
+                                stored.sha256,
+                                stored.byteSize
+                            )
+                        } catch (_: FixedCostEvidenceFileException) {
+                            return@forEach
+                        }
+                    }
+                if (current.state != FixedCostFinalizationState.AllFilesStored) return@forEach
+                val report = dao.getDailyReport(current.dailyReportId) ?: return@forEach
+                val receipt = dao.getReceipt(current.receiptId) ?: return@forEach
+                val evidence = current.evidence.map { item ->
+                    val file = File(item.finalPath)
+                    EvidenceRecord(
+                        id = item.evidenceId, captureId = item.evidenceId,
+                        storedUri = file.toURI().toString(), byteSize = item.byteSize,
+                        sha256 = item.sha256, state = EvidenceRecordState.Stored,
+                        createdAt = file.lastModified(), storedAt = file.lastModified(),
+                        updatedAt = file.lastModified(), mediaType = item.mediaType
+                    )
+                }
+                val application = FixedCostReceiptApplicationRecord(
+                    current.applicationId, current.receiptId, current.dailyReportId,
+                    current.fixedCostType, current.paymentMethod, current.createdAt, current.updatedAt
+                )
+                val links = current.evidence.map { FixedCostEvidenceLinkRecord(current.applicationId, it.evidenceId, it.sortOrder, current.updatedAt) }
+                dao.applyFixedCostEvidence(
+                    report.withFixedCostAmountForRecovery(current.fixedCostType, current.appliedAmount),
+                    receipt,
+                    application,
+                    evidence,
+                    links
+                )
+                journal.markDatabaseApplied(current.applicationId)
+                journal.complete(current.applicationId)
+            }
+        }
+    }
+}
+
+private fun DailyReport.withFixedCostAmount(type: String, amount: Long): DailyReport {
+    val existing = when (type) {
+        FixedCostType.Electricity -> electricityExpense
+        FixedCostType.Water -> waterExpense
+        FixedCostType.Communication -> communicationExpense
+        FixedCostType.Gas -> gasExpense
+        else -> throw FixedCostSaveException("Unsupported fixed-cost type")
+    }
+    if (existing != 0L) throw FixedCostSaveException("Existing fixed-cost amount will not be overwritten")
+    return when (type) {
+        FixedCostType.Electricity -> copy(electricityExpense = amount)
+        FixedCostType.Water -> copy(waterExpense = amount)
+        FixedCostType.Communication -> copy(communicationExpense = amount)
+        FixedCostType.Gas -> copy(gasExpense = amount)
+        else -> error("unreachable")
+    }
+}
+
+private fun DailyReport.withFixedCostAmountForRecovery(type: String, amount: Long): DailyReport {
+    val existing = fixedCostAmount(type)
+    return if (existing == 0L) withFixedCostAmount(type, amount)
+    else if (existing == amount) this
+    else throw FixedCostSaveException("Existing fixed-cost amount conflicts with recovery")
+}
+
+private fun DailyReport.fixedCostAmount(type: String): Long = when (type) {
+    FixedCostType.Electricity -> electricityExpense
+    FixedCostType.Water -> waterExpense
+    FixedCostType.Communication -> communicationExpense
+    FixedCostType.Gas -> gasExpense
+    else -> throw FixedCostSaveException("Unsupported fixed-cost type")
+}
+
+object FixedCostType {
+    const val Electricity = "electricity"
+    const val Water = "water"
+    const val Communication = "communication"
+    const val Gas = "gas"
+}
+
+class FixedCostSaveException(message: String, cause: Throwable? = null) : IllegalStateException(message, cause)
