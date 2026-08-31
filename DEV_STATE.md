@@ -134,3 +134,18 @@ JVMテストが`app/build/monthly-export-samples/`へ作成した合成テスト
 - MyKomon実アップロードは税理士回答待ち。
 - 電気・水道・通信・ガスのEvidence連携は次Phase。
 - A90の正式署名版移行はバックアップ／復元を伴う別工程。
+
+## v0.2.2正式release受入checkpoint
+
+- v0.2.2／versionCode 4の正式署名受入はPASSした。
+- 正式保管先は`C:\\Users\\user\\Documents\\warun-private\\releases\\warun-accounting-0.2.2-vc4-release.apk`である。
+- APKサイズは58,388,658 bytes、SHA-256は`F0F037CC1E73A2EFD544C1539BB805D8C675B10FA036AE19F97A5AA239278154`である。
+- 正式証明書一致をPASSした。
+- Pixel 8 API 34でv0.2.1からv0.2.2への更新をPASSした。
+- Room schema v16のままで、データ消去は行っていない。
+- Phase Aは要確認レシート一覧と提出前警告まで実装済みである。
+- 要確認レシートから日報への反映、確認済み更新、固定費Evidence連携は未実装である。
+- 電気・水道・通信・ガスのEvidence連携は次Phaseである。
+- A90はdebug署名版のままで、正式版への移行は未実施である。
+- MyKomon実アップロードは税理士回答待ちである。
+- v0.2.2は安全なPhase A checkpointであり、固定費証憑フロー完成版ではない。
