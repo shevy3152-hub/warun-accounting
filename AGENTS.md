@@ -6,7 +6,7 @@
 
 - 基準時点: 2026-07-29
 - 基準ブランチ: `feature/ui-foundation`
-- 調査時点の最新コミット: `31fd7ce Add prepaid expense cancellation UI and audit view`
+- 作業開始時に `git rev-parse HEAD`、`git status --short`、`DEV_STATE.md`、実装コードを確認し、調査時点の状態を確定する。
 - 仕様判断は、現在のソースコード、テスト、Room schema JSON、直近コミット、README の順に照合する。
 - `README.md` の「まだ実装しないもの」には、すでに実装済みの CameraX と ML Kit OCR が含まれており、一部が古い。README だけを根拠に現状を後退させない。
 - CI設定、正式なリリース手順、PR規約、コードフォーマッタ／Lintの必須設定は確認できていない。未確定事項として扱い、推測で追加しない。

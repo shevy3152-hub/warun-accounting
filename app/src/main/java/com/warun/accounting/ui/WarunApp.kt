@@ -83,6 +83,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -120,6 +122,8 @@ import com.warun.accounting.data.prepaid.netCashChargeAmount
 import com.warun.accounting.data.prepaid.PrepaidValidationException
 import com.warun.accounting.data.prepaid.PrepaidValidationFailure
 import com.warun.accounting.domain.metrics.MetricPeriod
+import com.warun.accounting.domain.metrics.MetricValue
+import com.warun.accounting.ui.model.BusinessMetricUiState
 import com.warun.accounting.ui.balance.BalanceAnalysisPresentation
 import com.warun.accounting.ui.balance.BalanceAnalysisSource
 import com.warun.accounting.ui.balance.resolveBalanceAnalysis
@@ -176,6 +180,7 @@ import com.warun.accounting.util.cashExpenseAmount
 import com.warun.accounting.util.expenseAmount
 import com.warun.accounting.util.isSupportedPaymentMethod
 import com.warun.accounting.util.PaymentMethodCash
+import com.warun.accounting.util.PaymentMethodCreditPurchase
 import com.warun.accounting.util.PaymentMethodPrepaid
 import com.warun.accounting.util.paymentMethodDisplayName
 import com.warun.accounting.util.normalizePaymentMethod
@@ -207,6 +212,54 @@ private val homeDailyExpensesSource = HomeMetricSource.BUSINESS_METRIC
 private val homeMonthlySalesSource = HomeMetricSource.BUSINESS_METRIC
 private val homeMonthlyExpensesSource = HomeMetricSource.BUSINESS_METRIC
 private val balanceAnalysisSource = BalanceAnalysisSource.BUSINESS_METRIC
+
+internal enum class SidebarSummaryMode { Today, Month }
+internal val defaultSidebarSummaryMode = SidebarSummaryMode.Month
+
+internal data class SupplierCreditPurchaseTotals(
+    val tokinoYa: Long,
+    val sakatsu: Long,
+)
+
+internal fun supplierCreditPurchaseTotals(
+    expenses: List<ExpenseRecord>,
+    targetMonth: YearMonth,
+): SupplierCreditPurchaseTotals {
+    val month = targetMonth.toString()
+    fun totalFor(supplier: String): Long = expenses
+        .asSequence()
+        .filter { it.expenseDate.startsWith(month) }
+        .filter { normalizeSupplierCandidateName(it.supplierName.orEmpty()) == supplier }
+        .filter { normalizePaymentMethod(it.paymentMethod) == PaymentMethodCreditPurchase }
+        .sumOf { it.amount }
+    return SupplierCreditPurchaseTotals(
+        tokinoYa = totalFor("トキノ屋"),
+        sakatsu = totalFor("サカツ"),
+    )
+}
+
+internal fun unconfirmedReceiptsForMonth(
+    receipts: List<ReceiptRecord>,
+    targetMonth: YearMonth,
+): List<ReceiptRecord> = receipts.filter {
+    !it.isConfirmed && it.purchaseDate?.startsWith(targetMonth.toString()) == true
+}
+
+internal fun undatedUnconfirmedReceipts(receipts: List<ReceiptRecord>): List<ReceiptRecord> =
+    receipts.filter { !it.isConfirmed && it.purchaseDate.isNullOrBlank() }
+
+internal data class UnconfirmedReceiptCounts(
+    val datedInMonth: Int,
+    val undatedAllPeriod: Int,
+)
+
+internal fun unconfirmedReceiptCounts(
+    receipts: List<ReceiptRecord>,
+    targetMonth: YearMonth,
+): UnconfirmedReceiptCounts = UnconfirmedReceiptCounts(
+    datedInMonth = unconfirmedReceiptsForMonth(receipts, targetMonth).size,
+    undatedAllPeriod = undatedUnconfirmedReceipts(receipts).size,
+)
 
 private data class PrepaidExpenseUiSnapshot(
     val accounts: List<PrepaidAccountRecord>,
@@ -292,6 +345,7 @@ internal fun topLevelRouteForLabel(label: String): String? =
 
 private object ReceiptRoutes {
     const val Camera = "receipt_camera"
+    const val Unconfirmed = "receipt_unconfirmed"
 }
 
 private const val FoodPurchaseCategory = ExpenseCategory.FoodPurchase
@@ -745,6 +799,15 @@ private fun AppNavHost(
                 onCaptureCleared = { capturedReceipt = null }
             )
         }
+        composable(ReceiptRoutes.Unconfirmed) {
+            ReceiptScreen(
+                uiState = uiState,
+                onNavigate = onNavigateSingleTop,
+                onSaveReceipt = viewModel::saveReceipt,
+                onOpenReceiptCamera = { navController.navigate(ReceiptRoutes.Camera) },
+                showUnconfirmedOnly = true
+            )
+        }
         composable(ReceiptRoutes.Camera) {
             ReceiptCameraScreen(
                 onCaptured = { result ->
@@ -772,7 +835,8 @@ private fun AppNavHost(
                 uiState = uiState,
                 onOpenSubmit = {
                     onNavigateSingleTop(AppDestination.Submit.route)
-                }
+                },
+                onOpenUnconfirmedReceipts = { onNavigateSingleTop(ReceiptRoutes.Unconfirmed) }
             )
         }
         composable(AppDestination.ReportList.route) {
@@ -825,7 +889,10 @@ private fun AppNavHost(
             )
         }
         composable(AppDestination.Submit.route) {
-            ElectronicSubmissionScreen()
+            ElectronicSubmissionScreen(
+                receipts = uiState.receipts,
+                onOpenUnconfirmedReceipts = { onNavigateSingleTop(ReceiptRoutes.Unconfirmed) }
+            )
         }
         composable(AppDestination.Settings.route) {
             SettingsScreen(
@@ -951,16 +1018,49 @@ private fun BottomNavigation(
 }
 @Composable
 private fun SidebarSummary(uiState: DashboardUiState, liveSummary: SidebarSummaryOverride?) {
+    var mode by rememberSaveable { mutableStateOf(defaultSidebarSummaryMode) }
+    val monthlyBusinessMetricViewModel: BusinessMetricViewModel = hiltViewModel(key = "sidebar-monthly")
+    val monthlyBusinessMetricState by monthlyBusinessMetricViewModel.state.collectAsStateWithLifecycle()
+    val month = YearMonth.parse(currentMonthString())
+    val monthPeriod = MetricPeriod.Monthly(month)
+    LaunchedEffect(monthPeriod) { monthlyBusinessMetricViewModel.selectPeriod(monthPeriod) }
     val summary = resolveSidebarSummary(uiState, liveSummary)
-    val salesTotal = summary.salesTotal
-    val estimatedBalance = summary.estimatedBalance
-    val closingCash = summary.closingCash
     DashboardCard(containerColor = Color(0xFF182538)) {
-        Text("今日のサマリー", color = Color.White, fontWeight = FontWeight.Bold)
-        SummaryLine("売上合計", salesTotal.toYen(), Color.White)
-        SummaryLine("概算差額", estimatedBalance.toYen(), Color(0xFF6EE78A))
-        SummaryLine("現金残高", closingCash.toYen(), Color.White)
+        Text("サマリー", color = Color.White, fontWeight = FontWeight.Bold)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            SidebarModeButton("今日", mode == SidebarSummaryMode.Today, { mode = SidebarSummaryMode.Today })
+            SidebarModeButton("今月", mode == SidebarSummaryMode.Month, { mode = SidebarSummaryMode.Month })
+        }
+        if (mode == SidebarSummaryMode.Today) {
+            SummaryLine("売上合計", summary.salesTotal.toYen(), Color.White)
+            SummaryLine("概算差額", summary.estimatedBalance.toYen(), Color(0xFF6EE78A))
+            SummaryLine("現金残高", summary.closingCash.toYen(), Color.White)
+            SummaryLine("現金差額", uiState.todayCashDifference.toYen(), Color.White)
+        } else {
+            val metric = monthlyBusinessMetricState as? BusinessMetricUiState.Success
+            val sales = (metric?.report?.recordedSales?.value as? MetricValue.Amount)?.yen
+            val expenses = (metric?.report?.recordedExpenses?.value as? MetricValue.Amount)?.yen
+            SummaryLine("今月の売上", sales?.toYen() ?: "取得できません", Color.White)
+            SummaryLine("今月の支出", expenses?.toYen() ?: "取得できません", Color.White)
+            SummaryLine(
+                "今月の概算差額",
+                if (sales != null && expenses != null) (sales - expenses).toYen() else "取得できません",
+                Color(0xFF6EE78A)
+            )
+            SummaryLine("要確認レシート", "${unconfirmedReceiptsForMonth(uiState.receipts, month).size}件", Color.White)
+            val undated = undatedUnconfirmedReceipts(uiState.receipts).size
+            if (undated > 0) SummaryLine("日付未設定（全期間）", "${undated}件", Color.White)
+        }
     }
+}
+
+@Composable
+private fun SidebarModeButton(label: String, selected: Boolean, onClick: () -> Unit) {
+    val modifier = Modifier.semantics {
+        contentDescription = "${label}サマリー${if (selected) "、選択中" else ""}"
+    }
+    if (selected) Button(onClick = onClick, modifier = modifier) { Text(label) }
+    else OutlinedButton(onClick = onClick, modifier = modifier) { Text(label) }
 }
 @Composable
 private fun SummaryLine(label: String, value: String, color: Color) {
@@ -1117,7 +1217,7 @@ private fun HomeStatusGrid(
             SummaryCard("現金流出合計", uiState.todayCashOutflow.toYen(), modifier = cardModifier)
             SummaryCard("本日の現金収支", uiState.todayCashFlow.toYen(), modifier = cardModifier)
             SummaryCard("現金差額", uiState.todayCashDifference.toYen(), modifier = cardModifier)
-            SummaryCard("未確認レシート件数", "${uiState.unconfirmedReceiptCount}件", modifier = cardModifier)
+            SummaryCard("要確認レシート件数", "${uiState.unconfirmedReceiptCount}件", modifier = cardModifier)
         }
     }
     DashboardCard {
@@ -1148,8 +1248,10 @@ private fun HomeMonthlyTasks(
     DashboardCard {
         Text("今月のやること", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         AdaptiveSummaryGrid { cardModifier ->
-            SummaryCard("未確認レシート", "${uiState.monthUnconfirmedReceiptCount}件", modifier = cardModifier)
-            SummaryCard("日付未確認", "${uiState.dateUnknownReceiptCount}件", modifier = cardModifier)
+            SummaryCard("要確認レシート", "${uiState.monthUnconfirmedReceiptCount}件", modifier = cardModifier,
+                onClick = { onNavigate(ReceiptRoutes.Unconfirmed) })
+            SummaryCard("日付未設定（全期間）", "${uiState.dateUnknownReceiptCount}件", modifier = cardModifier,
+                onClick = { onNavigate(ReceiptRoutes.Unconfirmed) })
             SummaryCard("下書き日報", "${uiState.monthDraftReportCount}件", modifier = cardModifier)
             SummaryCard("提出状況", uiState.currentMonthSubmissionLabel, modifier = cardModifier)
         }
@@ -1165,11 +1267,13 @@ private fun SummaryCard(
     value: String,
     modifier: Modifier = Modifier.width(168.dp),
     supportingText: String? = null,
+    onClick: (() -> Unit)? = null,
 ) {
     Card(
         shape = RoundedCornerShape(8.dp),
         colors = CardDefaults.cardColors(containerColor = Color(0xFFFBFDFF)),
-        modifier = modifier
+        modifier = modifier.then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .then(if (onClick != null) Modifier.semantics { contentDescription = "$label $value" } else Modifier)
     ) {
         Column(
             modifier = Modifier.padding(14.dp),
@@ -3475,7 +3579,8 @@ private fun ReceiptScreen(
     onSaveReceipt: (ReceiptInput, (Result<Unit>) -> Unit) -> Unit,
     onOpenReceiptCamera: () -> Unit,
     capturedReceipt: ReceiptCaptureResult? = null,
-    onCaptureCleared: () -> Unit,
+    onCaptureCleared: () -> Unit = {},
+    showUnconfirmedOnly: Boolean = false,
     inputStateViewModel: InputStateViewModel = hiltViewModel(),
     receiptOcrViewModel: ReceiptOcrViewModel = hiltViewModel()
 ) {
@@ -3601,22 +3706,34 @@ private fun ReceiptScreen(
             Text("OCR結果は確認用です。内容の自動入力と保存は今後のフェーズで追加します。", color = MaterialTheme.colorScheme.onSurfaceVariant)
             ResponsivePrimaryAction("日報入力へ移動", onClick = { onNavigate(AppDestination.ReportEntry.route) })
         }
-        ReceiptList(uiState.receipts.take(8))
+        ReceiptList(
+            if (showUnconfirmedOnly) uiState.receipts.filter { !it.isConfirmed } else uiState.receipts.take(8),
+            unconfirmedOnly = showUnconfirmedOnly
+        )
     }
 }@Composable
-private fun ReceiptList(receipts: List<ReceiptRecord>) {
+private fun ReceiptList(receipts: List<ReceiptRecord>, unconfirmedOnly: Boolean = false) {
     DashboardCard {
-        Text("最近のレシート", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Text(
+            if (unconfirmedOnly) "要確認レシート一覧" else "最近のレシート",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold
+        )
         if (receipts.isEmpty()) {
-            Text("レシートはまだ登録されていません。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                if (unconfirmedOnly) "要確認レシートはありません。" else "レシートはまだ登録されていません。",
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         } else {
             receipts.forEach { receipt ->
                 TotalRow(receipt.purchaseDate ?: "日付未確認", receipt.totalAmount.toYen())
                 Text(
                     text = listOfNotNull(
-                        receipt.storeName,
-                        receipt.expenseCategory,
-                        if (receipt.isConfirmed) "確認済み" else "未確認"
+                        receipt.storeName?.takeIf { it.isNotBlank() } ?: "支払先未設定",
+                        receipt.purchaseDate?.takeIf { it.isNotBlank() } ?: "日付未設定",
+                        receipt.totalAmount.toYen(),
+                        if (receipt.isConfirmed) "確認済み" else "確認待ち",
+                        if (!receipt.isConfirmed && receipt.purchaseDate.isNullOrBlank()) "日付未設定" else null
                     ).joinToString(" / "),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -3680,7 +3797,7 @@ private fun BalanceScreen(
             onCustomStartChange = { customStartDate = it },
             onCustomEndChange = { customEndDate = it }
         )
-        BalanceSummaryCards(summary)
+        BalanceSummaryCards(summary, uiState, period)
         BusinessAnalysisCard(summary.businessAnalysis, businessMetricAnalysis)
         AdaptiveGrid {
             ExpenseBreakdown(summary.categoryTotals)
@@ -3755,7 +3872,11 @@ private fun PeriodModeButton(
     }
 }
 @Composable
-private fun BalanceSummaryCards(summary: BalanceSummary) {
+private fun BalanceSummaryCards(
+    summary: BalanceSummary,
+    uiState: DashboardUiState,
+    period: BalancePeriod,
+) {
     DashboardCard {
         Text("集計サマリー", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         AdaptiveSummaryGrid { cardModifier ->
@@ -3770,8 +3891,17 @@ private fun BalanceSummaryCards(summary: BalanceSummary) {
             SummaryCard("理論上の現金残高", summary.theoreticalCashBalance.toYen(), modifier = cardModifier)
             SummaryCard("実際の現金残高", summary.actualCashBalance.toYen(), modifier = cardModifier)
             SummaryCard("現金差額", summary.cashDifference.toYen(), modifier = cardModifier)
-            SummaryCard("未確認レシート件数", "${summary.unconfirmedReceiptCount}件", modifier = cardModifier)
+            SummaryCard("要確認レシート件数", "${summary.unconfirmedReceiptCount}件", modifier = cardModifier)
         }
+    }
+    val supplierTotals = supplierCreditPurchaseTotals(
+        uiState.expenses,
+        YearMonth.from(period.start),
+    )
+    DashboardCard {
+        Text("仕入先別（掛け）", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        TotalRow("トキノ屋", supplierTotals.tokinoYa.toYen())
+        TotalRow("サカツ", supplierTotals.sakatsu.toYen())
     }
 }
 
@@ -3893,7 +4023,8 @@ private fun DailyBalanceList(rows: List<DailyBalanceRow>) {
 @Composable
 private fun MonthlyOrganizationScreen(
     uiState: DashboardUiState,
-    onOpenSubmit: () -> Unit
+    onOpenSubmit: () -> Unit,
+    onOpenUnconfirmedReceipts: () -> Unit
 ) {
     var selectedMonth by remember { mutableStateOf(YearMonth.now()) }
     val summary = remember(uiState, selectedMonth) {
@@ -3911,8 +4042,10 @@ private fun MonthlyOrganizationScreen(
         DashboardCard {
             Text("整理状況", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             AdaptiveSummaryGrid { cardModifier ->
-                SummaryCard("未確認レシート", "${summary.unconfirmedReceipts}件", modifier = cardModifier)
-                SummaryCard("日付未確認", "${summary.dateUnknownReceipts}件", modifier = cardModifier)
+                SummaryCard("要確認レシート", "${summary.unconfirmedReceipts}件", modifier = cardModifier,
+                    onClick = onOpenUnconfirmedReceipts)
+                SummaryCard("日付未設定（全期間）", "${summary.dateUnknownReceipts}件", modifier = cardModifier,
+                    onClick = onOpenUnconfirmedReceipts)
                 SummaryCard("下書き日報", "${summary.draftReports}件", modifier = cardModifier)
                 SummaryCard("提出状況", summary.submissionLabel, modifier = cardModifier)
             }
@@ -4914,7 +5047,7 @@ private fun buildMonthlyOrganizationSummary(
         receiptExpenses = receiptExpenses,
         balance = salesTotal - reportExpenses - receiptExpenses,
         unconfirmedReceipts = monthReceipts.count { !it.isConfirmed },
-        dateUnknownReceipts = uiState.receipts.count { it.purchaseDate.isNullOrBlank() },
+        dateUnknownReceipts = undatedUnconfirmedReceipts(uiState.receipts).size,
         draftReports = monthReports.count { it.status == DailyReportStatus.Draft },
         isPaperSubmissionRecorded = submitted,
         submissionLabel = PaperSubmissionCopy.statusLabel(submitted),

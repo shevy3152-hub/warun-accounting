@@ -9,9 +9,11 @@ import com.warun.accounting.ui.model.DashboardUiState
 import com.warun.accounting.ui.util.currentMonthString
 import com.warun.accounting.ui.util.todayString
 import com.warun.accounting.util.PaymentMethodCash
+import com.warun.accounting.util.PaymentMethodCreditPurchase
 import com.warun.accounting.util.ExpenseDateCategoryKey
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import java.time.YearMonth
 
 class Phase3AggregationTest {
     @Test
@@ -125,6 +127,33 @@ class Phase3AggregationTest {
         assertEquals(30_000, state.expenseTotal)
     }
 
+    @Test
+    fun supplierCreditPurchaseTotalsSeparateTokinoYaAndSakatsuAndIgnoreOtherPayments() {
+        val month = YearMonth.of(2026, 7)
+        val totals = supplierCreditPurchaseTotals(
+            listOf(
+                expense("tokino", ExpenseCategory.FoodPurchase, 12_000, "2026-07-31", " トキノ屋 ", PaymentMethodCreditPurchase),
+                expense("sakatsu", ExpenseCategory.AlcoholPurchase, 8_000, "2026-07-01", "サカツ", PaymentMethodCreditPurchase),
+                expense("cash", ExpenseCategory.FoodPurchase, 99_000, "2026-07-15", "トキノ屋", PaymentMethodCash),
+                expense("outside", ExpenseCategory.FoodPurchase, 77_000, "2026-08-01", "トキノ屋", PaymentMethodCreditPurchase),
+            ),
+            month,
+        )
+        assertEquals(12_000L, totals.tokinoYa)
+        assertEquals(8_000L, totals.sakatsu)
+    }
+
+    @Test
+    fun supplierCreditPurchaseTotalsUsesOnlyActiveExpenseInput() {
+        val date = "2026-07-10"
+        val totals = supplierCreditPurchaseTotals(
+            listOf(expense("cancelled", ExpenseCategory.FoodPurchase, 12_000, date, "トキノ屋", PaymentMethodCreditPurchase)),
+            YearMonth.of(2026, 7),
+        )
+        // DashboardUiState receives active ExpenseRecord rows from the repository.
+        assertEquals(12_000L, totals.tokinoYa)
+    }
+
     private fun report(
         date: String = "2026-07-20",
         openingCash: Long = 0,
@@ -170,14 +199,16 @@ class Phase3AggregationTest {
         id: String,
         category: String,
         amount: Long,
-        date: String = "2026-07-20"
+        date: String = "2026-07-20",
+        supplier: String? = null,
+        paymentMethod: String = PaymentMethodCash,
     ) = ExpenseRecord(
         id = id,
         expenseDate = date,
         category = category,
-        supplierName = null,
+        supplierName = supplier,
         amount = amount,
-        paymentMethod = PaymentMethodCash,
+        paymentMethod = paymentMethod,
         memo = null,
         receiptId = null,
         sourceType = ExpenseSourceType.Manual,

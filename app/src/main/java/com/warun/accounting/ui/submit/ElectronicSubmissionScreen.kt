@@ -45,11 +45,13 @@ import com.warun.accounting.data.local.ElectronicSubmissionRecord
 import com.warun.accounting.data.local.ElectronicSubmissionStatus
 import com.warun.accounting.data.local.MonthlySubmission
 import com.warun.accounting.data.local.MonthlySubmissionStatus
+import com.warun.accounting.data.local.ReceiptRecord
 import com.warun.accounting.export.MonthlyExportShareGateway
 import com.warun.accounting.export.ExportCacheContract
 import com.warun.accounting.ui.viewmodel.ElectronicSubmissionUiEffect
 import com.warun.accounting.ui.viewmodel.ElectronicSubmissionViewModel
 import com.warun.accounting.ui.viewmodel.SubmissionArtifact
+import com.warun.accounting.ui.unconfirmedReceiptCounts
 import java.time.Instant
 import java.time.YearMonth
 import java.time.ZoneId
@@ -57,12 +59,15 @@ import java.time.format.DateTimeFormatter
 
 @Composable
 fun ElectronicSubmissionScreen(
+    receipts: List<ReceiptRecord> = emptyList(),
+    onOpenUnconfirmedReceipts: () -> Unit = {},
     viewModel: ElectronicSubmissionViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var pendingSave by remember { mutableStateOf<SubmissionArtifact?>(null) }
     var confirmSubmitted by remember { mutableStateOf<ElectronicSubmissionRecord?>(null) }
+    var showUnconfirmedWarning by remember { mutableStateOf(false) }
     val xlsxSaver = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument(ElectronicSubmissionViewModel.XlsxMimeType)
     ) { destination ->
@@ -138,7 +143,11 @@ fun ElectronicSubmissionScreen(
         }
         item {
             Button(
-                onClick = viewModel::generate,
+                onClick = {
+                    val counts = unconfirmedReceiptCounts(receipts, state.selectedMonth)
+                    if (counts.datedInMonth > 0 || counts.undatedAllPeriod > 0) showUnconfirmedWarning = true
+                    else viewModel.generate()
+                },
                 enabled = state.canGenerate,
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -260,6 +269,40 @@ fun ElectronicSubmissionScreen(
             text = { Text(message) },
             confirmButton = {
                 TextButton(onClick = viewModel::dismissMessage) { Text("閉じる") }
+            }
+        )
+    }
+
+    if (showUnconfirmedWarning) {
+        val month = state.selectedMonth.toString()
+        val counts = unconfirmedReceiptCounts(receipts, state.selectedMonth)
+        val dated = counts.datedInMonth
+        val undated = counts.undatedAllPeriod
+        AlertDialog(
+            onDismissRequest = { showUnconfirmedWarning = false },
+            title = { Text("要確認レシートがあります") },
+            text = {
+                Text(
+                    "対象月: $month\n" +
+                        "対象月の要確認: ${dated}件\n" +
+                        "日付未設定（全期間）: ${undated}件\n\n" +
+                        "要確認Receiptは支出明細XLSXとEvidence PDFへ含まれません。提出前に確認することを推奨します。"
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    showUnconfirmedWarning = false
+                    onOpenUnconfirmedReceipts()
+                }) { Text("レシートを確認する") }
+            },
+            dismissButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = { showUnconfirmedWarning = false }) { Text("キャンセル") }
+                    OutlinedButton(onClick = {
+                        showUnconfirmedWarning = false
+                        viewModel.generate()
+                    }) { Text("今回は除外して作成") }
+                }
             }
         )
     }

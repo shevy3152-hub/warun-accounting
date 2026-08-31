@@ -124,7 +124,9 @@ data class DashboardUiState(
     val monthExpensesTotal: Long = monthReports.sumOf { it.expenseTotal() } + expensesWithoutReportsTotal(monthReports, monthExpenses)
     val monthEstimatedBalance: Long = monthSales - monthExpensesTotal
     val unconfirmedReceiptCount: Int = receipts.count { !it.isConfirmed }
-    val dateUnknownReceiptCount: Int = receipts.count { it.purchaseDate.isNullOrBlank() }
+    val dateUnknownReceiptCount: Int = receipts.count {
+        !it.isConfirmed && it.purchaseDate.isNullOrBlank()
+    }
     val monthUnconfirmedReceiptCount: Int = monthReceipts.count { !it.isConfirmed }
     val monthDraftReportCount: Int = monthReports.count { it.status == DailyReportStatus.Draft }
     val currentMonthSubmitted: Boolean = monthlySubmissions.any {
