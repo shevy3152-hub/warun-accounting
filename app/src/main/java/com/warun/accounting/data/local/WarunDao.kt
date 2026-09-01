@@ -10,6 +10,20 @@ import androidx.room.Upsert
 import com.warun.accounting.data.export.MonthlyExportSourceSnapshot
 import kotlinx.coroutines.flow.Flow
 
+data class FixedCostEvidenceStatusRow(
+    val dailyReportId: String,
+    val fixedCostType: String,
+    val applicationId: String,
+    val evidenceId: String?,
+    val captureId: String?,
+    val storedUri: String?,
+    val byteSize: Long?,
+    val sha256: String?,
+    val createdAt: Long?,
+    val storedAt: Long?,
+    val mediaType: String?
+)
+
 @Dao
 interface WarunDao {
     @Query("SELECT * FROM daily_reports ORDER BY reportDate DESC")
@@ -69,6 +83,33 @@ interface WarunDao {
         """
     )
     fun observeStoredExpenseEvidence(): Flow<List<ExpenseEvidenceRecord>>
+
+    @Query(
+        """
+        SELECT application.dailyReportId AS dailyReportId,
+               application.fixedCostType AS fixedCostType,
+               application.applicationId AS applicationId,
+               evidence.id AS evidenceId,
+               evidence.captureId AS captureId,
+               evidence.storedUri AS storedUri,
+               evidence.byteSize AS byteSize,
+               evidence.sha256 AS sha256,
+               evidence.createdAt AS createdAt,
+               evidence.storedAt AS storedAt,
+               evidence.mediaType AS mediaType
+        FROM fixed_cost_receipt_applications AS application
+        LEFT JOIN fixed_cost_evidence_links AS link
+          ON link.applicationId = application.applicationId
+        LEFT JOIN evidence_records AS evidence
+          ON evidence.id = link.evidenceId
+         AND evidence.state = 'stored'
+         AND evidence.storedAt IS NOT NULL
+        ORDER BY application.dailyReportId ASC,
+                 application.fixedCostType ASC,
+                 link.sortOrder ASC
+        """
+    )
+    fun observeFixedCostEvidenceStatuses(): Flow<List<FixedCostEvidenceStatusRow>>
 
     @Query(
         "SELECT * FROM daily_reports " +

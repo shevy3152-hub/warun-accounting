@@ -226,3 +226,17 @@ JVMテストが`app/build/monthly-export-samples/`へ作成した合成テスト
 - 月次Evidence PDFへの固定費統合は未実装である。
 - 正式署名版v0.2.3は未作成であり、MyKomon実提出も未実施である。
 - versionCode 5、versionName 0.2.3を試験運用版として確定した。
+
+## 固定費Evidence日報表示・Viewer checkpoint
+
+- 固定費4種（電気代、水道代、通信費、ガス代）の日報Evidence状態表示を実装した。
+- 金額0円・Applicationなしは強調せず、金額あり・未登録は「証憑未登録」、Applicationあり・stored 0件は「証憑要確認」、stored件数ありは「証憑n件」と表示する。
+- stored Evidenceだけを件数へ算入し、pending等は除外する。sortOrderと日報IDによる分離、重複なしを確認した。
+- JPEG／PNG／PDFの読み取り専用Viewerを実装した。ファイル名、MIME、サイズ、位置／総件数、前へ／次へ／閉じるを表示する。
+- 欠損・破損ファイルはクラッシュせず「表示できません」とする。Viewerは原本を変更しない。
+- Evidenceは金額、支出集計、現金残高、通常支出Evidence経路へ影響しない。
+- Room／Entity／Migration／保存契約は変更していない。Room schemaはv17、versionCode 5、versionName 0.2.3のままである。
+- 固定費Evidenceの分離targeted instrumentationは4/4 PASS、connected instrumentation全件は132/132 PASS、JVMは572/572 PASSした。
+- compileInstrumentedAndroidTestKotlin、assembleDebug、git diff --checkはPASSした。
+- 日報一覧から詳細へのNavigation smokeはViewer受入から分離し、今回未実施である。
+- A90は未操作である。ローカルIP、ADB serial、認証情報、Evidence内容は記録していない。

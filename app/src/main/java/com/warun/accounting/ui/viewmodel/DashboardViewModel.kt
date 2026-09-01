@@ -109,13 +109,15 @@ class DashboardViewModel @Inject constructor(
         baseUiStateParts,
         repository.observeSupplierCandidates(),
         repository.observeStoredExpenseEvidence(),
+        repository.observeFixedCostEvidenceStatuses(),
         prepaidUiStateParts
-    ) { parts, supplierCandidates, expenseEvidence, prepaid ->
+    ) { parts, supplierCandidates, expenseEvidence, fixedCostEvidenceStatuses, prepaid ->
         DashboardUiState(
             reports = parts.reports,
             receipts = parts.receipts,
             expenses = parts.expenses,
             expenseEvidence = expenseEvidence,
+            fixedCostEvidenceStatuses = fixedCostEvidenceStatuses,
             monthlySubmissions = parts.submissions,
             supplierCandidates = supplierCandidates,
             appSettings = parts.settings,

@@ -14,10 +14,12 @@ import com.warun.accounting.data.local.SupplierCandidateRecord
 import com.warun.accounting.data.local.WarunDao
 import com.warun.accounting.data.fixedcost.ExistingAmountState
 import com.warun.accounting.data.fixedcost.FixedCostDetailSnapshot
+import com.warun.accounting.data.fixedcost.FixedCostEvidenceStatus
 import com.warun.accounting.util.PaymentMethodPrepaid
 import com.warun.accounting.util.normalizePaymentMethod
 import javax.inject.Inject
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 
 class OfflineAccountingRepository @Inject constructor(
     private val dao: WarunDao,
@@ -39,6 +41,38 @@ class OfflineAccountingRepository @Inject constructor(
 
     override fun observeStoredExpenseEvidence(): Flow<List<ExpenseEvidenceRecord>> =
         dao.observeStoredExpenseEvidence()
+
+    override fun observeFixedCostEvidenceStatuses(): Flow<List<FixedCostEvidenceStatus>> =
+        dao.observeFixedCostEvidenceStatuses().map { rows ->
+            rows.groupBy { it.dailyReportId to it.fixedCostType }.map { (key, items) ->
+                FixedCostEvidenceStatus(
+                    dailyReportId = key.first,
+                    fixedCostType = key.second,
+                    applicationId = items.first().applicationId,
+                    evidence = items.mapNotNull { row ->
+                        val evidenceId = row.evidenceId ?: return@mapNotNull null
+                        val captureId = row.captureId ?: return@mapNotNull null
+                        val storedUri = row.storedUri ?: return@mapNotNull null
+                        val byteSize = row.byteSize ?: return@mapNotNull null
+                        val sha256 = row.sha256 ?: return@mapNotNull null
+                        val createdAt = row.createdAt ?: return@mapNotNull null
+                        val storedAt = row.storedAt ?: return@mapNotNull null
+                        EvidenceRecord(
+                            id = evidenceId,
+                            captureId = captureId,
+                            storedUri = storedUri,
+                            byteSize = byteSize,
+                            sha256 = sha256,
+                            state = com.warun.accounting.data.local.EvidenceRecordState.Stored,
+                            createdAt = createdAt,
+                            storedAt = storedAt,
+                            updatedAt = storedAt,
+                            mediaType = row.mediaType ?: "image/jpeg"
+                        )
+                    }
+                )
+            }
+        }
 
     override fun observeExpenseRecordsByDateAndCategory(expenseDate: String, category: String): Flow<List<ExpenseRecord>> =
         dao.observeExpenseRecordsByDateAndCategory(expenseDate, category)

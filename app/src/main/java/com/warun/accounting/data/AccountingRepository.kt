@@ -11,6 +11,7 @@ import com.warun.accounting.data.local.MonthlySubmission
 import com.warun.accounting.data.local.ReceiptRecord
 import com.warun.accounting.data.local.SupplierCandidateRecord
 import com.warun.accounting.data.fixedcost.FixedCostDetailSnapshot
+import com.warun.accounting.data.fixedcost.FixedCostEvidenceStatus
 import kotlinx.coroutines.flow.Flow
 
 interface AccountingRepository {
@@ -20,6 +21,7 @@ interface AccountingRepository {
     fun observeExpenseVisibilityRecords(): Flow<List<ExpenseVisibilityRecord>>
     fun observeCancelledExpenseRecordsForAuditByDate(expenseDate: String): Flow<List<ExpenseRecord>>
     fun observeStoredExpenseEvidence(): Flow<List<ExpenseEvidenceRecord>>
+    fun observeFixedCostEvidenceStatuses(): Flow<List<FixedCostEvidenceStatus>>
     fun observeExpenseRecordsByDateAndCategory(expenseDate: String, category: String): Flow<List<ExpenseRecord>>
     fun observeExpenseTotalByDateAndCategory(expenseDate: String, category: String): Flow<Long>
     fun observeSupplierCandidates(): Flow<List<SupplierCandidateRecord>>

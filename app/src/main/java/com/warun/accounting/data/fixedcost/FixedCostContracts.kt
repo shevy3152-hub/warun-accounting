@@ -37,6 +37,27 @@ data class FixedCostDetailSnapshot(
     val dailyReportMissing: Boolean
 )
 
+data class FixedCostEvidenceStatus(
+    val dailyReportId: String,
+    val fixedCostType: String,
+    val applicationId: String?,
+    val evidence: List<EvidenceRecord>
+)
+
+enum class FixedCostEvidenceRegistrationState {
+    NONE,
+    MISSING,
+    REGISTERED,
+    NEEDS_REVIEW
+}
+
+fun FixedCostEvidenceStatus.registrationState(amount: Long): FixedCostEvidenceRegistrationState = when {
+    applicationId != null && evidence.isNotEmpty() -> FixedCostEvidenceRegistrationState.REGISTERED
+    applicationId != null -> FixedCostEvidenceRegistrationState.NEEDS_REVIEW
+    amount > 0L -> FixedCostEvidenceRegistrationState.MISSING
+    else -> FixedCostEvidenceRegistrationState.NONE
+}
+
 sealed interface FixedCostSaveResult {
     data object Success : FixedCostSaveResult
     data object MissingDailyReport : FixedCostSaveResult

@@ -174,6 +174,10 @@ import com.warun.accounting.ui.receipt.toSavedValue
 import com.warun.accounting.ui.prepaid.PrepaidManagementScreen
 import com.warun.accounting.ui.prepaid.PrepaidNavigationGuard
 import com.warun.accounting.ui.fixedcost.FixedCostEvidenceScreen
+import com.warun.accounting.ui.fixedcost.FixedCostEvidenceViewer
+import com.warun.accounting.ui.fixedcost.FixedCostEvidenceStatusRows
+import com.warun.accounting.data.fixedcost.FixedCostEvidenceRegistrationState
+import com.warun.accounting.data.fixedcost.registrationState
 import com.warun.accounting.ui.util.currentMonthString
 import com.warun.accounting.ui.util.todayString
 import com.warun.accounting.ui.util.toYen
@@ -1548,7 +1552,9 @@ private fun MenuCardGrid(onNavigate: (String) -> Unit) {
             destinations.forEach { destination ->
                 OutlinedButton(
                     onClick = { onNavigate(destination.route) },
-                    modifier = buttonModifier.height(48.dp)
+                    modifier = buttonModifier
+                        .height(48.dp)
+                        .testTag("menu-${destination.route}")
                 ) {
                     Icon(destination.icon, contentDescription = null)
                     Spacer(Modifier.width(6.dp))
@@ -4199,6 +4205,7 @@ private fun MonthlyReportRowCard(
         colors = CardDefaults.cardColors(containerColor = Color(0xFFFBFDFF)),
         modifier = Modifier
             .fillMaxWidth()
+            .testTag("report-row-${row.reportDate}")
             .clickable { onOpenDate(row.reportDate) }
     ) {
         Column(
@@ -4252,6 +4259,7 @@ private fun ReportDetailScreen(
     auditViewModel: ExpenseCancellationAuditViewModel = hiltViewModel()
 ) {
     var selectedEvidence by remember { mutableStateOf<ExpenseEvidenceRecord?>(null) }
+    var selectedFixedCostEvidence by remember { mutableStateOf<Pair<List<com.warun.accounting.data.local.EvidenceRecord>, Int>?>(null) }
     val cancelledExpenses by auditViewModel.items.collectAsStateWithLifecycle()
     val dayReports = remember(uiState.reports, reportDate) {
         uiState.reports.filter { it.reportDate == reportDate }
@@ -4314,7 +4322,9 @@ private fun ReportDetailScreen(
                 index = index,
                 report = report,
                 expenses = dayExpenses,
-                cancelledExpenseKeys = uiState.cancelledExpenseKeys
+                cancelledExpenseKeys = uiState.cancelledExpenseKeys,
+                fixedCostEvidenceStatuses = uiState.fixedCostEvidenceStatuses,
+                onOpenFixedCostEvidence = { evidence, index -> selectedFixedCostEvidence = evidence to index }
             )
         }
         if (dayExpenses.isNotEmpty()) {
@@ -4363,6 +4373,13 @@ private fun ReportDetailScreen(
         EvidenceImageDialog(
             evidence = evidence,
             onDismiss = { selectedEvidence = null }
+        )
+    }
+    selectedFixedCostEvidence?.let { (evidence, index) ->
+        FixedCostEvidenceViewer(
+            evidence = evidence,
+            initialIndex = index,
+            onDismiss = { selectedFixedCostEvidence = null }
         )
     }
 }
@@ -4514,7 +4531,9 @@ private fun DailyReportDetailCard(
     index: Int,
     report: DailyReport,
     expenses: List<ExpenseRecord>,
-    cancelledExpenseKeys: Set<ExpenseDateCategoryKey>
+    cancelledExpenseKeys: Set<ExpenseDateCategoryKey>,
+    fixedCostEvidenceStatuses: List<com.warun.accounting.data.fixedcost.FixedCostEvidenceStatus>,
+    onOpenFixedCostEvidence: (List<com.warun.accounting.data.local.EvidenceRecord>, Int) -> Unit
 ) {
     DashboardCard {
         Text("日報 ${index + 1}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
@@ -4542,6 +4561,11 @@ private fun DailyReportDetailCard(
         TotalRow("ガス代", report.gasExpense.toYen())
         TotalRow("水道代", report.waterExpense.toYen())
         TotalRow("通信費", report.communicationExpense.toYen())
+        FixedCostEvidenceStatusRows(
+            report = report,
+            statuses = fixedCostEvidenceStatuses,
+            onOpenEvidence = { _, evidence -> onOpenFixedCostEvidence(evidence, 0) }
+        )
         TotalRow("家賃", report.rentExpense.toYen())
         TotalRow("税理士顧問料", report.accountantFeeExpense.toYen())
         TotalRow("車両・交通費", report.detailExpense(expenses, VehicleTransportCategory).toYen())
@@ -4559,6 +4583,7 @@ private fun DailyReportDetailCard(
         }
     }
 }
+
 @Composable
 private fun SettingsScreen(
     uiState: DashboardUiState,

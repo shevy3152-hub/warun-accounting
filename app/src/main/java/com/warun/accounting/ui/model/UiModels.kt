@@ -6,6 +6,7 @@ import com.warun.accounting.data.local.DailyReportStatus
 import com.warun.accounting.data.local.ExpenseCategory
 import com.warun.accounting.data.local.ExpenseRecord
 import com.warun.accounting.data.local.ExpenseEvidenceRecord
+import com.warun.accounting.data.fixedcost.FixedCostEvidenceStatus
 import com.warun.accounting.data.local.MonthlySubmission
 import com.warun.accounting.data.local.MonthlySubmissionStatus
 import com.warun.accounting.data.local.ReceiptRecord
@@ -30,6 +31,7 @@ data class DashboardUiState(
     val receipts: List<ReceiptRecord> = emptyList(),
     val expenses: List<ExpenseRecord> = emptyList(),
     val expenseEvidence: List<ExpenseEvidenceRecord> = emptyList(),
+    val fixedCostEvidenceStatuses: List<FixedCostEvidenceStatus> = emptyList(),
     val monthlySubmissions: List<MonthlySubmission> = emptyList(),
     val supplierCandidates: List<SupplierCandidateRecord> = emptyList(),
     val appSettings: AppSettings? = null,
@@ -153,6 +155,11 @@ data class DashboardUiState(
             ?: return null
         return prepaidAccounts.firstOrNull { it.id == accountId }
     }
+
+    fun fixedCostEvidenceStatus(reportId: String, fixedCostType: String): FixedCostEvidenceStatus? =
+        fixedCostEvidenceStatuses.firstOrNull {
+            it.dailyReportId == reportId && it.fixedCostType == fixedCostType
+        }
 }
 
 private fun expensesWithoutReportsTotal(reports: List<DailyReport>, expenses: List<ExpenseRecord>): Long {
