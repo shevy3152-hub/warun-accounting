@@ -208,3 +208,21 @@ JVMテストが`app/build/monthly-export-samples/`へ作成した合成テスト
 - A90は未接続・未操作である。
 - Room schema v17、Migration変更なし。versionCode 4、versionName 0.2.2のままである。
 - 月次Evidence PDF統合、MyKomon画面変更、正式署名、A90正式版移行は未実装・未実施である。
+
+## v0.2.3 A90試験運用checkpoint
+
+- C3B checkpoint `bb3f44b4f91989bd365202b0e6e5fdb55945d852`を基準に確認した。
+- A90更新前はversionCode 3、versionName 0.2.1、更新後はversionCode 5、versionName 0.2.3である。
+- debug APKとA90既存版の署名証明書一致、およびinstall -r成功を確認した。
+- 更新前正式バックアップの作成・存在・manifest・DB・Evidence整合性検証はPASSした。
+- Room v16からv17へのMigrationをPASSした。
+- 日報28件、Receipt 2件、Expense 42件、Evidence 41件、月次提出1件、電子提出履歴5件を更新前後で保持した。
+- DBとEvidenceのサイズ・SHA-256整合性をPASSした。
+- アプリ起動とレシート管理画面表示をPASSした。
+- クラッシュ、ANR、アプリ固有のSecurityExceptionは確認していない。
+- A90にinstrumented APKが存在しないことを確認した。
+- 要確認レシートは0件であり、固定費Evidenceの実データ最終保存は未確認である。
+- 2026年8月のactive ExpenseでEvidenceなしは0件である。7月のEvidence未添付データは今回の対象外として保留する。
+- 月次Evidence PDFへの固定費統合は未実装である。
+- 正式署名版v0.2.3は未作成であり、MyKomon実提出も未実施である。
+- versionCode 5、versionName 0.2.3を試験運用版として確定した。
