@@ -179,3 +179,16 @@ JVMテストが`app/build/monthly-export-samples/`へ作成した合成テスト
 - UI、SAF Picker、Receipt確認画面、月次Evidence PDF統合は未実装である。
 - 現在のv17コードは未リリースである。
 - versionCode 4、versionName 0.2.2のままである。次の正式版では5／0.3.0へ更新予定である。
+
+## 現在状態（Phase C3A受入後）
+
+- Phase C3Aを完了した。
+- 固定費反映はEMPTY／SAME／CONFLICTの契約で処理する。
+- Receipt保存金額との一致、および固定費種別から決定する支払方法を保存境界で検証する。
+- DailyReport親行へのREPLACE／Upsertを廃止し、EMPTY時は条件付きUPDATE件数を検証する。
+- Pixel 8（AVD名Pixel_8、Android 14／API 34）でC3A targeted instrumentation 7/7 PASS、connected instrumentation全件127/127 PASS（skip 0、failure 0、error 0）。
+- JVMテストは568/568 PASS。assembleDebug、compileInstrumentedAndroidTestKotlinもPASSした。
+- Room schema v17のままで、Migration差分はない。
+- A90は未接続・未操作である。
+- 現在のv17コードは未リリースで、versionCode 4、versionName 0.2.2のままである。
+- C3BのCompose UI／SAF Picker、月次Evidence PDF統合は未実装である。

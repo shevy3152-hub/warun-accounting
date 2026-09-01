@@ -8,6 +8,8 @@ import com.warun.accounting.data.local.FixedCostEvidenceLinkRecord
 import com.warun.accounting.data.local.FixedCostReceiptApplicationRecord
 import com.warun.accounting.data.local.ReceiptRecord
 import com.warun.accounting.data.local.WarunDao
+import com.warun.accounting.data.fixedcost.FixedCostSaveResult
+import com.warun.accounting.data.fixedcost.fixedCostPaymentMethodOrNull
 import java.io.File
 import java.util.UUID
 import javax.inject.Inject
@@ -60,11 +62,22 @@ class FixedCostEvidenceSaveCoordinator @Inject constructor(
             require(request.sources.map { it.sortOrder }.distinct().size == request.sources.size) {
                 "Evidence sortOrder must be unique"
             }
+            val paymentMethod = paymentMethodFor(request.fixedCostType)
             val report = dao.getDailyReport(request.dailyReportId)
                 ?: throw FixedCostSaveException("Target DailyReport does not exist")
             val receipt = dao.getReceipt(request.receiptId)
                 ?: throw FixedCostSaveException("Target Receipt does not exist")
             if (receipt.isConfirmed) throw FixedCostSaveException("Receipt is already confirmed")
+            if (request.appliedAmount != receipt.totalAmount) {
+                throw FixedCostAmountConflictException("Receipt amount does not match request")
+            }
+            if (request.paymentMethod != paymentMethod) {
+                throw FixedCostSaveException("Payment method is determined by fixed-cost type")
+            }
+            val existingAmount = report.fixedCostAmount(request.fixedCostType)
+            if (existingAmount != 0L && existingAmount != receipt.totalAmount) {
+                throw FixedCostAmountConflictException("Existing fixed-cost amount conflicts with Receipt")
+            }
             if (dao.getFixedCostReceiptApplicationByReceipt(request.receiptId) != null ||
                 dao.getFixedCostReceiptApplicationByReportAndType(
                     request.dailyReportId,
@@ -90,8 +103,8 @@ class FixedCostEvidenceSaveCoordinator @Inject constructor(
                 receiptId = request.receiptId,
                 dailyReportId = request.dailyReportId,
                 fixedCostType = request.fixedCostType,
-                paymentMethod = request.paymentMethod,
-                appliedAmount = request.appliedAmount,
+                paymentMethod = paymentMethod,
+                appliedAmount = receipt.totalAmount,
                 evidence = initialEvidence
             )
             failureInjector.after(FixedCostFailurePoint.JournalPrepared)
@@ -118,7 +131,7 @@ class FixedCostEvidenceSaveCoordinator @Inject constructor(
                 receiptId = request.receiptId,
                 dailyReportId = request.dailyReportId,
                 fixedCostType = request.fixedCostType,
-                paymentMethod = request.paymentMethod,
+                paymentMethod = paymentMethod,
                 appliedAt = finalJournal.createdAt,
                 updatedAt = finalJournal.updatedAt
             )
@@ -139,9 +152,8 @@ class FixedCostEvidenceSaveCoordinator @Inject constructor(
             val links = finalJournal.evidence.map { item ->
                 FixedCostEvidenceLinkRecord(applicationId, item.evidenceId, item.sortOrder, System.currentTimeMillis())
             }
-            val updatedReport = report.withFixedCostAmount(request.fixedCostType, request.appliedAmount)
             dao.applyFixedCostEvidence(
-                report = updatedReport,
+                report = report,
                 receipt = receipt,
                 application = application,
                 evidence = evidenceRecords,
@@ -150,6 +162,39 @@ class FixedCostEvidenceSaveCoordinator @Inject constructor(
             failureInjector.after(FixedCostFailurePoint.DatabaseApplied)
             journal.markDatabaseApplied(applicationId)
             journal.complete(applicationId)
+        }
+    }
+
+    suspend fun saveResult(
+        resolver: ContentResolver,
+        request: FixedCostEvidenceSaveRequest
+    ): FixedCostSaveResult {
+        if (request.sources.isEmpty()) return FixedCostSaveResult.MissingEvidence
+        if (request.fixedCostType !in fixedCostTypes) return FixedCostSaveResult.InvalidFixedCostType
+        val receipt = dao.getReceipt(request.receiptId)
+            ?: return FixedCostSaveResult.ReceiptNotFound
+        if (receipt.isConfirmed) return FixedCostSaveResult.ReceiptAlreadyConfirmed
+        if (request.appliedAmount != receipt.totalAmount) return FixedCostSaveResult.AmountConflict
+        if (request.paymentMethod != paymentMethodFor(request.fixedCostType)) {
+            return FixedCostSaveResult.SaveFailure(
+                FixedCostSaveException("Payment method is determined by fixed-cost type")
+            )
+        }
+        if (dao.getDailyReport(request.dailyReportId) == null) return FixedCostSaveResult.MissingDailyReport
+        if (dao.getFixedCostReceiptApplicationByReceipt(request.receiptId) != null ||
+            dao.getFixedCostReceiptApplicationByReportAndType(request.dailyReportId, request.fixedCostType) != null
+        ) return FixedCostSaveResult.AlreadyApplied
+        val currentAmount = dao.getDailyReport(request.dailyReportId)!!.fixedCostAmount(request.fixedCostType)
+        if (currentAmount != 0L && currentAmount != receipt.totalAmount) return FixedCostSaveResult.AmountConflict
+        return try {
+        save(resolver, request)
+        FixedCostSaveResult.Success
+        } catch (error: FixedCostAmountConflictException) {
+            FixedCostSaveResult.AmountConflict
+        } catch (error: FixedCostEvidenceFileException) {
+            FixedCostSaveResult.SaveFailure(error)
+        } catch (error: Exception) {
+            FixedCostSaveResult.RecoveryRequired(error)
         }
     }
 
@@ -191,11 +236,11 @@ class FixedCostEvidenceSaveCoordinator @Inject constructor(
                 }
                 val application = FixedCostReceiptApplicationRecord(
                     current.applicationId, current.receiptId, current.dailyReportId,
-                    current.fixedCostType, current.paymentMethod, current.createdAt, current.updatedAt
+                    current.fixedCostType, paymentMethodFor(current.fixedCostType), current.createdAt, current.updatedAt
                 )
                 val links = current.evidence.map { FixedCostEvidenceLinkRecord(current.applicationId, it.evidenceId, it.sortOrder, current.updatedAt) }
                 dao.applyFixedCostEvidence(
-                    report.withFixedCostAmountForRecovery(current.fixedCostType, current.appliedAmount),
+                    report,
                     receipt,
                     application,
                     evidence,
@@ -248,4 +293,19 @@ object FixedCostType {
     const val Gas = "gas"
 }
 
-class FixedCostSaveException(message: String, cause: Throwable? = null) : IllegalStateException(message, cause)
+private val fixedCostTypes = setOf(
+    FixedCostType.Electricity,
+    FixedCostType.Water,
+    FixedCostType.Communication,
+    FixedCostType.Gas
+)
+
+private fun paymentMethodFor(fixedCostType: String): String = when (fixedCostType) {
+    FixedCostType.Electricity, FixedCostType.Water, FixedCostType.Communication, FixedCostType.Gas ->
+        requireNotNull(fixedCostPaymentMethodOrNull(fixedCostType))
+    else -> throw FixedCostSaveException("Unsupported fixed-cost type")
+}
+
+open class FixedCostSaveException(message: String, cause: Throwable? = null) : IllegalStateException(message, cause)
+
+class FixedCostAmountConflictException(message: String) : FixedCostSaveException(message)

@@ -7,6 +7,7 @@ import com.warun.accounting.data.local.DailyReport
 import com.warun.accounting.data.local.DailyReportStatus
 import com.warun.accounting.data.local.ReceiptRecord
 import com.warun.accounting.data.local.WarunDatabase
+import com.warun.accounting.data.fixedcost.FixedCostSaveResult
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
@@ -59,7 +60,7 @@ class FixedCostEvidenceSaveInstrumentationTest {
         val journal = FixedCostFinalizationJournal(File(root, "journal"))
         FixedCostEvidenceSaveCoordinator(dao, store, journal, NoOpFixedCostFailureInjector)
             .save(context.contentResolver, FixedCostEvidenceSaveRequest(
-                fixture.receipt.id, fixture.report.id, FixedCostType.Electricity, "現金", 12_345L, sources
+                fixture.receipt.id, fixture.report.id, FixedCostType.Electricity, "現金", 7_000L, sources
             ))
 
         val application = dao.getFixedCostReceiptApplicationByReceipt(fixture.receipt.id)
@@ -67,7 +68,7 @@ class FixedCostEvidenceSaveInstrumentationTest {
         assertEquals("現金", application!!.paymentMethod)
         assertEquals(3, dao.getFixedCostEvidenceLinks(application.applicationId).size)
         assertEquals(listOf(0, 1, 2), dao.getFixedCostEvidenceLinks(application.applicationId).map { it.sortOrder })
-        assertEquals(12_345L, dao.getDailyReport(fixture.report.id)!!.electricityExpense)
+        assertEquals(7_000L, dao.getDailyReport(fixture.report.id)!!.electricityExpense)
         assertTrue(dao.getReceipt(fixture.receipt.id)!!.isConfirmed)
         assertEquals(0L, count("expense_records"))
         assertEquals(0, journal.loadAll().entries.size)
@@ -135,7 +136,7 @@ class FixedCostEvidenceSaveInstrumentationTest {
         )
         val journal = FixedCostFinalizationJournal(File(root, "stream-journal"))
         val request = FixedCostEvidenceSaveRequest(
-            fixture.receipt.id, fixture.report.id, FixedCostType.Gas, "銀行", 9_000L,
+            fixture.receipt.id, fixture.report.id, FixedCostType.Gas, "銀行振込", 7_000L,
             listOf(FixedCostEvidenceSource(android.net.Uri.fromFile(input), "image/jpeg", 0))
         )
         assertTrue(runCatching {
@@ -180,6 +181,69 @@ class FixedCostEvidenceSaveInstrumentationTest {
                 assertEquals(1, dao.getFixedCostEvidenceLinks(dao.getFixedCostReceiptApplicationByReceipt(fixture.receipt.id)!!.applicationId).size)
                 assertEquals(0, journal.loadAll().entries.size)
             }
+    }
+
+    @Test
+    fun sameAmountSkipsDailyReportUpdateAndOnlyAddsEvidence() = runBlocking {
+        val fixture = fixture("same-receipt", "same-report")
+        dao.updateFixedCostAmountIfEmpty(fixture.report.id, FixedCostType.Electricity, 7_000L, 2)
+        val before = dao.getDailyReport(fixture.report.id)!!
+        val input = File(root, "same-input").apply {
+            writeBytes(byteArrayOf(0xff.toByte(), 0xd8.toByte(), 0xff.toByte(), 1, 0xff.toByte(), 0xd9.toByte()))
+        }
+        val result = FixedCostEvidenceSaveCoordinator(
+            dao, FixedCostEvidenceFileStore(File(root, "same-pending"), File(root, "same-stored")),
+            FixedCostFinalizationJournal(File(root, "same-journal")), NoOpFixedCostFailureInjector
+        ).saveResult(context.contentResolver, FixedCostEvidenceSaveRequest(
+            fixture.receipt.id, fixture.report.id, FixedCostType.Electricity, "現金", 7_000L,
+            listOf(FixedCostEvidenceSource(android.net.Uri.fromFile(input), "image/jpeg", 0))
+        ))
+        assertEquals(FixedCostSaveResult.Success, result)
+        assertEquals(before, dao.getDailyReport(fixture.report.id))
+        assertTrue(dao.getReceipt(fixture.receipt.id)!!.isConfirmed)
+        assertEquals(1L, count("fixed_cost_receipt_applications"))
+        assertEquals(1L, count("fixed_cost_evidence_links"))
+    }
+
+    @Test
+    fun conflictIsRejectedBeforeJournalOrFileCreation() = runBlocking {
+        val fixture = fixture("conflict-receipt", "conflict-report")
+        dao.updateFixedCostAmountIfEmpty(fixture.report.id, FixedCostType.Water, 6_000L, 2)
+        val input = File(root, "conflict-input").apply {
+            writeBytes(byteArrayOf(0xff.toByte(), 0xd8.toByte(), 0xff.toByte(), 1, 0xff.toByte(), 0xd9.toByte()))
+        }
+        val store = FixedCostEvidenceFileStore(File(root, "conflict-pending"), File(root, "conflict-stored"))
+        val journal = FixedCostFinalizationJournal(File(root, "conflict-journal"))
+        val result = FixedCostEvidenceSaveCoordinator(dao, store, journal, NoOpFixedCostFailureInjector)
+            .saveResult(context.contentResolver, FixedCostEvidenceSaveRequest(
+                fixture.receipt.id, fixture.report.id, FixedCostType.Water, "現金", 7_000L,
+                listOf(FixedCostEvidenceSource(android.net.Uri.fromFile(input), "image/jpeg", 0))
+            ))
+        assertEquals(FixedCostSaveResult.AmountConflict, result)
+        assertFalse(dao.getReceipt(fixture.receipt.id)!!.isConfirmed)
+        assertEquals(0L, count("fixed_cost_receipt_applications"))
+        assertEquals(0L, count("fixed_cost_evidence_links"))
+        assertEquals(0L, count("evidence_records"))
+        assertTrue(journal.loadAll().entries.isEmpty())
+        assertTrue(store.pendingFileFor("not-created", "image/jpeg").parentFile!!.listFiles().orEmpty().isEmpty())
+    }
+
+    @Test
+    fun gasUsesBankTransferPaymentMethod() = runBlocking {
+        val fixture = fixture("gas-receipt", "gas-report")
+        val input = File(root, "gas-input").apply {
+            writeBytes(byteArrayOf(0xff.toByte(), 0xd8.toByte(), 0xff.toByte(), 1, 0xff.toByte(), 0xd9.toByte()))
+        }
+        val result = FixedCostEvidenceSaveCoordinator(
+            dao, FixedCostEvidenceFileStore(File(root, "gas-pending"), File(root, "gas-stored")),
+            FixedCostFinalizationJournal(File(root, "gas-journal")), NoOpFixedCostFailureInjector
+        ).saveResult(context.contentResolver, FixedCostEvidenceSaveRequest(
+            fixture.receipt.id, fixture.report.id, FixedCostType.Gas, "銀行振込", 7_000L,
+            listOf(FixedCostEvidenceSource(android.net.Uri.fromFile(input), "image/jpeg", 0))
+        ))
+        assertEquals(FixedCostSaveResult.Success, result)
+        assertEquals("銀行振込", dao.getFixedCostReceiptApplicationByReceipt(fixture.receipt.id)!!.paymentMethod)
+        assertEquals(7_000L, dao.getDailyReport(fixture.report.id)!!.gasExpense)
     }
 
     private data class Fixture(val report: DailyReport, val receipt: ReceiptRecord)

@@ -10,6 +10,7 @@ import com.warun.accounting.data.local.ExpenseVisibilityRecord
 import com.warun.accounting.data.local.MonthlySubmission
 import com.warun.accounting.data.local.ReceiptRecord
 import com.warun.accounting.data.local.SupplierCandidateRecord
+import com.warun.accounting.data.fixedcost.FixedCostDetailSnapshot
 import kotlinx.coroutines.flow.Flow
 
 interface AccountingRepository {
@@ -60,4 +61,9 @@ interface AccountingRepository {
     suspend fun saveMonthlySubmission(submission: MonthlySubmission)
     suspend fun saveAppSettings(settings: AppSettings)
     suspend fun deleteDailyReport(report: DailyReport)
+    suspend fun getFixedCostDetail(
+        receiptId: String,
+        dailyReportId: String?,
+        fixedCostType: String
+    ): FixedCostDetailSnapshot
 }

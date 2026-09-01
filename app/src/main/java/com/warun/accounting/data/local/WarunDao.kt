@@ -218,6 +218,29 @@ interface WarunDao {
     @Query("UPDATE receipts SET isConfirmed = 1, updatedAt = :updatedAt WHERE id = :receiptId AND isConfirmed = 0")
     suspend fun markReceiptConfirmed(receiptId: String, updatedAt: Long): Int
 
+    @Query(
+        """UPDATE daily_reports SET
+            electricityExpense = CASE WHEN :fixedCostType = 'electricity' THEN :amount ELSE electricityExpense END,
+            waterExpense = CASE WHEN :fixedCostType = 'water' THEN :amount ELSE waterExpense END,
+            communicationExpense = CASE WHEN :fixedCostType = 'communication' THEN :amount ELSE communicationExpense END,
+            gasExpense = CASE WHEN :fixedCostType = 'gas' THEN :amount ELSE gasExpense END,
+            updatedAt = :updatedAt
+            WHERE id = :dailyReportId
+              AND CASE :fixedCostType
+                WHEN 'electricity' THEN electricityExpense
+                WHEN 'water' THEN waterExpense
+                WHEN 'communication' THEN communicationExpense
+                WHEN 'gas' THEN gasExpense
+                ELSE -1
+              END = 0"""
+    )
+    suspend fun updateFixedCostAmountIfEmpty(
+        dailyReportId: String,
+        fixedCostType: String,
+        amount: Long,
+        updatedAt: Long
+    ): Int
+
     @Upsert
     suspend fun insertExpenseRecord(expense: ExpenseRecord)
 
@@ -499,8 +522,20 @@ interface WarunDao {
     ) {
         check(getDailyReport(report.id) != null) { "Target DailyReport does not exist" }
         check(getReceipt(receipt.id) != null) { "Target Receipt does not exist" }
-        if (getDailyReport(report.id) != report) {
-            insertDailyReport(report)
+        val currentReport = requireNotNull(getDailyReport(report.id))
+        val currentAmount = currentReport.fixedCostAmount(application.fixedCostType)
+        when {
+            currentAmount == 0L -> {
+                val updated = updateFixedCostAmountIfEmpty(
+                    report.id,
+                    application.fixedCostType,
+                    receipt.totalAmount,
+                    application.updatedAt
+                )
+                check(updated == 1) { "Fixed-cost amount changed during finalization" }
+            }
+            currentAmount == receipt.totalAmount -> Unit
+            else -> error("Existing fixed-cost amount conflicts with Receipt")
         }
         ensureFixedCostReceiptApplication(application)
         for (item in evidence) ensureEvidence(item)
@@ -508,6 +543,14 @@ interface WarunDao {
         check(markReceiptConfirmed(receipt.id, receipt.updatedAt) == 1 || receipt.isConfirmed) {
             "Receipt confirmation could not be persisted"
         }
+    }
+
+    private fun DailyReport.fixedCostAmount(type: String): Long = when (type) {
+        "electricity" -> electricityExpense
+        "water" -> waterExpense
+        "communication" -> communicationExpense
+        "gas" -> gasExpense
+        else -> error("Unsupported fixed-cost type")
     }
 
     @Transaction

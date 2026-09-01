@@ -12,6 +12,8 @@ import com.warun.accounting.data.local.MonthlySubmission
 import com.warun.accounting.data.local.ReceiptRecord
 import com.warun.accounting.data.local.SupplierCandidateRecord
 import com.warun.accounting.data.local.WarunDao
+import com.warun.accounting.data.fixedcost.ExistingAmountState
+import com.warun.accounting.data.fixedcost.FixedCostDetailSnapshot
 import com.warun.accounting.util.PaymentMethodPrepaid
 import com.warun.accounting.util.normalizePaymentMethod
 import javax.inject.Inject
@@ -132,6 +134,36 @@ class OfflineAccountingRepository @Inject constructor(
 
     override suspend fun deleteDailyReport(report: DailyReport) = dao.deleteDailyReport(report)
 
+    override suspend fun getFixedCostDetail(
+        receiptId: String,
+        dailyReportId: String?,
+        fixedCostType: String
+    ): FixedCostDetailSnapshot {
+        val receipt = dao.getReceipt(receiptId)
+        val report = dailyReportId?.let { dao.getDailyReport(it) }
+        val application = dao.getFixedCostReceiptApplicationByReceipt(receiptId)
+        val links = application?.let { dao.getFixedCostEvidenceLinks(it.applicationId) }.orEmpty()
+        val evidence = links.mapNotNull { dao.getEvidenceRecord(it.evidenceId) }
+        val currentAmount = report?.fixedCostAmountOrNull(fixedCostType)
+        val state = if (receipt == null || currentAmount == null) null else when {
+            currentAmount == 0L -> ExistingAmountState.EMPTY
+            currentAmount == receipt.totalAmount -> ExistingAmountState.SAME
+            else -> ExistingAmountState.CONFLICT
+        }
+        return FixedCostDetailSnapshot(
+            receipt = receipt,
+            dailyReport = report,
+            fixedCostType = fixedCostType,
+            currentAmount = currentAmount,
+            existingAmountState = state,
+            application = application,
+            evidenceLinks = links,
+            evidence = evidence,
+            alreadyApplied = application != null,
+            dailyReportMissing = report == null
+        )
+    }
+
     private fun requireNonPrepaidExpense(expense: ExpenseRecord?) {
         check(
             expense == null ||
@@ -140,4 +172,12 @@ class OfflineAccountingRepository @Inject constructor(
             "Prepaid expenses must use the prepaid purchase transaction"
         }
     }
+}
+
+private fun DailyReport.fixedCostAmountOrNull(type: String): Long? = when (type) {
+    "electricity" -> electricityExpense
+    "water" -> waterExpense
+    "communication" -> communicationExpense
+    "gas" -> gasExpense
+    else -> null
 }
