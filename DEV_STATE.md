@@ -240,3 +240,15 @@ JVMテストが`app/build/monthly-export-samples/`へ作成した合成テスト
 - compileInstrumentedAndroidTestKotlin、assembleDebug、git diff --checkはPASSした。
 - 日報一覧から詳細へのNavigation smokeはViewer受入から分離し、今回未実施である。
 - A90は未操作である。ローカルIP、ADB serial、認証情報、Evidence内容は記録していない。
+
+## v0.2.4 A90受入 checkpoint（2026-09-01）
+
+- A90現行版を確認し、debug APKと署名証明書が一致したため、既存データを保持したまま `install -r` を実施した。
+- 更新後は versionCode 6、versionName 0.2.4。Room schema v17、Migration変更なし。
+- 更新前後で日報28件、Receipt 2件、Expense 42件、Evidence 41件、月次提出1件、電子提出履歴5件を保持した。
+- 既知の正式バックアップをサイズ、SHA-256、ZIP、manifest、DB、Evidence整合性まで検証した。
+- 日報確認画面で、金額ありの通信費に「証憑未登録」、0円の電気代・水道代・ガス代は状態強調なしを確認した。
+- 起動、日報一覧、日報確認画面を確認した。アプリ由来のクラッシュ、ANR、SecurityExceptionは確認していない。
+- instrumented APKはA90へ導入していない。固定費Evidenceの実データ最終保存は未確認である。
+- Pixel 8の既存検証結果（connected instrumentation 132/132、JVM 572/572）を受入根拠とし、今回重いテストは再実行していない。
+- ローカルIP、ADB serial、認証情報、Evidence内容は記録していない。
