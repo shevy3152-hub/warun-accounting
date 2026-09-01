@@ -192,3 +192,19 @@ JVMテストが`app/build/monthly-export-samples/`へ作成した合成テスト
 - A90は未接続・未操作である。
 - 現在のv17コードは未リリースで、versionCode 4、versionName 0.2.2のままである。
 - C3BのCompose UI／SAF Picker、月次Evidence PDF統合は未実装である。
+
+## Phase C3B Pixel 8受入・条件付きcheckpoint
+
+- Phase C3BのCompose UI／SAF Evidence選択基盤を実装した。
+- 要確認Receipt一覧からReceipt IDだけを固定費詳細画面へ渡す行遷移を実装し、対象月を維持する。
+- 固定費詳細画面でEvidence選択、JPEG／PNG／PDFの添付情報、プレビュー、並び替え、削除、保存結果表示を行う。
+- JVMテストは571/571 PASS。
+- C3B Room／Evidence integrationは7/7 PASS。
+- Pixel 8（AVD名Pixel_8、Android 14／API 34）のconnected instrumentationは128/128 PASS、skip 0、failure 0、error 0。
+- ユーザーがPixel 8のDocumentsUIで`c3b_test.jpg`、`c3b_test.png`、`c3b_test.pdf`を各1件選択し、固定費Evidence画面への復帰とPDF表示を確認した。
+- 選択後にホームへ戻った事象は、logcat上でinstrumentation終了時に`com.warun.accounting.instrumented`とtest APKが自動アンインストールされたためであり、Productionクラッシュ、ANR、SecurityExceptionではないことを確認した。
+- 以上を根拠に、Pixel 8でのC3B受入を条件付きPASSとする。
+- 実画面からの最終保存、Receipt確認済み化、要確認一覧からの除外、保存後の不要URI権限解放は未確認であり、A90受入へ持ち越す。
+- A90は未接続・未操作である。
+- Room schema v17、Migration変更なし。versionCode 4、versionName 0.2.2のままである。
+- 月次Evidence PDF統合、MyKomon画面変更、正式署名、A90正式版移行は未実装・未実施である。

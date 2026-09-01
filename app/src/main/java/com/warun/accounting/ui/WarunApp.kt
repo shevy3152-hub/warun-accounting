@@ -2,6 +2,7 @@
 
 package com.warun.accounting.ui
 
+import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -79,6 +80,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -171,6 +173,7 @@ import com.warun.accounting.ui.receipt.planReceiptOcrMerge
 import com.warun.accounting.ui.receipt.toSavedValue
 import com.warun.accounting.ui.prepaid.PrepaidManagementScreen
 import com.warun.accounting.ui.prepaid.PrepaidNavigationGuard
+import com.warun.accounting.ui.fixedcost.FixedCostEvidenceScreen
 import com.warun.accounting.ui.util.currentMonthString
 import com.warun.accounting.ui.util.todayString
 import com.warun.accounting.ui.util.toYen
@@ -345,7 +348,12 @@ internal fun topLevelRouteForLabel(label: String): String? =
 
 private object ReceiptRoutes {
     const val Camera = "receipt_camera"
-    const val Unconfirmed = "receipt_unconfirmed"
+    const val Unconfirmed = "receipt_unconfirmed?targetMonth={targetMonth}"
+    const val FixedCostDetail = "receipt_fixed_cost/{receiptId}"
+
+    fun fixedCostDetail(receiptId: String): String = "receipt_fixed_cost/${Uri.encode(receiptId)}"
+    fun unconfirmed(targetMonth: String? = null): String =
+        targetMonth?.let { "receipt_unconfirmed?targetMonth=${Uri.encode(it)}" } ?: "receipt_unconfirmed"
 }
 
 private const val FoodPurchaseCategory = ExpenseCategory.FoodPurchase
@@ -799,13 +807,28 @@ private fun AppNavHost(
                 onCaptureCleared = { capturedReceipt = null }
             )
         }
-        composable(ReceiptRoutes.Unconfirmed) {
+        composable(
+            route = ReceiptRoutes.Unconfirmed,
+            arguments = listOf(navArgument("targetMonth") { type = NavType.StringType; nullable = true; defaultValue = null })
+        ) { backStackEntry ->
             ReceiptScreen(
                 uiState = uiState,
                 onNavigate = onNavigateSingleTop,
                 onSaveReceipt = viewModel::saveReceipt,
                 onOpenReceiptCamera = { navController.navigate(ReceiptRoutes.Camera) },
-                showUnconfirmedOnly = true
+                showUnconfirmedOnly = true,
+                unconfirmedTargetMonth = backStackEntry.arguments?.getString("targetMonth"),
+                onOpenFixedCost = { receiptId -> navController.navigate(ReceiptRoutes.fixedCostDetail(receiptId)) }
+            )
+        }
+        composable(
+            route = ReceiptRoutes.FixedCostDetail,
+            arguments = listOf(navArgument("receiptId") { type = NavType.StringType })
+        ) { backStackEntry ->
+            FixedCostEvidenceScreen(
+                receiptId = backStackEntry.arguments?.getString("receiptId").orEmpty(),
+                onBack = onPopBackStack,
+                onOpenReport = { reportDate -> onNavigate(ReportRoutes.detail(reportDate)) }
             )
         }
         composable(ReceiptRoutes.Camera) {
@@ -836,7 +859,7 @@ private fun AppNavHost(
                 onOpenSubmit = {
                     onNavigateSingleTop(AppDestination.Submit.route)
                 },
-                onOpenUnconfirmedReceipts = { onNavigateSingleTop(ReceiptRoutes.Unconfirmed) }
+                onOpenUnconfirmedReceipts = { targetMonth -> onNavigateSingleTop(ReceiptRoutes.unconfirmed(targetMonth)) }
             )
         }
         composable(AppDestination.ReportList.route) {
@@ -891,7 +914,7 @@ private fun AppNavHost(
         composable(AppDestination.Submit.route) {
             ElectronicSubmissionScreen(
                 receipts = uiState.receipts,
-                onOpenUnconfirmedReceipts = { onNavigateSingleTop(ReceiptRoutes.Unconfirmed) }
+                onOpenUnconfirmedReceipts = { targetMonth -> onNavigateSingleTop(ReceiptRoutes.unconfirmed(targetMonth)) }
             )
         }
         composable(AppDestination.Settings.route) {
@@ -988,6 +1011,7 @@ private fun SideMenuItem(
         shape = RoundedCornerShape(8.dp),
         modifier = Modifier
             .fillMaxWidth()
+            .testTag("nav-${destination.route}")
             .clickable(onClick = onClick)
     ) {
         Row(
@@ -1010,6 +1034,7 @@ private fun BottomNavigation(
             NavigationBarItem(
                 selected = currentRoute == destination.route,
                 onClick = { onSelect(destination.route) },
+                modifier = Modifier.testTag("nav-${destination.route}"),
                 icon = { Icon(destination.icon, contentDescription = destination.label) },
                 label = { Text(destination.label, maxLines = 1) }
             )
@@ -3581,6 +3606,8 @@ private fun ReceiptScreen(
     capturedReceipt: ReceiptCaptureResult? = null,
     onCaptureCleared: () -> Unit = {},
     showUnconfirmedOnly: Boolean = false,
+    unconfirmedTargetMonth: String? = null,
+    onOpenFixedCost: (String) -> Unit = {},
     inputStateViewModel: InputStateViewModel = hiltViewModel(),
     receiptOcrViewModel: ReceiptOcrViewModel = hiltViewModel()
 ) {
@@ -3707,12 +3734,20 @@ private fun ReceiptScreen(
             ResponsivePrimaryAction("日報入力へ移動", onClick = { onNavigate(AppDestination.ReportEntry.route) })
         }
         ReceiptList(
-            if (showUnconfirmedOnly) uiState.receipts.filter { !it.isConfirmed } else uiState.receipts.take(8),
-            unconfirmedOnly = showUnconfirmedOnly
+            if (showUnconfirmedOnly) uiState.receipts.filter {
+                !it.isConfirmed && (unconfirmedTargetMonth == null || it.purchaseDate == null || it.purchaseDate.startsWith(unconfirmedTargetMonth))
+            } else uiState.receipts.take(8),
+            unconfirmedOnly = showUnconfirmedOnly,
+            onReceiptClick = onOpenFixedCost
         )
     }
-}@Composable
-private fun ReceiptList(receipts: List<ReceiptRecord>, unconfirmedOnly: Boolean = false) {
+}
+@Composable
+private fun ReceiptList(
+    receipts: List<ReceiptRecord>,
+    unconfirmedOnly: Boolean = false,
+    onReceiptClick: (String) -> Unit = {}
+) {
     DashboardCard {
         Text(
             if (unconfirmedOnly) "要確認レシート一覧" else "最近のレシート",
@@ -3726,19 +3761,21 @@ private fun ReceiptList(receipts: List<ReceiptRecord>, unconfirmedOnly: Boolean 
             )
         } else {
             receipts.forEach { receipt ->
-                TotalRow(receipt.purchaseDate ?: "日付未確認", receipt.totalAmount.toYen())
-                Text(
-                    text = listOfNotNull(
-                        receipt.storeName?.takeIf { it.isNotBlank() } ?: "支払先未設定",
-                        receipt.purchaseDate?.takeIf { it.isNotBlank() } ?: "日付未設定",
-                        receipt.totalAmount.toYen(),
-                        if (receipt.isConfirmed) "確認済み" else "確認待ち",
-                        if (!receipt.isConfirmed && receipt.purchaseDate.isNullOrBlank()) "日付未設定" else null
-                    ).joinToString(" / "),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onReceiptClick(receipt.id) }
+                        .testTag("receipt-row-${receipt.id}"),
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surface
+                ) {
+                    Column(Modifier.padding(8.dp)) {
+                        Text(receipt.storeName?.takeIf { it.isNotBlank() } ?: "支払先未設定", fontWeight = FontWeight.Bold)
+                        Text(receipt.purchaseDate ?: "日付未設定")
+                        Text("${receipt.totalAmount.toYen()} / ${if (receipt.isConfirmed) "確認済み" else "確認待ち"}")
+                        if (unconfirmedOnly) Text("固定費かどうかは未判定です", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
             }
         }
     }
@@ -4024,7 +4061,7 @@ private fun DailyBalanceList(rows: List<DailyBalanceRow>) {
 private fun MonthlyOrganizationScreen(
     uiState: DashboardUiState,
     onOpenSubmit: () -> Unit,
-    onOpenUnconfirmedReceipts: () -> Unit
+    onOpenUnconfirmedReceipts: (String) -> Unit
 ) {
     var selectedMonth by remember { mutableStateOf(YearMonth.now()) }
     val summary = remember(uiState, selectedMonth) {
@@ -4042,10 +4079,10 @@ private fun MonthlyOrganizationScreen(
         DashboardCard {
             Text("整理状況", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             AdaptiveSummaryGrid { cardModifier ->
-                SummaryCard("要確認レシート", "${summary.unconfirmedReceipts}件", modifier = cardModifier,
-                    onClick = onOpenUnconfirmedReceipts)
-                SummaryCard("日付未設定（全期間）", "${summary.dateUnknownReceipts}件", modifier = cardModifier,
-                    onClick = onOpenUnconfirmedReceipts)
+                SummaryCard("要確認レシート", "${summary.unconfirmedReceipts}件", modifier = cardModifier.testTag("monthly-unconfirmed-receipts"),
+                    onClick = { onOpenUnconfirmedReceipts(selectedMonth.toString()) })
+                SummaryCard("日付未設定（全期間）", "${summary.dateUnknownReceipts}件", modifier = cardModifier.testTag("monthly-undated-receipts"),
+                    onClick = { onOpenUnconfirmedReceipts(selectedMonth.toString()) })
                 SummaryCard("下書き日報", "${summary.draftReports}件", modifier = cardModifier)
                 SummaryCard("提出状況", summary.submissionLabel, modifier = cardModifier)
             }

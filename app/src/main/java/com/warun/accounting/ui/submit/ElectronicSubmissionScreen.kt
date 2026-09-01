@@ -60,7 +60,7 @@ import java.time.format.DateTimeFormatter
 @Composable
 fun ElectronicSubmissionScreen(
     receipts: List<ReceiptRecord> = emptyList(),
-    onOpenUnconfirmedReceipts: () -> Unit = {},
+    onOpenUnconfirmedReceipts: (String) -> Unit = {},
     viewModel: ElectronicSubmissionViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -292,7 +292,7 @@ fun ElectronicSubmissionScreen(
             confirmButton = {
                 Button(onClick = {
                     showUnconfirmedWarning = false
-                    onOpenUnconfirmedReceipts()
+                    onOpenUnconfirmedReceipts(month)
                 }) { Text("レシートを確認する") }
             },
             dismissButton = {
