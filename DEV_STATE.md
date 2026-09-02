@@ -262,6 +262,17 @@ JVMテストが`app/build/monthly-export-samples/`へ作成した合成テスト
 - Pixel 8の既存検証結果（connected instrumentation 132/132、JVM 572/572）を受入根拠とし、今回重いテストは再実行していない。
 - ローカルIP、ADB serial、認証情報、Evidence内容は記録していない。
 
+## v0.2.7 最近のレシート削除 A90受入 checkpoint（2026-09-02）
+
+- versionCode 9、versionName 0.2.7。Room schema v17、Migration差分なし。
+- 最近のレシートで未確認行にゴミ箱を表示し、確認済み行には表示しないことをA90で確認した。
+- 0円・未設定の確認待ちReceiptで削除確認ダイアログを開き、支払先、日付、金額、「この操作は取り消せません。」を確認した。
+- 受入ではキャンセルし、Receipt件数と対象行が不変であることを確認した。実削除は未実施である。
+- 電気／中部電力41,617円の2件は未操作である。
+- A90へのinstall -r、DB件数・Evidence保持、正式バックアップ検証はPASSした。instrumented APKは導入していない。
+- Pixel 8 connected instrumentation 144/144、JVM 572/572 PASS済みである。
+- A90受入で使用したローカルIP、ADB serial、認証情報、Evidence内容は記録していない。
+
 ## v0.2.5 電子提出画面最下部受入 checkpoint（2026-09-02）
 
 - 電子提出画面のLazyColumnへシステムnavigation bar insetを適用し、通常の下部余白を追加した。アプリ内bottomBarの既存innerPaddingとの二重適用は行っていない。

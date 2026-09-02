@@ -40,6 +40,7 @@ import androidx.compose.material.icons.outlined.AccountBalanceWallet
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.AttachFile
 import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.EditNote
@@ -823,7 +824,8 @@ private fun AppNavHost(
                 onSaveReceipt = viewModel::saveReceipt,
                 onOpenReceiptCamera = { navController.navigate(ReceiptRoutes.Camera) },
                 capturedReceipt = capturedReceipt,
-                onCaptureCleared = { capturedReceipt = null }
+                onCaptureCleared = { capturedReceipt = null },
+                onDeleteReceipt = { receipt, onResult -> viewModel.deleteReceipt(receipt, onResult) }
             )
         }
         composable(
@@ -3889,7 +3891,7 @@ internal fun ReceiptList(
     receipts: List<ReceiptRecord>,
     unconfirmedOnly: Boolean = false,
     onReceiptClick: (String) -> Unit = {},
-    onRequestDelete: (ReceiptRecord) -> Unit = {},
+    onRequestDelete: ((ReceiptRecord) -> Unit)? = null,
     deletingReceiptId: String? = null
 ) {
     DashboardCard {
@@ -3920,12 +3922,17 @@ internal fun ReceiptList(
                             Text("${receipt.totalAmount.toYen()} / ${if (receipt.isConfirmed) "確認済み" else "確認待ち"}")
                             if (unconfirmedOnly) Text("固定費かどうかは未判定です", color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        if (unconfirmedOnly && !receipt.isConfirmed) {
-                            TextButton(
+                        if (onRequestDelete != null && !receipt.isConfirmed) {
+                            IconButton(
                                 enabled = deletingReceiptId == null,
                                 modifier = Modifier.testTag("receipt-delete-${receipt.id}"),
-                                onClick = { onRequestDelete(receipt) }
-                            ) { Text("削除") }
+                                onClick = { onRequestDelete.invoke(receipt) }
+                            ) {
+                                Icon(
+                                    Icons.Outlined.DeleteOutline,
+                                    contentDescription = "削除"
+                                )
+                            }
                         }
                     }
                 }

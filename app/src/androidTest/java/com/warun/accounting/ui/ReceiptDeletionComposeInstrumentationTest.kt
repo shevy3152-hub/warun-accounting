@@ -34,6 +34,7 @@ class ReceiptDeletionComposeInstrumentationTest {
 
     private lateinit var database: WarunDatabase
     private lateinit var receipt: ReceiptRecord
+    private lateinit var confirmedReceipt: ReceiptRecord
     private lateinit var scenario: ActivityScenario<MainActivity>
 
     @Before
@@ -56,7 +57,13 @@ class ReceiptDeletionComposeInstrumentationTest {
             memo = null,
             updatedAt = 1L
         )
+        confirmedReceipt = receipt.copy(
+            id = "ui-confirmed-receipt",
+            storeName = "確認済み支払先",
+            isConfirmed = true
+        )
         runBlocking { database.warunDao().insertReceipt(receipt) }
+        runBlocking { database.warunDao().insertReceipt(confirmedReceipt) }
         scenario = ActivityScenario.launch(MainActivity::class.java)
     }
 
@@ -75,8 +82,7 @@ class ReceiptDeletionComposeInstrumentationTest {
             var selected by remember { mutableStateOf<ReceiptRecord?>(null) }
             WarunTheme {
                 ReceiptList(
-                    receipts = listOf(receipt),
-                    unconfirmedOnly = true,
+                    receipts = listOf(receipt, confirmedReceipt),
                     onRequestDelete = { selected = it }
                 )
                 selected?.let {
@@ -92,6 +98,10 @@ class ReceiptDeletionComposeInstrumentationTest {
         }
 
         composeRule.onNodeWithTag("receipt-delete-${receipt.id}").performClick()
+        assertEquals(
+            0,
+            composeRule.onAllNodesWithTag("receipt-delete-${confirmedReceipt.id}").fetchSemanticsNodes().size
+        )
         composeRule.waitUntil(5_000) {
             composeRule.onAllNodesWithText("レシートを削除しますか？").fetchSemanticsNodes().isNotEmpty()
         }
@@ -112,6 +122,44 @@ class ReceiptDeletionComposeInstrumentationTest {
         assertEquals(0L, count("fixed_cost_evidence_links"))
         assertEquals(0L, count("expense_records"))
         assertEquals(0L, count("evidence_records"))
+    }
+
+    @Test
+    fun recentReceiptListDeletesOnlyConfirmedAfterConfirmation() {
+        var deleteCalls = 0
+        scenario.onActivity { activity ->
+            activity.setContent {
+                var visibleReceipts by remember { mutableStateOf(listOf(receipt, confirmedReceipt)) }
+                var selected by remember { mutableStateOf<ReceiptRecord?>(null) }
+                WarunTheme {
+                    ReceiptList(
+                        receipts = visibleReceipts,
+                        onRequestDelete = { selected = it }
+                    )
+                    selected?.let {
+                        ReceiptDeletionDialog(
+                            receipt = it,
+                            isDeleting = false,
+                            onDismiss = { selected = null },
+                            onConfirm = {
+                                deleteCalls++
+                                visibleReceipts = visibleReceipts.filterNot { item -> item.id == it.id }
+                                selected = null
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        assertEquals(1, composeRule.onAllNodesWithText("最近のレシート").fetchSemanticsNodes().size)
+        composeRule.onNodeWithTag("receipt-delete-${receipt.id}").performClick()
+        composeRule.onNodeWithText("削除").performClick()
+
+        assertEquals(0, composeRule.onAllNodesWithTag("receipt-row-${receipt.id}").fetchSemanticsNodes().size)
+        assertEquals(1, composeRule.onAllNodesWithTag("receipt-row-${confirmedReceipt.id}").fetchSemanticsNodes().size)
+        assertEquals(0, composeRule.onAllNodesWithTag("receipt-delete-${confirmedReceipt.id}").fetchSemanticsNodes().size)
+        assertEquals(1, deleteCalls)
     }
 
     private fun count(table: String): Long = database.openHelper.writableDatabase.query("SELECT COUNT(*) FROM $table").use {

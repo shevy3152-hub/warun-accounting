@@ -83,8 +83,7 @@ class FixedCostEvidenceComposeInstrumentationTest {
             .assertHasClickAction()
             .performClick()
         composeRule.waitUntil(10_000) {
-            composeRule.onAllNodesWithTag("fixed-cost-screen").fetchSemanticsNodes().isNotEmpty() ||
-                composeRule.onAllNodesWithTag("fixed-cost-loading").fetchSemanticsNodes().isNotEmpty() ||
+            composeRule.onAllNodesWithTag("fixed-cost-type").fetchSemanticsNodes().isNotEmpty() ||
                 composeRule.onAllNodesWithTag("fixed-cost-not-found").fetchSemanticsNodes().isNotEmpty()
         }
         assertEquals(0, composeRule.onAllNodesWithTag("fixed-cost-not-found").fetchSemanticsNodes().size)
