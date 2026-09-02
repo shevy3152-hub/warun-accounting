@@ -37,6 +37,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -377,7 +378,7 @@ private fun ManualUploadCard() {
             Text("5. 完了後、この画面でMyKomonへの提出完了を記録する")
             Button(
                 onClick = { openMyKomon(context) },
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth().testTag("electronic-submission-last-action")
             ) { Text("MyKomonを開く") }
             Text(
                 "公式アプリが起動できない場合は、公式ログインページをブラウザで開きます。",

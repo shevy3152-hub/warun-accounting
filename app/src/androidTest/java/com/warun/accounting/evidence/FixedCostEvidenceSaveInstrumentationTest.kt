@@ -47,6 +47,7 @@ class FixedCostEvidenceSaveInstrumentationTest {
     @Test
     fun realResolverPersistsThreeMediaTypesAndAppliesOnce() = runBlocking {
         val fixture = fixture()
+        val expenseCountBefore = count("expense_records")
         val bytes = listOf(
             "image/jpeg; charset=binary" to byteArrayOf(0xff.toByte(), 0xd8.toByte(), 0xff.toByte(), 1, 0xff.toByte(), 0xd9.toByte()),
             "image/png" to byteArrayOf(137.toByte(), 80, 78, 71, 13, 10, 26, 10, 2),
@@ -70,7 +71,7 @@ class FixedCostEvidenceSaveInstrumentationTest {
         assertEquals(listOf(0, 1, 2), dao.getFixedCostEvidenceLinks(application.applicationId).map { it.sortOrder })
         assertEquals(7_000L, dao.getDailyReport(fixture.report.id)!!.electricityExpense)
         assertTrue(dao.getReceipt(fixture.receipt.id)!!.isConfirmed)
-        assertEquals(0L, count("expense_records"))
+        assertEquals(expenseCountBefore, count("expense_records"))
         assertEquals(0, journal.loadAll().entries.size)
         files.forEachIndexed { index, file ->
             val link = dao.getFixedCostEvidenceLinks(application.applicationId)[index]
@@ -81,6 +82,46 @@ class FixedCostEvidenceSaveInstrumentationTest {
             assertEquals(bytes[index].second.toList(), File(java.net.URI(evidence.storedUri)).readBytes().toList())
             assertFalse(store.pendingFileFor(link.evidenceId, evidence.mediaType).exists())
         }
+    }
+
+    @Test
+    fun zeroAmountRejectsBeforeCreatingFixedCostRecords() = runBlocking {
+        val fixture = fixture("zero-receipt", "zero-report")
+        val input = File(root, "zero-input").apply {
+            writeBytes(byteArrayOf(0xff.toByte(), 0xd8.toByte(), 0xff.toByte(), 1, 0xff.toByte(), 0xd9.toByte()))
+        }
+        val store = FixedCostEvidenceFileStore(File(root, "zero-pending"), File(root, "zero-stored"))
+        val journal = FixedCostFinalizationJournal(File(root, "zero-journal"))
+        val before = listOf(
+            count("receipts"),
+            count("fixed_cost_receipt_applications"),
+            count("fixed_cost_evidence_links"),
+            count("evidence_records")
+        )
+
+        assertEquals(
+            FixedCostSaveResult.AmountConflict,
+            FixedCostEvidenceSaveCoordinator(dao, store, journal, NoOpFixedCostFailureInjector).saveResult(
+                context.contentResolver,
+                FixedCostEvidenceSaveRequest(
+                    receiptId = "generated-zero-receipt",
+                    dailyReportId = fixture.report.id,
+                    fixedCostType = FixedCostType.Electricity,
+                    paymentMethod = "現金",
+                    appliedAmount = 0L,
+                    sources = listOf(FixedCostEvidenceSource(android.net.Uri.fromFile(input), "image/jpeg", 0)),
+                    directRegistrationKey = "zero-direct-registration"
+                )
+            )
+        )
+        assertEquals(before, listOf(
+            count("receipts"),
+            count("fixed_cost_receipt_applications"),
+            count("fixed_cost_evidence_links"),
+            count("evidence_records")
+        ))
+        assertTrue(journal.loadAll().entries.isEmpty())
+        assertTrue(store.pendingFileFor("not-created", "image/jpeg").parentFile!!.listFiles().orEmpty().isEmpty())
     }
 
     @Test

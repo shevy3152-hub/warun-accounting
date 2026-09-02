@@ -38,6 +38,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Assessment
 import androidx.compose.material.icons.outlined.AccountBalanceWallet
 import androidx.compose.material.icons.outlined.CalendarMonth
+import androidx.compose.material.icons.outlined.AttachFile
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Dashboard
@@ -85,6 +86,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -159,6 +161,7 @@ import com.warun.accounting.ui.model.shouldSaveCustomSupplierCandidate
 import com.warun.accounting.ui.receipt.ReceiptCameraScreen
 import com.warun.accounting.ui.receipt.ReceiptCaptureStartCoordinator
 import com.warun.accounting.ui.receipt.ReceiptCaptureResultKey
+import com.warun.accounting.ui.receipt.FixedCostDirectCaptureResultKey
 import com.warun.accounting.ui.receipt.ReceiptImageImportUiState
 import com.warun.accounting.ui.receipt.ReceiptImageImportViewModel
 import com.warun.accounting.ui.receipt.ReceiptOcrPanel
@@ -176,6 +179,7 @@ import com.warun.accounting.ui.prepaid.PrepaidNavigationGuard
 import com.warun.accounting.ui.fixedcost.FixedCostEvidenceScreen
 import com.warun.accounting.ui.fixedcost.FixedCostEvidenceViewer
 import com.warun.accounting.ui.fixedcost.FixedCostEvidenceStatusRows
+import com.warun.accounting.ui.fixedcost.FixedCostDirectEvidenceScreen
 import com.warun.accounting.data.fixedcost.FixedCostEvidenceRegistrationState
 import com.warun.accounting.data.fixedcost.registrationState
 import com.warun.accounting.ui.util.currentMonthString
@@ -354,8 +358,14 @@ private object ReceiptRoutes {
     const val Camera = "receipt_camera"
     const val Unconfirmed = "receipt_unconfirmed?targetMonth={targetMonth}"
     const val FixedCostDetail = "receipt_fixed_cost/{receiptId}"
+    const val DirectFixedCost = "receipt_fixed_cost_direct/{dailyReportId}/{fixedCostType}"
+    const val FixedCostViewer = "receipt_fixed_cost_viewer/{dailyReportId}/{fixedCostType}"
 
     fun fixedCostDetail(receiptId: String): String = "receipt_fixed_cost/${Uri.encode(receiptId)}"
+    fun directFixedCost(dailyReportId: String, fixedCostType: String): String =
+        "receipt_fixed_cost_direct/${Uri.encode(dailyReportId)}/${Uri.encode(fixedCostType)}"
+    fun fixedCostViewer(dailyReportId: String, fixedCostType: String): String =
+        "receipt_fixed_cost_viewer/${Uri.encode(dailyReportId)}/${Uri.encode(fixedCostType)}"
     fun unconfirmed(targetMonth: String? = null): String =
         targetMonth?.let { "receipt_unconfirmed?targetMonth=${Uri.encode(it)}" } ?: "receipt_unconfirmed"
 }
@@ -785,6 +795,10 @@ private fun AppNavHost(
                 onAddSupplierCandidate = viewModel::addSupplierCandidate,
                 onHideSupplierCandidate = viewModel::hideSupplierCandidate,
                 onOpenReceiptCamera = { navController.navigate(ReceiptRoutes.Camera) },
+                onOpenFixedCostEvidence = { reportId, type ->
+                    val stored = uiState.fixedCostEvidenceStatuses.firstOrNull { it.dailyReportId == reportId && it.fixedCostType == type }?.evidence.orEmpty()
+                    navController.navigate(if (stored.isEmpty()) ReceiptRoutes.directFixedCost(reportId, type) else ReceiptRoutes.fixedCostViewer(reportId, type))
+                },
                 capturedReceipt = capturedReceipt,
                 onCaptureReceived = { capturedReceipt = it },
                 onCaptureCleared = { capturedReceipt = null },
@@ -835,12 +849,52 @@ private fun AppNavHost(
                 onOpenReport = { reportDate -> onNavigate(ReportRoutes.detail(reportDate)) }
             )
         }
+        composable(
+            route = ReceiptRoutes.DirectFixedCost,
+            arguments = listOf(
+                navArgument("dailyReportId") { type = NavType.StringType },
+                navArgument("fixedCostType") { type = NavType.StringType }
+            )
+        ) { backStackEntry ->
+            val reportId = backStackEntry.arguments?.getString("dailyReportId").orEmpty()
+            val type = backStackEntry.arguments?.getString("fixedCostType").orEmpty()
+            val report = uiState.reports.firstOrNull { it.id == reportId }
+            var captured by remember { mutableStateOf<ReceiptCaptureResult?>(null) }
+            LaunchedEffect(backStackEntry) {
+                consumeReceiptCaptureResult(backStackEntry.savedStateHandle, FixedCostDirectCaptureResultKey)?.let { captured = it }
+            }
+            FixedCostDirectEvidenceScreen(
+                dailyReportId = reportId,
+                fixedCostType = type,
+                amount = report?.fixedCostAmountForUi(type) ?: 0L,
+                captured = captured,
+                onCaptureConsumed = { captured = null },
+                onOpenCamera = { navController.navigate(ReceiptRoutes.Camera) },
+                onDone = onPopBackStack,
+                onDismiss = onPopBackStack
+            )
+        }
+        composable(
+            route = ReceiptRoutes.FixedCostViewer,
+            arguments = listOf(
+                navArgument("dailyReportId") { type = NavType.StringType },
+                navArgument("fixedCostType") { type = NavType.StringType }
+            )
+        ) { backStackEntry ->
+            val reportId = backStackEntry.arguments?.getString("dailyReportId").orEmpty()
+            val type = backStackEntry.arguments?.getString("fixedCostType").orEmpty()
+            val evidence = uiState.fixedCostEvidenceStatuses.firstOrNull { it.dailyReportId == reportId && it.fixedCostType == type }?.evidence.orEmpty()
+            FixedCostEvidenceViewer(evidence = evidence, initialIndex = 0, onDismiss = onPopBackStack)
+        }
         composable(ReceiptRoutes.Camera) {
             ReceiptCameraScreen(
                 onCaptured = { result ->
                     navController.previousBackStackEntry
                         ?.savedStateHandle
-                        ?.set(ReceiptCaptureResultKey, result.toSavedValue())
+                        ?.set(
+                            if (navController.previousBackStackEntry?.destination?.route?.startsWith("receipt_fixed_cost_direct") == true) FixedCostDirectCaptureResultKey else ReceiptCaptureResultKey,
+                            result.toSavedValue()
+                        )
                     navController.popBackStack()
                 },
                 onCancel = { navController.popBackStack() }
@@ -903,6 +957,10 @@ private fun AppNavHost(
                 onAddSupplierCandidate = viewModel::addSupplierCandidate,
                 onHideSupplierCandidate = viewModel::hideSupplierCandidate,
                 onOpenReceiptCamera = { navController.navigate(ReceiptRoutes.Camera) },
+                onOpenFixedCostEvidence = { reportId, type ->
+                    val stored = uiState.fixedCostEvidenceStatuses.firstOrNull { it.dailyReportId == reportId && it.fixedCostType == type }?.evidence.orEmpty()
+                    navController.navigate(if (stored.isEmpty()) ReceiptRoutes.directFixedCost(reportId, type) else ReceiptRoutes.fixedCostViewer(reportId, type))
+                },
                 capturedReceipt = capturedReceipt,
                 onCaptureReceived = { capturedReceipt = it },
                 onCaptureCleared = { capturedReceipt = null },
@@ -1408,7 +1466,7 @@ private fun SaveActionCard(
                     PrimaryActionButton(
                         label = completeLabel,
                         onClick = onSaveComplete,
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().testTag("report-entry-last-action"),
                         enabled = !isSaving && completeEnabled
                     )
                 }
@@ -1429,7 +1487,7 @@ private fun SaveActionCard(
                     PrimaryActionButton(
                         label = completeLabel,
                         onClick = onSaveComplete,
-                        modifier = Modifier.width(220.dp),
+                        modifier = Modifier.width(220.dp).testTag("report-entry-last-action"),
                         enabled = !isSaving && completeEnabled
                     )
                 }
@@ -1597,6 +1655,7 @@ private fun ReportEntryScreen(
     onAddSupplierCandidate: (String, String, String) -> Unit,
     onHideSupplierCandidate: (SupplierCandidateRecord) -> Unit,
     onOpenReceiptCamera: () -> Unit,
+    onOpenFixedCostEvidence: (String, String) -> Unit,
     capturedReceipt: ReceiptCaptureResult? = null,
     onCaptureReceived: (ReceiptCaptureResult) -> Unit,
     onCaptureCleared: () -> Unit,
@@ -2211,6 +2270,7 @@ private fun ReportEntryScreen(
             totals = totals,
             expenses = reportExpenses,
             expenseEvidence = uiState.expenseEvidence,
+            fixedCostEvidenceStatuses = uiState.fixedCostEvidenceStatuses,
             previewExpenses = liveReportExpenses,
             cancelledExpenseKeys = uiState.cancelledExpenseKeys,
             draftExpenseInput = draftExpenseInput,
@@ -2224,6 +2284,13 @@ private fun ReportEntryScreen(
             onUtilityInputChange = { nextInput, editedValue ->
                 if (editedValue.isNotBlank()) utilityFieldsEdited = true
                 reportInput = nextInput
+            },
+            onOpenFixedCostEvidence = { type ->
+                if (reportInput.id.isBlank()) {
+                    saveFeedback = SaveFeedback("日報を先に保存してください", "固定費Evidenceは保存済みの日報へ登録します。", true)
+                } else {
+                    onOpenFixedCostEvidence(reportInput.id, type)
+                }
             },
             onCalendarDateSelected = { requestOpenReportDate(it) },
             onSaveExpense = ::saveExpenseWithPendingEvidence,
@@ -2251,6 +2318,7 @@ private fun DailyReportForm(
     totals: DailyReportTotals,
     expenses: List<ExpenseRecord>,
     expenseEvidence: List<ExpenseEvidenceRecord>,
+    fixedCostEvidenceStatuses: List<com.warun.accounting.data.fixedcost.FixedCostEvidenceStatus>,
     previewExpenses: List<ExpenseRecord>,
     cancelledExpenseKeys: Set<ExpenseDateCategoryKey>,
     draftExpenseInput: ExpenseInput?,
@@ -2262,6 +2330,7 @@ private fun DailyReportForm(
     enteredReportDates: Set<String>,
     onInputChange: (DailyReportInput) -> Unit,
     onUtilityInputChange: (DailyReportInput, String) -> Unit,
+    onOpenFixedCostEvidence: (String) -> Unit,
     onCalendarDateSelected: (String) -> Unit,
     onSaveExpense: (ExpenseInput, (Result<Unit>) -> Unit) -> Unit,
     onCancelExpense: (String) -> Unit,
@@ -2296,6 +2365,7 @@ private fun DailyReportForm(
                 input = input,
                 expenses = expenses,
                 expenseEvidence = expenseEvidence,
+                fixedCostEvidenceStatuses = fixedCostEvidenceStatuses,
                 previewExpenses = previewExpenses,
                 cancelledExpenseKeys = cancelledExpenseKeys,
                 draftExpenseInput = draftExpenseInput,
@@ -2307,7 +2377,8 @@ private fun DailyReportForm(
                 expenseTotal = totals.expenseTotal,
                 todayBalance = totals.todayBalance,
                 onInputChange = onInputChange,
-                onUtilityInputChange = onUtilityInputChange,
+            onUtilityInputChange = onUtilityInputChange,
+            onOpenFixedCostEvidence = onOpenFixedCostEvidence,
                 onSaveExpense = onSaveExpense,
                 onCancelExpense = onCancelExpense,
                 cancellationBusyExpenseId = cancellationBusyExpenseId,
@@ -2449,12 +2520,13 @@ private fun ReportCalendarDialog(
                     }
                 }
 
-                Row(modifier = Modifier.fillMaxWidth()) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     weekLabels.forEach { label ->
                         Text(
                             text = label,
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier.weight(1f).testTag("calendar-weekday-$label"),
                             style = MaterialTheme.typography.labelMedium,
+                            textAlign = TextAlign.Center,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
@@ -2477,7 +2549,7 @@ private fun ReportCalendarDialog(
                                         isToday = date == today,
                                         isMarked = date.toString() in markedDates,
                                         onClick = { onDateSelected(date) },
-                                        modifier = Modifier.weight(1f)
+                                        modifier = Modifier.weight(1f).testTag("calendar-day-$date")
                                     )
                                 } else {
                                     Spacer(
@@ -2585,6 +2657,7 @@ private fun ExpenseCard(
     input: DailyReportInput,
     expenses: List<ExpenseRecord>,
     expenseEvidence: List<ExpenseEvidenceRecord>,
+    fixedCostEvidenceStatuses: List<com.warun.accounting.data.fixedcost.FixedCostEvidenceStatus>,
     previewExpenses: List<ExpenseRecord>,
     cancelledExpenseKeys: Set<ExpenseDateCategoryKey>,
     draftExpenseInput: ExpenseInput?,
@@ -2593,6 +2666,7 @@ private fun ExpenseCard(
     todayBalance: Long,
     onInputChange: (DailyReportInput) -> Unit,
     onUtilityInputChange: (DailyReportInput, String) -> Unit,
+    onOpenFixedCostEvidence: (String) -> Unit,
     onSaveExpense: (ExpenseInput, (Result<Unit>) -> Unit) -> Unit,
     onCancelExpense: (String) -> Unit,
     cancellationBusyExpenseId: String?,
@@ -2707,24 +2781,24 @@ private fun ExpenseCard(
                     )
                 }
                 AdaptiveFormFields { fieldModifier ->
-                    AppTextField("電気代（中部電力）", input.electricityExpense, KeyboardType.Number, fieldModifier, clearZeroOnFocus = true) {
-                        onUtilityInputChange(input.copy(electricityExpense = it), it)
+                    FixedCostEntryRow("電気代（中部電力）", input.electricityExpense, fieldModifier, "electricity", input.id, fixedCostEvidenceStatuses, onOpenFixedCostEvidence) { value ->
+                        onUtilityInputChange(input.copy(electricityExpense = value), value)
                     }
-                    AppTextField("ガス代（丸栄ガス）", input.gasExpense, KeyboardType.Number, fieldModifier, clearZeroOnFocus = true) {
-                        onUtilityInputChange(input.copy(gasExpense = it), it)
+                    FixedCostEntryRow("ガス代（丸栄ガス）", input.gasExpense, fieldModifier, "gas", input.id, fixedCostEvidenceStatuses, onOpenFixedCostEvidence) { value ->
+                        onUtilityInputChange(input.copy(gasExpense = value), value)
                     }
-                    AppTextField("水道代（水道）", input.waterExpense, KeyboardType.Number, fieldModifier, clearZeroOnFocus = true) {
-                        onUtilityInputChange(input.copy(waterExpense = it), it)
+                    FixedCostEntryRow("水道代（水道）", input.waterExpense, fieldModifier, "water", input.id, fixedCostEvidenceStatuses, onOpenFixedCostEvidence) { value ->
+                        onUtilityInputChange(input.copy(waterExpense = value), value)
                     }
                 }
                 UtilityTotalRow(input.utilityBreakdownExpenseTotal().toYen())
-                AppTextField("通信費（NTT）", input.communicationExpense, KeyboardType.Number, clearZeroOnFocus = true) {
-                    onInputChange(input.copy(communicationExpense = it))
+                FixedCostEntryRow("通信費（NTT）", input.communicationExpense, Modifier.fillMaxWidth(), "communication", input.id, fixedCostEvidenceStatuses, onOpenFixedCostEvidence) { value ->
+                    onInputChange(input.copy(communicationExpense = value))
                 }
                 AppTextField("家賃（ヒロセフサコ）", input.rentExpense, KeyboardType.Number, clearZeroOnFocus = true) {
                     onInputChange(input.copy(rentExpense = it))
                 }
-                AppTextField("税理士顧問料", input.accountantFeeExpense, KeyboardType.Number, clearZeroOnFocus = true) {
+                AppTextField("税理士顧問料", input.accountantFeeExpense, KeyboardType.Number, clearZeroOnFocus = true, defaultValueOnFirstFocus = "22000") {
                     onInputChange(input.copy(accountantFeeExpense = it))
                 }
                 DetailedExpenseCategoryRow(VehicleTransportCategory, vehicleTransportTotal) {
@@ -4733,7 +4807,7 @@ private fun ScreenColumn(content: @Composable ColumnScope.() -> Unit) {
         val itemSpacing = if (maxWidth < 720.dp) 12.dp else 16.dp
 
         LazyColumn(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().navigationBarsPadding(),
             contentPadding = PaddingValues(screenPadding),
             verticalArrangement = Arrangement.spacedBy(itemSpacing)
         ) {
@@ -4920,16 +4994,24 @@ private fun AppTextField(
     keyboardType: KeyboardType = KeyboardType.Text,
     modifier: Modifier = Modifier.fillMaxWidth(),
     clearZeroOnFocus: Boolean = false,
+    defaultValueOnFirstFocus: String? = null,
     onValueChange: (String) -> Unit
 ) {
     val shouldClearZeroOnFocus = clearZeroOnFocus && keyboardType == KeyboardType.Number
     var wasFocused by remember { mutableStateOf(false) }
+    var firstFocusHandled by remember { mutableStateOf(false) }
     OutlinedTextField(
         value = value,
         onValueChange = onValueChange,
         label = { Text(label) },
         keyboardOptions = KeyboardOptions(keyboardType = keyboardType, imeAction = ImeAction.Next),
         modifier = modifier.onFocusChanged { focusState ->
+            if (focusState.isFocused && !firstFocusHandled) {
+                firstFocusHandled = true
+                if (value.isBlank() && defaultValueOnFirstFocus != null) {
+                    onValueChange(defaultValueOnFirstFocus)
+                }
+            }
             if (shouldClearZeroOnFocus) {
                 if (focusState.isFocused && !wasFocused && value == "0") {
                     onValueChange("")
@@ -4942,6 +5024,39 @@ private fun AppTextField(
         },
         singleLine = label != "営業メモ" && label != "メモ"
     )
+}
+
+@Composable
+private fun FixedCostEntryRow(
+    label: String,
+    value: String,
+    fieldModifier: Modifier,
+    fixedCostType: String,
+    reportId: String,
+    statuses: List<com.warun.accounting.data.fixedcost.FixedCostEvidenceStatus>,
+    onOpen: (String) -> Unit,
+    onValueChange: (String) -> Unit
+) {
+    val count = statuses.firstOrNull { it.dailyReportId == reportId && it.fixedCostType == fixedCostType }
+        ?.evidence?.size ?: 0
+    Row(modifier = fieldModifier, verticalAlignment = Alignment.CenterVertically) {
+        AppTextField(label, value, KeyboardType.Number, Modifier.weight(1f), clearZeroOnFocus = true, onValueChange = onValueChange)
+        TextButton(
+            onClick = { onOpen(fixedCostType) },
+            modifier = Modifier.testTag("fixed-cost-direct-$fixedCostType")
+        ) {
+            Icon(Icons.Outlined.AttachFile, contentDescription = null)
+            Text(if (count > 0) "証憑${count}件" else "証憑追加")
+        }
+    }
+}
+
+private fun DailyReport.fixedCostAmountForUi(type: String): Long = when (type) {
+    "electricity" -> electricityExpense
+    "water" -> waterExpense
+    "communication" -> communicationExpense
+    "gas" -> gasExpense
+    else -> 0L
 }
 
 internal enum class BalancePeriodMode(val label: String) {

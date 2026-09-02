@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.pdf.PdfDocument
 import android.graphics.pdf.PdfRenderer
 import android.os.ParcelFileDescriptor
 import androidx.test.core.app.ApplicationProvider
@@ -14,8 +15,10 @@ import com.warun.accounting.data.export.MonthlyExportSnapshot
 import com.warun.accounting.data.export.StoredEvidenceExportItem
 import com.warun.accounting.evidence.EvidenceFileReference
 import com.warun.accounting.evidence.EvidenceFileStore
+import com.warun.accounting.evidence.FixedCostEvidenceFileStore
 import java.io.File
 import java.io.FileOutputStream
+import java.security.MessageDigest
 import java.time.LocalDate
 import java.time.YearMonth
 import org.junit.After
@@ -100,6 +103,88 @@ class MonthlyExportPhase3InstrumentedTest {
                     }
                 }
             }
+        }
+    }
+
+    @Test
+    fun sameEvidenceIdAcrossExpenseAndFixedCostIsWrittenOnce() {
+        val reference = saveEvidence("ev-shared", 400, 800, Color.RED)
+        val fixedStore = FixedCostEvidenceFileStore(
+            File(root, "fixed-pending").apply { check(mkdirs()) },
+            File(root, "fixed-stored").apply { check(mkdirs()) }
+        )
+        val fixedFile = fixedStore.storedFileFor("ev-shared", "image/jpeg")
+        store.fileFor(reference.evidenceId).copyTo(fixedFile)
+        val base = snapshot(listOf(reference))
+        val fixedEvidence = base.storedEvidence.single().copy(
+            fixedCostType = "electricity",
+            storedUri = fixedFile.toURI().toString(),
+            reportDate = LocalDate.of(2026, 6, 5),
+            sortOrder = 0
+        )
+        val pdf = File(root, "shared-evidence.pdf")
+
+        val count = ReceiptEvidencePdfWriter(store, fixedStore).write(
+            base.copy(fixedCostStoredEvidence = listOf(fixedEvidence)),
+            pdf
+        )
+
+        assertEquals(1, count)
+        ParcelFileDescriptor.open(pdf, ParcelFileDescriptor.MODE_READ_ONLY).use { descriptor ->
+            PdfRenderer(descriptor).use { renderer -> assertEquals(1, renderer.pageCount) }
+        }
+    }
+
+    @Test
+    fun multiPageFixedCostPdfKeepsEveryOriginalPageInMonthlyPdf() {
+        val fixedStore = FixedCostEvidenceFileStore(
+            File(root, "fixed-pending-pages").apply { check(mkdirs()) },
+            File(root, "fixed-stored-pages").apply { check(mkdirs()) }
+        )
+        val source = fixedStore.storedFileFor("ev-pages", "application/pdf")
+        val document = PdfDocument()
+        try {
+            repeat(2) { index ->
+                val page = document.startPage(PdfDocument.PageInfo.Builder(400, 600, index + 1).create())
+                page.canvas.drawColor(if (index == 0) Color.RED else Color.BLUE)
+                document.finishPage(page)
+            }
+            FileOutputStream(source).use(document::writeTo)
+        } finally {
+            document.close()
+        }
+        val fixedEvidence = StoredEvidenceExportItem(
+            expenseId = "fixed-expense",
+            evidenceId = "ev-pages",
+            captureId = "capture-ev-pages",
+            storedUri = source.toURI().toString(),
+            byteSize = source.length(),
+            sha256 = sha256(source.readBytes()),
+            createdAt = 1L,
+            storedAt = 1L,
+            mediaType = "application/pdf",
+            fixedCostType = "electricity",
+            reportDate = LocalDate.of(2026, 6, 5),
+            sortOrder = 0
+        )
+        val pdf = File(root, "multi-page-fixed-cost.pdf")
+
+        val count = ReceiptEvidencePdfWriter(store, fixedStore).write(
+            MonthlyExportSnapshot(
+                targetMonth = YearMonth.of(2026, 6),
+                dailyReports = emptyList(),
+                dailyReportTotals = DailyReportExportTotals(0L, 0L, 0L, 0L, 0L, 0L),
+                expenses = emptyList(),
+                expenseTotal = 0L,
+                storedEvidence = emptyList(),
+                fixedCostStoredEvidence = listOf(fixedEvidence)
+            ),
+            pdf
+        )
+
+        assertEquals(2, count)
+        ParcelFileDescriptor.open(pdf, ParcelFileDescriptor.MODE_READ_ONLY).use { descriptor ->
+            PdfRenderer(descriptor).use { renderer -> assertEquals(2, renderer.pageCount) }
         }
     }
 
@@ -280,6 +365,9 @@ class MonthlyExportPhase3InstrumentedTest {
         bitmap.recycle()
         return store.promotePendingImage(id)
     }
+
+    private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(bytes)
+        .joinToString("") { "%02x".format(it) }
 
     private fun snapshot(references: List<EvidenceFileReference>): MonthlyExportSnapshot {
         val expense = ExpenseDetailExportRow(

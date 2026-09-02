@@ -10,7 +10,23 @@ import javax.inject.Inject
 data class MonthlyExportSourceSnapshot(
     val dailyReports: List<DailyReport>,
     val expenseVisibility: List<ExpenseVisibilityRecord>,
-    val storedEvidence: List<ExpenseEvidenceRecord>
+    val storedEvidence: List<ExpenseEvidenceRecord>,
+    val storedFixedCostEvidence: List<FixedCostEvidenceExportRecord> = emptyList()
+)
+
+data class FixedCostEvidenceExportRecord(
+    val dailyReportId: String,
+    val reportDate: String,
+    val fixedCostType: String,
+    val evidenceId: String,
+    val captureId: String,
+    val storedUri: String,
+    val byteSize: Long,
+    val sha256: String,
+    val createdAt: Long,
+    val storedAt: Long,
+    val mediaType: String,
+    val sortOrder: Int
 )
 
 interface MonthlyExportRepository {

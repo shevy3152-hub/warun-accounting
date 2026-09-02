@@ -252,3 +252,15 @@ JVMテストが`app/build/monthly-export-samples/`へ作成した合成テスト
 - instrumented APKはA90へ導入していない。固定費Evidenceの実データ最終保存は未確認である。
 - Pixel 8の既存検証結果（connected instrumentation 132/132、JVM 572/572）を受入根拠とし、今回重いテストは再実行していない。
 - ローカルIP、ADB serial、認証情報、Evidence内容は記録していない。
+
+## C4最終監査 checkpoint（2026-09-02）
+
+- 日報から固定費4種（電気代、ガス代、水道代、通信費）へEvidenceを直接添付し、日報確認画面の状態表示と既存Viewer導線を確認した。
+- 金額0円は保存前に拒否され、Receipt／Application／Link／Evidenceを生成しない。保存前後のExpenseRecord件数は不変である。
+- 月次PDFは固定費Evidenceを取り込み、JPEG／PNGと複数ページPDFの全ページを出力する。同一Evidence IDが通常Expenseと固定費に存在する場合は1回だけ出力する。
+- ガス代は「銀行振込」として保存し、通常ExpenseRecordを生成せず、現金支出・現金残高へ算入しない。
+- stored Evidenceのみを登録済み件数へ算入し、sortOrder順、日報分離、重複排除を維持する。原本・SHA-256・サイズ・DBは変更しない。
+- 税理士顧問料22,000円の空欄初回入力、既存値保持・変更・クリア、日報／電子提出画面の最下部スクロール、カレンダー曜日列・月移動を確認した。
+- Pixel 8 API 34のC4関連instrumentationは17/17 PASS、connected instrumentation全件は137/137 PASS（skip 0、failure 0、error 0）、JVMは572/572 PASSした。
+- compileInstrumentedAndroidTestKotlin、assembleDebug、git diff --checkはPASSした。Room schema v17、Migration差分なし、versionCode 6、versionName 0.2.4を確認した。
+- A90は未操作である。ローカルIP、ADB serial、認証情報、Evidence内容は記録していない。

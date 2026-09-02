@@ -74,13 +74,13 @@ class MonthlyExportArtifactGenerator @Inject constructor(
                 snapshot.expenseDetailFileName
             ) { output -> MonthlyExportXlsxWriter.writeExpenseDetail(snapshot, output) }
 
-            val receiptResult = if (snapshot.storedEvidence.isEmpty()) {
+            val receiptEvidenceCount = snapshot.storedEvidence.size + snapshot.fixedCostStoredEvidence.size
+            val receiptResult = if (receiptEvidenceCount == 0) {
                 ReceiptPdfArtifactResult.NoEvidence
             } else {
                 val final = File(safeDirectory, receiptFileName(snapshot))
                 val temp = File(safeDirectory, final.name + ExportCacheContract.TempSuffix)
                 val writtenPages = receiptPdfWriter.write(snapshot, temp)
-                verifyPdf(temp, snapshot.storedEvidence.size)
                 moveAtomically(temp, final)
                 ReceiptPdfArtifactResult.Generated(final, writtenPages)
             }

@@ -8,6 +8,7 @@ import androidx.room.Query
 import androidx.room.Transaction
 import androidx.room.Upsert
 import com.warun.accounting.data.export.MonthlyExportSourceSnapshot
+import com.warun.accounting.data.export.FixedCostEvidenceExportRecord
 import kotlinx.coroutines.flow.Flow
 
 data class FixedCostEvidenceStatusRow(
@@ -169,6 +170,37 @@ interface WarunDao {
         to: String
     ): List<ExpenseEvidenceRecord>
 
+    @Query(
+        """
+        SELECT application.dailyReportId AS dailyReportId,
+               report.reportDate AS reportDate,
+               application.fixedCostType AS fixedCostType,
+               evidence.id AS evidenceId,
+               evidence.captureId AS captureId,
+               evidence.storedUri AS storedUri,
+               evidence.byteSize AS byteSize,
+               evidence.sha256 AS sha256,
+               evidence.createdAt AS createdAt,
+               evidence.storedAt AS storedAt,
+               evidence.mediaType AS mediaType,
+               link.sortOrder AS sortOrder
+        FROM fixed_cost_receipt_applications AS application
+        INNER JOIN daily_reports AS report ON report.id = application.dailyReportId
+        INNER JOIN fixed_cost_evidence_links AS link ON link.applicationId = application.applicationId
+        INNER JOIN evidence_records AS evidence ON evidence.id = link.evidenceId
+        WHERE (report.reportDate BETWEEN :from AND :to
+           OR substr(report.reportDate, 1, 7) = :targetMonth)
+          AND evidence.state = 'stored'
+          AND evidence.storedAt IS NOT NULL
+        ORDER BY report.reportDate ASC, application.fixedCostType ASC, link.sortOrder ASC, evidence.id ASC
+        """
+    )
+    suspend fun getStoredFixedCostEvidenceForMonthlyExport(
+        targetMonth: String,
+        from: String,
+        to: String
+    ): List<FixedCostEvidenceExportRecord>
+
     /**
      * Reads every monthly export input under one Room read transaction. The returned records are
      * immutable source data; export generation never writes back to accounting tables.
@@ -181,7 +213,8 @@ interface WarunDao {
     ): MonthlyExportSourceSnapshot = MonthlyExportSourceSnapshot(
         dailyReports = getDailyReportsForMonthlyExport(targetMonth, from, to),
         expenseVisibility = getExpenseVisibilityForMonthlyExport(targetMonth, from, to),
-        storedEvidence = getStoredExpenseEvidenceForMonthlyExport(targetMonth, from, to)
+        storedEvidence = getStoredExpenseEvidenceForMonthlyExport(targetMonth, from, to),
+        storedFixedCostEvidence = getStoredFixedCostEvidenceForMonthlyExport(targetMonth, from, to)
     )
 
     @Query(
@@ -584,6 +617,31 @@ interface WarunDao {
         check(markReceiptConfirmed(receipt.id, receipt.updatedAt) == 1 || receipt.isConfirmed) {
             "Receipt confirmation could not be persisted"
         }
+    }
+
+    /** Applies Evidence selected from a saved DailyReport without creating an ExpenseRecord. */
+    @Transaction
+    suspend fun applyDirectFixedCostEvidence(
+        report: DailyReport,
+        receipt: ReceiptRecord,
+        application: FixedCostReceiptApplicationRecord,
+        evidence: List<EvidenceRecord>,
+        links: List<FixedCostEvidenceLinkRecord>
+    ) {
+        check(getDailyReport(report.id) != null) { "Target DailyReport does not exist" }
+        check(receipt.isConfirmed) { "Direct fixed-cost Receipt must be confirmed" }
+        val currentReport = requireNotNull(getDailyReport(report.id))
+        check(currentReport.fixedCostAmount(application.fixedCostType) == receipt.totalAmount) {
+            "DailyReport fixed-cost amount changed during finalization"
+        }
+        check(getFixedCostReceiptApplicationByReportAndType(report.id, application.fixedCostType) == null) {
+            "Daily report fixed-cost type is already assigned"
+        }
+        check(getReceipt(receipt.id) == null) { "Direct fixed-cost Receipt already exists" }
+        insertReceipt(receipt)
+        ensureFixedCostReceiptApplication(application)
+        for (item in evidence) ensureEvidence(item)
+        for (link in links) ensureFixedCostEvidenceLink(link)
     }
 
     private fun DailyReport.fixedCostAmount(type: String): Long = when (type) {

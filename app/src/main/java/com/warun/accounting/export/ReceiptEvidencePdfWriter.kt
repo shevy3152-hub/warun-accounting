@@ -9,12 +9,14 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.pdf.PdfDocument
+import android.os.ParcelFileDescriptor
 import android.media.ExifInterface
 import com.warun.accounting.data.export.ExpenseDetailExportRow
 import com.warun.accounting.data.export.MonthlyExportSnapshot
 import com.warun.accounting.data.export.StoredEvidenceExportItem
 import com.warun.accounting.evidence.EvidenceFileReference
 import com.warun.accounting.evidence.EvidenceFileStore
+import com.warun.accounting.evidence.FixedCostEvidenceFileStore
 import java.io.File
 import java.io.FileOutputStream
 import java.text.NumberFormat
@@ -38,46 +40,59 @@ class ReceiptPdfGenerationException(
 ) : IllegalStateException(message, cause)
 
 class ReceiptEvidencePdfWriter @Inject constructor(
-    private val evidenceFileStore: EvidenceFileStore
+    private val evidenceFileStore: EvidenceFileStore,
+    private val fixedCostEvidenceFileStore: FixedCostEvidenceFileStore
 ) {
+    /** Keeps the existing JVM/instrumented writer fixtures source-compatible. */
+    constructor(evidenceFileStore: EvidenceFileStore) : this(
+        evidenceFileStore,
+        FixedCostEvidenceFileStore(File("fixed-cost-evidence/pending"), File("fixed-cost-evidence/stored"))
+    )
     fun write(snapshot: MonthlyExportSnapshot, destination: File): Int {
-        require(snapshot.storedEvidence.isNotEmpty())
+        val allEvidence = (snapshot.storedEvidence + snapshot.fixedCostStoredEvidence)
+            .distinctBy { it.evidenceId }
+        require(allEvidence.isNotEmpty())
         val expenses = snapshot.expenses.associateBy(ExpenseDetailExportRow::expenseId)
-        val validated = snapshot.storedEvidence.map { evidence ->
+        val validated = allEvidence.map { evidence ->
             val expense = expenses[evidence.expenseId]
-                ?: throw ReceiptPdfGenerationException(
+            if (expense == null && evidence.fixedCostType == null) {
+                throw ReceiptPdfGenerationException(
                     ReceiptPdfFailureReason.EVIDENCE_METADATA_MISMATCH,
                     evidence.evidenceId,
                     "Evidenceに対応する有効な支出がありません"
                 )
+            }
             ValidatedEvidence(evidence, expense, validateEvidence(evidence))
         }
 
         val document = PdfDocument()
         try {
-            validated.forEachIndexed { index, item ->
-                val bitmap = decodeSampledAndOriented(item.file, item.evidence.evidenceId)
-                try {
-                    val header = buildHeader(item.expense)
-                    val layout = ReceiptPdfPageLayoutPlanner.plan(
-                        imageWidth = bitmap.width,
-                        imageHeight = bitmap.height,
-                        headerLineCount = header.size
-                    )
-                    val page = document.startPage(
-                        PdfDocument.PageInfo.Builder(
-                            layout.pageWidth,
-                            layout.pageHeight,
-                            index + 1
-                        ).create()
-                    )
+            var pageNumber = 0
+            validated.forEach { item ->
+                fun writeBitmap(bitmap: Bitmap) {
                     try {
-                        drawPage(page.canvas, header, bitmap, layout)
-                    } finally {
-                        document.finishPage(page)
+                        val header = buildHeader(item.evidence, item.expense)
+                        val layout = ReceiptPdfPageLayoutPlanner.plan(bitmap.width, bitmap.height, header.size)
+                        val page = document.startPage(PdfDocument.PageInfo.Builder(layout.pageWidth, layout.pageHeight, ++pageNumber).create())
+                        try { drawPage(page.canvas, header, bitmap, layout) } finally { document.finishPage(page) }
+                    } finally { bitmap.recycle() }
+                }
+                if (item.evidence.mediaType == "application/pdf") {
+                    ParcelFileDescriptor.open(item.file, ParcelFileDescriptor.MODE_READ_ONLY).use { descriptor ->
+                        android.graphics.pdf.PdfRenderer(descriptor).use { renderer ->
+                            check(renderer.pageCount > 0) { "PDFにページがありません" }
+                            repeat(renderer.pageCount) { pageIndex ->
+                                renderer.openPage(pageIndex).use { page ->
+                                    val scale = minOf(1f, 2048f / maxOf(page.width, page.height).toFloat())
+                                    val bitmap = Bitmap.createBitmap((page.width * scale).toInt().coerceAtLeast(1), (page.height * scale).toInt().coerceAtLeast(1), Bitmap.Config.ARGB_8888)
+                                    page.render(bitmap, null, null, android.graphics.pdf.PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                                    writeBitmap(bitmap)
+                                }
+                            }
+                        }
                     }
-                } finally {
-                    bitmap.recycle()
+                } else {
+                    writeBitmap(decodeSampledAndOriented(item.file, item.evidence.evidenceId))
                 }
             }
             destination.parentFile?.let { parent ->
@@ -88,7 +103,7 @@ class ReceiptEvidencePdfWriter @Inject constructor(
                 output.flush()
                 output.fd.sync()
             }
-            return validated.size
+            return pageNumber
         } catch (error: ReceiptPdfGenerationException) {
             throw error
         } catch (error: Throwable) {
@@ -104,6 +119,17 @@ class ReceiptEvidencePdfWriter @Inject constructor(
     }
 
     private fun validateEvidence(item: StoredEvidenceExportItem): File {
+        if (item.fixedCostType != null) {
+            val file = fixedCostEvidenceFileStore.storedFileFor(item.evidenceId, item.mediaType)
+            if (!file.isFile || file.length() != item.byteSize || sha256(file) != item.sha256) {
+                throw ReceiptPdfGenerationException(
+                    ReceiptPdfFailureReason.EVIDENCE_METADATA_MISMATCH,
+                    item.evidenceId,
+                    "固定費EvidenceとDBメタデータが一致しません"
+                )
+            }
+            return file
+        }
         val reference = try {
             evidenceFileStore.resolve(item.evidenceId)
         } catch (error: Throwable) {
@@ -134,10 +160,29 @@ class ReceiptEvidencePdfWriter @Inject constructor(
             byteSize == item.byteSize &&
             sha256.equals(item.sha256, ignoreCase = true)
 
-    private fun buildHeader(expense: ExpenseDetailExportRow): List<String> = buildList {
-        add("日付: ${expense.expenseDate}")
-        if (expense.supplierName.isNotBlank()) add("支出先: ${expense.supplierName}")
-        add("金額: ${NumberFormat.getIntegerInstance(Locale.JAPAN).format(expense.amount)}円")
+    private fun sha256(file: File): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    private fun buildHeader(evidence: StoredEvidenceExportItem, expense: ExpenseDetailExportRow?): List<String> = buildList {
+        if (evidence.fixedCostType != null) {
+            add("日付: ${evidence.reportDate}")
+            add("固定費: ${fixedCostLabel(evidence.fixedCostType)}")
+        } else {
+            val row = requireNotNull(expense)
+            add("日付: ${row.expenseDate}")
+            if (row.supplierName.isNotBlank()) add("支出先: ${row.supplierName}")
+            add("金額: ${NumberFormat.getIntegerInstance(Locale.JAPAN).format(row.amount)}円")
+        }
     }
 
     private fun drawPage(
@@ -277,9 +322,17 @@ class ReceiptEvidencePdfWriter @Inject constructor(
 
     private data class ValidatedEvidence(
         val evidence: StoredEvidenceExportItem,
-        val expense: ExpenseDetailExportRow,
+        val expense: ExpenseDetailExportRow?,
         val file: File
     )
+
+    private fun fixedCostLabel(type: String): String = when (type) {
+        "electricity" -> "電気代"
+        "water" -> "水道代"
+        "communication" -> "通信費"
+        "gas" -> "ガス代"
+        else -> "固定費"
+    }
 
     private companion object {
         // Decode one image at a time and keep the temporary working bitmap bounded.

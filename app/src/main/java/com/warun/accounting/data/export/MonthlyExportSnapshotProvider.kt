@@ -47,7 +47,11 @@ data class StoredEvidenceExportItem(
     val byteSize: Long,
     val sha256: String,
     val createdAt: Long,
-    val storedAt: Long
+    val storedAt: Long,
+    val mediaType: String = "image/jpeg",
+    val fixedCostType: String? = null,
+    val reportDate: LocalDate? = null,
+    val sortOrder: Int = 0
 )
 
 data class DailyReportExportTotals(
@@ -65,7 +69,8 @@ data class MonthlyExportSnapshot(
     val dailyReportTotals: DailyReportExportTotals,
     val expenses: List<ExpenseDetailExportRow>,
     val expenseTotal: Long,
-    val storedEvidence: List<StoredEvidenceExportItem>
+    val storedEvidence: List<StoredEvidenceExportItem>,
+    val fixedCostStoredEvidence: List<StoredEvidenceExportItem> = emptyList()
 ) {
     val dailyReportFileName: String
         get() = "${targetMonth.year}年${targetMonth.monthValue}月_日報.xlsx"
@@ -308,6 +313,28 @@ class MonthlyExportSnapshotProvider @Inject constructor(
                     .thenBy { it.createdAt }
                     .thenBy { it.evidenceId }
             )
+        val fixedCostEvidence = source.storedFixedCostEvidence
+            .map { item ->
+                StoredEvidenceExportItem(
+                    expenseId = "fixed:${item.dailyReportId}:${item.fixedCostType}",
+                    evidenceId = item.evidenceId,
+                    captureId = item.captureId,
+                    storedUri = item.storedUri,
+                    byteSize = item.byteSize,
+                    sha256 = item.sha256,
+                    createdAt = item.createdAt,
+                    storedAt = item.storedAt,
+                    mediaType = item.mediaType,
+                    fixedCostType = item.fixedCostType,
+                    reportDate = parseDate(item.reportDate),
+                    sortOrder = item.sortOrder
+                )
+            }
+            .sortedWith(compareBy<StoredEvidenceExportItem> { it.reportDate }.thenBy { it.fixedCostType }.thenBy { it.sortOrder }.thenBy { it.evidenceId })
+        val allEvidence = activeEvidence.map { it.evidenceId } + fixedCostEvidence.map { it.evidenceId }
+        allEvidence.groupBy { it }.entries.firstOrNull { it.value.size > 1 }?.let {
+            return validationFailure(MonthlyExportValidationFailureReason.DUPLICATE_EVIDENCE, it.key)
+        }
         val evidenceCountByExpense = activeEvidence.groupingBy { it.expenseId }.eachCount()
 
         val expenseRows: List<ExpenseDetailExportRow>
@@ -364,7 +391,8 @@ class MonthlyExportSnapshotProvider @Inject constructor(
                         createdAt = evidence.createdAt,
                         storedAt = evidence.storedAt
                     )
-                }
+                },
+                fixedCostStoredEvidence = fixedCostEvidence
             )
         )
     }
