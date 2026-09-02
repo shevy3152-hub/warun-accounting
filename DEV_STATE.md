@@ -291,3 +291,15 @@ JVMテストが`app/build/monthly-export-samples/`へ作成した合成テスト
 - Pixel 8 API 34のC4関連instrumentationは17/17 PASS、connected instrumentation全件は137/137 PASS（skip 0、failure 0、error 0）、JVMは572/572 PASSした。
 - compileInstrumentedAndroidTestKotlin、assembleDebug、git diff --checkはPASSした。Room schema v17、Migration差分なし、versionCode 6、versionName 0.2.4を確認した。
 - A90は未操作である。ローカルIP、ADB serial、認証情報、Evidence内容は記録していない。
+
+## v0.2.6 A90試験運用 checkpoint（2026-09-02）
+
+- A90へ versionCode 8、versionName 0.2.6を署名互換性確認後に `install -r`し、PASSした。
+- Room schema v17、DB整合性、既存件数保持をPASSした。
+- 更新前後で日報35件、Receipt 6件、Expense 42件、Evidence 41件、月次提出1件、電子提出履歴5件を保持した。
+- 正式バックアップを既存UI経路で作成し、manifest、DB、Evidenceの整合性を検証してPASSした。既存バックアップは変更・削除していない。
+- instrumented APKはA90へ導入していない。
+- A90の要確認Receiptは0件だったため、削除ダイアログを開く実データがなく、手動確認は未実施である。
+- 架空Receiptは作成していない。削除機能はPixel 8のCompose 1/1、Room 5/5、connected 143/143でPASS済みである。
+- 実際の要確認Receiptが発生した時に、削除ダイアログとキャンセル後の保持を最終運用確認する。
+- ローカルIP、ADB serial、認証情報、Evidence内容は記録していない。
