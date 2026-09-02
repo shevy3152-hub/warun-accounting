@@ -253,6 +253,24 @@ JVMテストが`app/build/monthly-export-samples/`へ作成した合成テスト
 - Pixel 8の既存検証結果（connected instrumentation 132/132、JVM 572/572）を受入根拠とし、今回重いテストは再実行していない。
 - ローカルIP、ADB serial、認証情報、Evidence内容は記録していない。
 
+## v0.2.5 電子提出画面最下部受入 checkpoint（2026-09-02）
+
+- 電子提出画面のLazyColumnへシステムnavigation bar insetを適用し、通常の下部余白を追加した。アプリ内bottomBarの既存innerPaddingとの二重適用は行っていない。
+- 長い電子提出履歴を最下部までスクロールし、最終「MyKomonへの提出完了を記録」ボタン全体が下部ナビゲーションより上に表示されることをCompose bounds assertionとA90目視で確認した。
+- Pixel 8 targeted Compose instrumentation 2/2 PASS、connected instrumentation全件137/137 PASS、JVM 572/572 PASS。compileInstrumentedAndroidTestKotlin、assembleDebug、git diff --checkもPASSした。
+- A90へversionCode 7、versionName 0.2.5を署名一致確認後にinstall -rした。既存DB・Evidence・バックアップは保持され、instrumented APKは導入していない。
+- Room schema v17、Migration差分なし。A90のアプリ固有クラッシュ、ANR、SecurityExceptionは確認していない。
+- A90受入で使用したローカルIP、ADB serial、認証情報、Evidence内容は記録していない。
+
+## v0.2.5 A90受入 checkpoint（2026-09-02）
+
+- 電子提出画面の最終提出完了ボタンについて、system navigation bar insetとアプリ内bottomBar領域を区別して適用し、長い履歴でも最下部まで完全表示できることを確認した。
+- Pixel 8 targeted Compose instrumentation 2/2 PASS、connected instrumentation全件137/137 PASS、JVM 572/572 PASS。compileInstrumentedAndroidTestKotlin、assembleDebug、git diff --checkはPASSした。
+- A90へversionCode 7、versionName 0.2.5を署名一致確認後にinstall -rした。Room schema v17、Migration差分なし。既存DB、Evidence、バックアップを保持し、instrumented APKは導入していない。
+- A90で電子提出履歴の最終ボタン全体と下側余白を目視確認した。アプリ固有のクラッシュ、ANR、SecurityExceptionは確認していない。
+- 固定費Evidenceの実データ最終保存、および実データを含む月次PDF提出は未確認である。
+- A90受入で使用したローカルIP、ADB serial、認証情報、Evidence内容は記録していない。
+
 ## C4最終監査 checkpoint（2026-09-02）
 
 - 日報から固定費4種（電気代、ガス代、水道代、通信費）へEvidenceを直接添付し、日報確認画面の状態表示と既存Viewer導線を確認した。

@@ -15,8 +15,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -114,7 +116,11 @@ fun ElectronicSubmissionScreen(
     }
 
     LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp)
+            .navigationBarsPadding(),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
@@ -212,7 +218,7 @@ fun ElectronicSubmissionScreen(
         if (state.electronicHistory.isEmpty()) {
             item { Text("電子提出ファイルの作成履歴はありません。") }
         } else {
-            items(state.electronicHistory, key = { it.id }) { record ->
+            itemsIndexed(state.electronicHistory, key = { _, record -> record.id }) { index, record ->
                 ElectronicHistoryCard(
                     record = record,
                     note = state.noteDrafts[record.id].orEmpty(),
@@ -220,7 +226,8 @@ fun ElectronicSubmissionScreen(
                     submitting = record.id in state.submittingIds,
                     onNoteChange = { viewModel.updateNoteDraft(record.id, it) },
                     onSaveNote = { viewModel.saveNote(record.id) },
-                    onConfirmSubmitted = { confirmSubmitted = record }
+                    onConfirmSubmitted = { confirmSubmitted = record },
+                    isLastHistoryRecord = index == state.electronicHistory.lastIndex
                 )
             }
         }
@@ -378,7 +385,7 @@ private fun ManualUploadCard() {
             Text("5. 完了後、この画面でMyKomonへの提出完了を記録する")
             Button(
                 onClick = { openMyKomon(context) },
-                modifier = Modifier.fillMaxWidth().testTag("electronic-submission-last-action")
+                modifier = Modifier.fillMaxWidth().testTag("electronic-submission-open-mykomon")
             ) { Text("MyKomonを開く") }
             Text(
                 "公式アプリが起動できない場合は、公式ログインページをブラウザで開きます。",
@@ -452,7 +459,8 @@ private fun ElectronicHistoryCard(
     submitting: Boolean,
     onNoteChange: (String) -> Unit,
     onSaveNote: () -> Unit,
-    onConfirmSubmitted: () -> Unit
+    onConfirmSubmitted: () -> Unit,
+    isLastHistoryRecord: Boolean
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
@@ -496,7 +504,15 @@ private fun ElectronicHistoryCard(
                 Button(
                     onClick = onConfirmSubmitted,
                     enabled = !submitting,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .then(
+                            if (isLastHistoryRecord) {
+                                Modifier.testTag("electronic-submission-last-action")
+                            } else {
+                                Modifier
+                            }
+                        )
                 ) { Text(if (submitting) "記録中…" else "MyKomonへの提出完了を記録") }
             }
         }

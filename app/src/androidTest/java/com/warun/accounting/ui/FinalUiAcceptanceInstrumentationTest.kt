@@ -10,6 +10,15 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Scaffold
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.dp
 import androidx.test.core.app.ActivityScenario
 import com.warun.accounting.MainActivity
 import com.warun.accounting.ui.submit.ElectronicSubmissionScreen
@@ -44,13 +53,38 @@ class FinalUiAcceptanceInstrumentationTest {
         scenario.onActivity { activity ->
             activity.setContent {
                 androidx.compose.material3.MaterialTheme {
-                    ElectronicSubmissionScreen()
+                    Scaffold(
+                        bottomBar = {
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .height(80.dp)
+                                    .testTag("test-app-bottom-bar")
+                            )
+                        }
+                    ) { innerPadding ->
+                        Box(Modifier.fillMaxSize().padding(innerPadding)) {
+                            ElectronicSubmissionScreen()
+                        }
+                    }
                 }
             }
         }
-        composeRule.onNodeWithTag("electronic-submission-last-action")
+        val lastAction = if (
+            composeRule.onAllNodesWithTag("electronic-submission-last-action")
+                .fetchSemanticsNodes().isEmpty()
+        ) {
+            composeRule.onNodeWithTag("electronic-submission-open-mykomon")
+        } else {
+            composeRule.onNodeWithTag("electronic-submission-last-action")
+        }
+        lastAction
             .performScrollTo()
             .assertIsDisplayed()
+        val actionBottom = lastAction.getUnclippedBoundsInRoot().bottom.value
+        val bottomBarTop = composeRule.onNodeWithTag("test-app-bottom-bar")
+            .getUnclippedBoundsInRoot().top.value
+        assertTrue("final action overlaps app bottom bar", actionBottom <= bottomBarTop)
     }
 
     @Test
