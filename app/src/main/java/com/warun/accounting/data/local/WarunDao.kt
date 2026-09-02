@@ -289,6 +289,43 @@ interface WarunDao {
     @Query("SELECT * FROM receipts WHERE id = :receiptId")
     suspend fun getReceipt(receiptId: String): ReceiptRecord?
 
+    @Query("SELECT EXISTS(SELECT 1 FROM expense_records WHERE receiptId = :receiptId)")
+    suspend fun hasExpenseReference(receiptId: String): Boolean
+
+    @Query(
+        """
+        DELETE FROM receipts
+        WHERE id = :receiptId
+          AND isConfirmed = 0
+          AND NOT EXISTS (
+              SELECT 1 FROM fixed_cost_receipt_applications
+              WHERE receiptId = :receiptId
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM expense_records
+              WHERE receiptId = :receiptId
+          )
+        """
+    )
+    suspend fun deleteUnconfirmedReceiptIfUnprotected(receiptId: String): Int
+
+    @Transaction
+    suspend fun deleteUnconfirmedReceipt(receiptId: String): Int {
+        val receipt = getReceipt(receiptId) ?: return 0
+        if (receipt.isConfirmed) return 2
+        if (getFixedCostReceiptApplicationByReceipt(receiptId) != null || hasExpenseReference(receiptId)) {
+            return 3
+        }
+        val deleted = deleteUnconfirmedReceiptIfUnprotected(receiptId)
+        if (deleted == 1) return 1
+        return when {
+            getReceipt(receiptId) == null -> 0
+            getReceipt(receiptId)?.isConfirmed == true -> 2
+            getFixedCostReceiptApplicationByReceipt(receiptId) != null || hasExpenseReference(receiptId) -> 3
+            else -> 4
+        }
+    }
+
     @Query("UPDATE receipts SET isConfirmed = 1, updatedAt = :updatedAt WHERE id = :receiptId AND isConfirmed = 0")
     suspend fun markReceiptConfirmed(receiptId: String, updatedAt: Long): Int
 

@@ -20,6 +20,7 @@ import com.warun.accounting.util.normalizePaymentMethod
 import javax.inject.Inject
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.CancellationException
 
 class OfflineAccountingRepository @Inject constructor(
     private val dao: WarunDao,
@@ -159,6 +160,20 @@ class OfflineAccountingRepository @Inject constructor(
     }
 
     override suspend fun deleteReceipt(receipt: ReceiptRecord) = dao.deleteReceipt(receipt)
+
+    override suspend fun deleteUnconfirmedReceipt(receiptId: String): ReceiptDeletionResult = try {
+        when (dao.deleteUnconfirmedReceipt(receiptId)) {
+            1 -> ReceiptDeletionResult.Deleted
+            2 -> ReceiptDeletionResult.AlreadyConfirmed
+            3 -> ReceiptDeletionResult.Protected
+            0 -> ReceiptDeletionResult.NotFound
+            else -> ReceiptDeletionResult.Failed
+        }
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (_: Exception) {
+        ReceiptDeletionResult.Failed
+    }
 
     override suspend fun saveSupplierCandidate(candidate: SupplierCandidateRecord) = dao.upsertSupplierCandidate(candidate)
 

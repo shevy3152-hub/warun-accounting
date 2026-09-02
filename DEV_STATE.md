@@ -241,6 +241,15 @@ JVMテストが`app/build/monthly-export-samples/`へ作成した合成テスト
 - 日報一覧から詳細へのNavigation smokeはViewer受入から分離し、今回未実施である。
 - A90は未操作である。ローカルIP、ADB serial、認証情報、Evidence内容は記録していない。
 
+## Receipt安全削除 checkpoint（2026-09-02）
+
+- 未確認かつ未関連のReceiptだけ削除可能とし、確認済み、固定費Application／Evidence Link、Expense、Evidence関連済みReceiptは削除禁止とした。
+- Evidence原本、pending画像、Journal、バックアップ、Receipt以外のDBレコードは削除しない。削除判定と条件付きDELETEはRoom transaction内で行う。
+- 削除確認ダイアログで支払先、日付、金額、「この操作は取り消せません。」を表示し、キャンセル時は削除処理を呼ばず一覧とDB件数を維持する。
+- Compose削除確認テスト1/1 PASS、Room削除targeted instrumentation 5/5 PASS、connected instrumentation全件143/143 PASS、JVM 572/572 PASS。
+- Room schema v17、Migration差分なし、versionCode 7、versionName 0.2.5を維持した。
+- A90は未操作である。ローカルIP、ADB serial、認証情報、Evidence内容は記録していない。
+
 ## v0.2.4 A90受入 checkpoint（2026-09-01）
 
 - A90現行版を確認し、debug APKと署名証明書が一致したため、既存データを保持したまま `install -r` を実施した。

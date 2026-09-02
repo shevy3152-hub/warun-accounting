@@ -112,6 +112,7 @@ import com.warun.accounting.data.local.ExpenseEvidenceRecord
 import com.warun.accounting.data.local.ExpenseSourceType
 import com.warun.accounting.data.local.MonthlySubmissionStatus
 import com.warun.accounting.data.local.ReceiptRecord
+import com.warun.accounting.data.ReceiptDeletionResult
 import com.warun.accounting.data.local.SupplierCandidateRecord
 import com.warun.accounting.data.local.PrepaidAccountBalance
 import com.warun.accounting.data.local.PrepaidAccountRecord
@@ -836,7 +837,8 @@ private fun AppNavHost(
                 onOpenReceiptCamera = { navController.navigate(ReceiptRoutes.Camera) },
                 showUnconfirmedOnly = true,
                 unconfirmedTargetMonth = backStackEntry.arguments?.getString("targetMonth"),
-                onOpenFixedCost = { receiptId -> navController.navigate(ReceiptRoutes.fixedCostDetail(receiptId)) }
+                onOpenFixedCost = { receiptId -> navController.navigate(ReceiptRoutes.fixedCostDetail(receiptId)) },
+                onDeleteReceipt = { receipt, onResult -> viewModel.deleteReceipt(receipt, onResult) }
             )
         }
         composable(
@@ -3688,12 +3690,15 @@ private fun ReceiptScreen(
     showUnconfirmedOnly: Boolean = false,
     unconfirmedTargetMonth: String? = null,
     onOpenFixedCost: (String) -> Unit = {},
+    onDeleteReceipt: (ReceiptRecord, (ReceiptDeletionResult) -> Unit) -> Unit = { _, _ -> },
     inputStateViewModel: InputStateViewModel = hiltViewModel(),
     receiptOcrViewModel: ReceiptOcrViewModel = hiltViewModel()
 ) {
     var input by inputStateViewModel.receiptInputState
     var isSaving by inputStateViewModel.receiptSavingState
     var saveFeedback by remember { mutableStateOf<SaveFeedback?>(null) }
+    var receiptToDelete by remember { mutableStateOf<ReceiptRecord?>(null) }
+    var deletingReceiptId by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
     val captureStartCoordinator = remember(context) {
         ReceiptCaptureStartCoordinator(
@@ -3818,15 +3823,74 @@ private fun ReceiptScreen(
                 !it.isConfirmed && (unconfirmedTargetMonth == null || it.purchaseDate == null || it.purchaseDate.startsWith(unconfirmedTargetMonth))
             } else uiState.receipts.take(8),
             unconfirmedOnly = showUnconfirmedOnly,
-            onReceiptClick = onOpenFixedCost
+            onReceiptClick = onOpenFixedCost,
+            onRequestDelete = { receipt -> if (deletingReceiptId == null) receiptToDelete = receipt },
+            deletingReceiptId = deletingReceiptId
+        )
+    }
+
+    receiptToDelete?.let { receipt ->
+        ReceiptDeletionDialog(
+            receipt = receipt,
+            isDeleting = deletingReceiptId != null,
+            onDismiss = { receiptToDelete = null },
+            onConfirm = {
+                deletingReceiptId = receipt.id
+                onDeleteReceipt(receipt) { result ->
+                    deletingReceiptId = null
+                    if (result == ReceiptDeletionResult.Deleted) {
+                        receiptToDelete = null
+                    } else {
+                        saveFeedback = SaveFeedback(
+                            title = "削除できませんでした",
+                            body = when (result) {
+                                ReceiptDeletionResult.AlreadyConfirmed -> "確認済みのレシートは削除できません。"
+                                ReceiptDeletionResult.NotFound -> "レシートが見つかりません。"
+                                ReceiptDeletionResult.Protected -> "関連付け済みのため削除できません。"
+                                else -> "関連データを確認して、もう一度お試しください。"
+                            },
+                            isError = true
+                        )
+                    }
+                }
+            }
         )
     }
 }
 @Composable
-private fun ReceiptList(
+internal fun ReceiptDeletionDialog(
+    receipt: ReceiptRecord,
+    isDeleting: Boolean,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = { if (!isDeleting) onDismiss() },
+        title = { Text("レシートを削除しますか？") },
+        text = {
+            Column {
+                Text("支払先: ${receipt.storeName?.takeIf { it.isNotBlank() } ?: "未設定"}")
+                Text("日付: ${receipt.purchaseDate ?: "未設定"}")
+                Text("金額: ${receipt.totalAmount.toYen()}")
+                Spacer(Modifier.height(8.dp))
+                Text("この操作は取り消せません。")
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = !isDeleting, onClick = onConfirm) { Text("削除") }
+        },
+        dismissButton = {
+            TextButton(enabled = !isDeleting, onClick = onDismiss) { Text("キャンセル") }
+        }
+    )
+}
+@Composable
+internal fun ReceiptList(
     receipts: List<ReceiptRecord>,
     unconfirmedOnly: Boolean = false,
-    onReceiptClick: (String) -> Unit = {}
+    onReceiptClick: (String) -> Unit = {},
+    onRequestDelete: (ReceiptRecord) -> Unit = {},
+    deletingReceiptId: String? = null
 ) {
     DashboardCard {
         Text(
@@ -3849,11 +3913,20 @@ private fun ReceiptList(
                     shape = RoundedCornerShape(8.dp),
                     color = MaterialTheme.colorScheme.surface
                 ) {
-                    Column(Modifier.padding(8.dp)) {
-                        Text(receipt.storeName?.takeIf { it.isNotBlank() } ?: "支払先未設定", fontWeight = FontWeight.Bold)
-                        Text(receipt.purchaseDate ?: "日付未設定")
-                        Text("${receipt.totalAmount.toYen()} / ${if (receipt.isConfirmed) "確認済み" else "確認待ち"}")
-                        if (unconfirmedOnly) Text("固定費かどうかは未判定です", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(receipt.storeName?.takeIf { it.isNotBlank() } ?: "支払先未設定", fontWeight = FontWeight.Bold)
+                            Text(receipt.purchaseDate ?: "日付未設定")
+                            Text("${receipt.totalAmount.toYen()} / ${if (receipt.isConfirmed) "確認済み" else "確認待ち"}")
+                            if (unconfirmedOnly) Text("固定費かどうかは未判定です", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        if (unconfirmedOnly && !receipt.isConfirmed) {
+                            TextButton(
+                                enabled = deletingReceiptId == null,
+                                modifier = Modifier.testTag("receipt-delete-${receipt.id}"),
+                                onClick = { onRequestDelete(receipt) }
+                            ) { Text("削除") }
+                        }
                     }
                 }
             }

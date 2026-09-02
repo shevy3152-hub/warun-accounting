@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.warun.accounting.camera.ReceiptCaptureResult
 import com.warun.accounting.data.AccountingRepository
+import com.warun.accounting.data.ReceiptDeletionResult
 import com.warun.accounting.data.edit.ExpenseEditRepository
 import com.warun.accounting.data.edit.SavedExpenseEditRequest
 import com.warun.accounting.data.local.AppSettings
@@ -405,9 +406,9 @@ class DashboardViewModel @Inject constructor(
             )
         }
     }
-    fun deleteReceipt(receipt: ReceiptRecord) {
+    fun deleteReceipt(receipt: ReceiptRecord, onResult: (ReceiptDeletionResult) -> Unit = {}) {
         viewModelScope.launch {
-            repository.deleteReceipt(receipt)
+            onResult(repository.deleteUnconfirmedReceipt(receipt.id))
         }
     }
 

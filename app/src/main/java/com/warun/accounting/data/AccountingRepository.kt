@@ -59,6 +59,7 @@ interface AccountingRepository {
     ): Boolean
     suspend fun deleteExpenseRecord(expense: ExpenseRecord)
     suspend fun deleteReceipt(receipt: ReceiptRecord)
+    suspend fun deleteUnconfirmedReceipt(receiptId: String): ReceiptDeletionResult
     suspend fun saveSupplierCandidate(candidate: SupplierCandidateRecord)
     suspend fun saveMonthlySubmission(submission: MonthlySubmission)
     suspend fun saveAppSettings(settings: AppSettings)
