@@ -2,6 +2,7 @@ package com.warun.accounting.backup
 
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
+import android.net.Uri
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.test.core.app.ApplicationProvider
@@ -29,6 +30,7 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.InputStream
 import java.io.OutputStream
 import java.util.UUID
 import kotlinx.coroutines.flow.first
@@ -140,6 +142,44 @@ class BackupRestoreInstrumentationTest {
     }
 
     @Test
+    fun backupIncludesFixedCostEvidenceAndRejectsConflictingDuplicateSource() = runBlocking {
+        insertCompleteFixture(database)
+        val fixedBytes = "%PDF-1.7\nfixed-cost\n%%EOF".toByteArray()
+        val fixedId = "fixed-evidence-1"
+        val fixedFile = File(paths.fixedCostEvidenceDirectory, "evidence_$fixedId.pdf").apply {
+            parentFile?.mkdirs()
+            writeBytes(fixedBytes)
+        }
+        database.warunDao().insertEvidenceRecord(
+            EvidenceRecord(
+                id = fixedId,
+                captureId = "capture-$fixedId",
+                storedUri = fixedFile.toURI().toString(),
+                byteSize = fixedBytes.size.toLong(),
+                sha256 = sha256(fixedBytes),
+                state = EvidenceRecordState.Stored,
+                createdAt = 2L,
+                storedAt = 3L,
+                updatedAt = 3L,
+                mediaType = "application/pdf"
+            )
+        )
+
+        val archive = ByteArrayOutputStream().also(manager()::createBackup).toByteArray()
+        val extracted = BackupArchive.extractAndValidate(ByteArrayInputStream(archive), File(root, "fixed-candidate"))
+        assertEquals(3, extracted.manifest.evidence.size)
+        assertEquals(fixedBytes.toList(), extracted.evidenceFiles.getValue(fixedId).readBytes().toList())
+
+        val duplicate = File(paths.liveEvidenceDirectory, "evidence_$fixedId.pdf")
+            .apply { parentFile?.mkdirs(); writeBytes("%PDF-1.7\nconflict\n%%EOF".toByteArray()) }
+        val error = org.junit.Assert.assertThrows(BackupException::class.java) {
+            manager().createBackup(ByteArrayOutputStream())
+        }
+        assertEquals(BackupFailure.EvidenceMismatch, error.failure)
+        assertTrue(duplicate.isFile)
+    }
+
+    @Test
     fun missingFormalEvidenceRejectsBackupWithoutChangingDatabase() = runBlocking {
         insertCompleteFixture(database)
         val before = count("expense_records")
@@ -168,10 +208,93 @@ class BackupRestoreInstrumentationTest {
         }.exceptionOrNull() as? BackupException
 
         assertEquals(BackupFailure.OutputFailure, error?.failure)
+        assertEquals(BackupStage.OutputWrite, error?.stage)
         assertEquals(1L, count("daily_reports"))
         assertEquals(2L, count("expense_records"))
         assertEquals(2L, count("evidence_records"))
         assertEquals(2L, count("prepaid_transactions"))
+    }
+
+    @Test
+    fun flushFailureIsClassifiedWithoutChangingProductionData() = runBlocking {
+        insertCompleteFixture(database)
+        val error = runCatching {
+            manager().createBackup(object : ByteArrayOutputStream() {
+                override fun flush() = throw IOException("forced flush failure")
+            })
+        }.exceptionOrNull() as? BackupException
+
+        assertEquals(BackupFailure.OutputFailure, error?.failure)
+        assertEquals(BackupStage.OutputFlush, error?.stage)
+        assertEquals(1L, count("daily_reports"))
+        assertEquals(2L, count("evidence_records"))
+    }
+
+    @Test
+    fun closeFailureIsClassifiedWithoutChangingProductionData() = runBlocking {
+        insertCompleteFixture(database)
+        val error = runCatching {
+            manager().createBackup(object : ByteArrayOutputStream() {
+                override fun close() = throw IOException("forced close failure")
+            })
+        }.exceptionOrNull() as? BackupException
+
+        assertEquals(BackupFailure.OutputFailure, error?.failure)
+        assertEquals(BackupStage.OutputClose, error?.stage)
+        assertEquals(1L, count("daily_reports"))
+        assertEquals(2L, count("evidence_records"))
+    }
+
+    @Test
+    fun safProviderUsingWtModeCreatesAndVerifiesCompleteArchive() = runBlocking {
+        insertCompleteFixture(database)
+        var requestedMode: String? = null
+        val output = ByteArrayOutputStream()
+        val result = manager(
+            outputStreamFactory = { _, mode ->
+                requestedMode = mode
+                output
+            },
+            inputStreamFactory = { ByteArrayInputStream(output.toByteArray()) }
+        ).createBackup(Uri.parse("content://test/backup"))
+
+        assertEquals("wt", requestedMode)
+        assertTrue(output.size() > 0)
+        assertEquals(1L, result.summary.dailyReportCount)
+        assertEquals(2L, result.summary.evidenceCount)
+    }
+
+    @Test
+    fun safOutputOpenFailureIsClassifiedAndDoesNotChangeProductionData() = runBlocking {
+        insertCompleteFixture(database)
+        val error = runCatching {
+            manager(
+                outputStreamFactory = { _, _ -> throw SecurityException("permission denied") }
+            ).createBackup(Uri.parse("content://test/backup"))
+        }.exceptionOrNull() as? BackupException
+
+        assertEquals(BackupFailure.OutputFailure, error?.failure)
+        assertEquals(BackupStage.OutputOpen, error?.stage)
+        assertEquals(1L, count("daily_reports"))
+        assertEquals(2L, count("evidence_records"))
+    }
+
+    @Test
+    fun safOutputVerificationFailureIsNotReportedAsSuccess() = runBlocking {
+        insertCompleteFixture(database)
+        val output = ByteArrayOutputStream()
+        val error = runCatching {
+            manager(
+                outputStreamFactory = { _, _ -> output },
+                inputStreamFactory = { ByteArrayInputStream("not a zip".toByteArray()) }
+            ).createBackup(Uri.parse("content://test/backup"))
+        }.exceptionOrNull() as? BackupException
+
+        assertEquals(BackupFailure.OutputFailure, error?.failure)
+        assertEquals(BackupStage.OutputVerify, error?.stage)
+        assertTrue(output.size() > 0)
+        assertEquals(1L, count("daily_reports"))
+        assertEquals(2L, count("evidence_records"))
     }
 
     @Test
@@ -380,14 +503,22 @@ class BackupRestoreInstrumentationTest {
     }
 
     private fun manager(
-        interceptor: RestoreInstallInterceptor = RestoreInstallInterceptor.None
+        interceptor: RestoreInstallInterceptor = RestoreInstallInterceptor.None,
+        outputStreamFactory: ((Uri, String) -> OutputStream?)? = null,
+        inputStreamFactory: ((Uri) -> InputStream?)? = null
     ) = BackupRestoreManager(
         context = context,
         database = database,
             paths = paths,
             inspector = BackupDatabaseInspector(),
             restoreInterceptor = interceptor,
-            stagedUpgradeInterceptor = StagedDatabaseUpgradeInterceptor.None
+            stagedUpgradeInterceptor = StagedDatabaseUpgradeInterceptor.None,
+            outputStreamFactory = outputStreamFactory ?: { uri, mode ->
+                context.contentResolver.openOutputStream(uri, mode)
+            },
+            inputStreamFactory = inputStreamFactory ?: { uri ->
+                context.contentResolver.openInputStream(uri)
+            }
         )
 
     private fun openDatabase(): WarunDatabase = Room.databaseBuilder(

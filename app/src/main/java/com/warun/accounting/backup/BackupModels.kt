@@ -101,17 +101,28 @@ enum class BackupFailure {
     Busy
 }
 
+enum class BackupStage {
+    Build,
+    OutputOpen,
+    OutputWrite,
+    OutputFlush,
+    OutputClose,
+    OutputVerify
+}
+
 class BackupException(
     val failure: BackupFailure,
     message: String,
-    cause: Throwable? = null
+    cause: Throwable? = null,
+    val stage: BackupStage? = null
 ) : IllegalStateException(message, cause)
 
 internal fun backupFail(
     failure: BackupFailure,
     message: String,
-    cause: Throwable? = null
-): Nothing = throw BackupException(failure, message, cause)
+    cause: Throwable? = null,
+    stage: BackupStage? = null
+): Nothing = throw BackupException(failure, message, cause, stage)
 
 internal fun BackupArchiveEntry.validate(
     expectedPath: String,

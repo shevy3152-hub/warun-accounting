@@ -19,7 +19,11 @@ import java.util.UUID
 data class BackupPaths(
     val databaseFile: File,
     val liveEvidenceDirectory: File,
-    val workRoot: File
+    val workRoot: File,
+    val fixedCostEvidenceDirectory: File = File(
+        liveEvidenceDirectory.parentFile?.parentFile ?: liveEvidenceDirectory,
+        "fixed-cost-evidence/stored"
+    )
 ) {
     val restoreRoot: File = File(workRoot, "restore")
     val restoreJournalFile: File = File(restoreRoot, "restore-journal.properties")
@@ -40,6 +44,18 @@ data class BackupPaths(
             backupFail(BackupFailure.RestoreFailure, "Restore path escaped private staging")
         }
         return directory
+    }
+
+    fun evidenceDirectoryForStoredUri(storedUri: String): File =
+        if (storedUri.contains("/fixed-cost-evidence/stored/")) fixedCostEvidenceDirectory
+        else liveEvidenceDirectory
+
+    fun evidenceSourceCandidates(evidenceId: String, mediaType: String): List<Pair<File, File>> {
+        val extension = BackupContract.evidenceEntry(evidenceId, mediaType).substringAfterLast('.')
+        val name = "evidence_$evidenceId.$extension"
+        return listOf(liveEvidenceDirectory, fixedCostEvidenceDirectory)
+            .distinctBy { it.canonicalPath }
+            .map { it to File(it, name) }
     }
 }
 
@@ -191,7 +207,7 @@ class BackupDatabaseInspector {
             databaseFile = paths.databaseFile,
             evidenceFiles = manifest.evidence.associate { item ->
                 item.evidenceId to File(
-                    paths.liveEvidenceDirectory,
+                    paths.evidenceDirectoryForStoredUri(item.storedUri),
                     "evidence_${item.evidenceId}.${item.archiveEntry.path.substringAfterLast('.')}"
                 )
             }
@@ -199,7 +215,7 @@ class BackupDatabaseInspector {
         validateBundle(bundle)
         manifest.evidence.forEach { item ->
             val expectedUri = File(
-                paths.liveEvidenceDirectory,
+                paths.evidenceDirectoryForStoredUri(item.storedUri),
                 "evidence_${item.evidenceId}.${item.archiveEntry.path.substringAfterLast('.')}"
             ).toURI().toString()
             if (item.storedUri != expectedUri) {
@@ -355,20 +371,19 @@ class BackupBundleBuilder(
             }
             val evidenceFiles = LinkedHashMap<String, File>()
             val evidenceManifest = inspection.evidence.map { metadata ->
-                val source = File(
-                    paths.liveEvidenceDirectory,
-                    "evidence_${metadata.evidenceId}.${BackupContract.evidenceEntry(metadata.evidenceId, metadata.mediaType).substringAfterLast('.')}"
-                )
-                val expectedUri = source.toURI().toString()
-                if (!source.isFile) {
+                val candidates = paths.evidenceSourceCandidates(metadata.evidenceId, metadata.mediaType)
+                val existing = candidates.filter { (_, file) -> file.isFile }
+                if (existing.isEmpty()) {
                     backupFail(BackupFailure.EvidenceMissing, "Formal Evidence file is missing")
                 }
-                if (metadata.storedUri != expectedUri ||
-                    source.length() != metadata.byteSize ||
-                    BackupArchive.sha256(source) != metadata.sha256
-                ) {
-                    backupFail(BackupFailure.EvidenceMismatch, "Formal Evidence does not match DB")
+                existing.forEach { (_, file) ->
+                    if (file.length() != metadata.byteSize || BackupArchive.sha256(file) != metadata.sha256) {
+                        backupFail(BackupFailure.EvidenceMismatch, "Formal Evidence does not match DB")
+                    }
                 }
+                val source = existing.firstOrNull { (_, file) ->
+                    metadata.storedUri == file.toURI().toString()
+                }?.second ?: backupFail(BackupFailure.EvidenceMismatch, "Evidence URI does not match its storage")
                 val staged = File(evidenceDirectory, BackupContract.evidenceEntry(metadata.evidenceId, metadata.mediaType).substringAfterLast('/'))
                 copyAndSync(source, staged)
                 evidenceFiles[metadata.evidenceId] = staged
@@ -443,7 +458,7 @@ class StagedEvidenceUriRebaser(
         inspector.validateBundle(bundle)
         val replacements = bundle.manifest.evidence.mapNotNull { item ->
             val currentUri = File(
-                paths.liveEvidenceDirectory,
+                paths.evidenceDirectoryForStoredUri(item.storedUri),
                 "evidence_${item.evidenceId}.${item.archiveEntry.path.substringAfterLast('.')}"
             ).toURI().toString()
             item.takeIf { it.storedUri != currentUri }?.let { it to currentUri }
@@ -602,29 +617,36 @@ class BackupLiveInstaller(
     fun install(bundle: BackupBundle) {
         inspector.validateBundle(bundle)
         val token = UUID.randomUUID().toString()
-        val evidenceParent = paths.liveEvidenceDirectory.parentFile
-            ?: backupFail(BackupFailure.RestoreFailure, "Evidence parent is unavailable")
-        if (!evidenceParent.exists() && !evidenceParent.mkdirs()) {
-            backupFail(BackupFailure.RestoreFailure, "Evidence parent cannot be created")
-        }
-        val preparedEvidence = File(evidenceParent, ".restore-$token")
-        val oldEvidence = File(evidenceParent, ".restore-old-$token")
-        if (!preparedEvidence.mkdirs()) {
-            backupFail(BackupFailure.RestoreFailure, "Evidence restore staging failed")
+        val evidenceTargets = (setOf(paths.liveEvidenceDirectory) + bundle.manifest.evidence.map {
+            paths.evidenceDirectoryForStoredUri(it.storedUri)
+        }).toSet()
+        val preparedEvidence = evidenceTargets.associateWith { target ->
+            val parent = target.parentFile
+                ?: backupFail(BackupFailure.RestoreFailure, "Evidence parent is unavailable")
+            if (!parent.exists() && !parent.mkdirs()) {
+                backupFail(BackupFailure.RestoreFailure, "Evidence parent cannot be created")
+            }
+            File(parent, ".restore-$token-${target.name}").also {
+                if (!it.mkdirs()) backupFail(BackupFailure.RestoreFailure, "Evidence restore staging failed")
+            }
         }
         bundle.manifest.evidence.forEach { item ->
+            val target = paths.evidenceDirectoryForStoredUri(item.storedUri)
             copyAndSync(
                 requireNotNull(bundle.evidenceFiles[item.evidenceId]),
                 File(
-                    preparedEvidence,
-                    "evidence_${item.evidenceId}.${item.archiveEntry.path.substringAfterLast('.')}"
+                    requireNotNull(preparedEvidence[target]),
+                    "evidence_${item.evidenceId}.${item.archiveEntry.path.substringAfterLast('.') }"
                 )
             )
         }
-        if (paths.liveEvidenceDirectory.exists()) {
-            move(paths.liveEvidenceDirectory, oldEvidence, replace = false)
+        val oldEvidence = evidenceTargets.associateWith { target ->
+            File(target.parentFile ?: backupFail(BackupFailure.RestoreFailure, "Evidence parent is unavailable"), ".restore-old-$token-${target.name}")
         }
-        move(preparedEvidence, paths.liveEvidenceDirectory, replace = false)
+        evidenceTargets.forEach { target ->
+            if (target.exists()) move(target, requireNotNull(oldEvidence[target]), replace = false)
+            move(requireNotNull(preparedEvidence[target]), target, replace = false)
+        }
         interceptor.afterEvidenceInstalled()
 
         val databaseParent = paths.databaseFile.parentFile
@@ -639,12 +661,13 @@ class BackupLiveInstaller(
         removeSidecarOrFail(File(paths.databaseFile.absolutePath + "-journal"))
         move(preparedDatabase, paths.databaseFile, replace = true)
         inspector.validateLive(paths, bundle.manifest)
-        oldEvidence.deleteRecursively()
-        cleanupTransientFiles(evidenceParent, databaseParent)
+        oldEvidence.values.forEach(File::deleteRecursively)
+        preparedEvidence.values.forEach(File::deleteRecursively)
+        cleanupTransientFiles(evidenceTargets.flatMap { it.parentFile?.let(::listOf).orEmpty() }.toSet(), databaseParent)
     }
 
-    private fun cleanupTransientFiles(evidenceParent: File, databaseParent: File) {
-        evidenceParent.listFiles().orEmpty()
+    private fun cleanupTransientFiles(evidenceParents: Set<File>, databaseParent: File) {
+        evidenceParents.flatMap { it.listFiles().orEmpty().toList() }
             .filter { it.name.startsWith(".restore-") }
             .forEach(File::deleteRecursively)
         databaseParent.listFiles().orEmpty()

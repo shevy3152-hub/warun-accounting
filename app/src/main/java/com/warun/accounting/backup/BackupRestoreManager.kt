@@ -2,6 +2,7 @@ package com.warun.accounting.backup
 
 import android.content.Context
 import android.net.Uri
+import android.util.Log
 import com.warun.accounting.BuildConfig
 import com.warun.accounting.data.local.WarunDatabase
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -51,7 +52,13 @@ class BackupRestoreManager internal constructor(
     private val paths: BackupPaths,
     private val inspector: BackupDatabaseInspector,
     private val restoreInterceptor: RestoreInstallInterceptor,
-    private val stagedUpgradeInterceptor: StagedDatabaseUpgradeInterceptor
+    private val stagedUpgradeInterceptor: StagedDatabaseUpgradeInterceptor,
+    private val outputStreamFactory: (Uri, String) -> OutputStream? = { uri, mode ->
+        context.contentResolver.openOutputStream(uri, mode)
+    },
+    private val inputStreamFactory: (Uri) -> InputStream? = { uri ->
+        context.contentResolver.openInputStream(uri)
+    }
 ) {
     @Inject
     constructor(
@@ -74,18 +81,65 @@ class BackupRestoreManager internal constructor(
 
     suspend fun createBackup(uri: Uri): BackupCreationResult = withContext(Dispatchers.IO) {
         mutex.withLock {
-            val output = context.contentResolver.openOutputStream(uri, "rwt")
-                ?: backupFail(BackupFailure.OutputFailure, "SAF destination cannot be opened")
-            val result = output.use(::createBackup)
-            verifyWrittenDocument(uri)
-            result
+            val prepared = try {
+                prepareValidatedBackup()
+            } catch (error: BackupException) {
+                logFailure(error)
+                throw error
+            }
+            try {
+                val output = try {
+                    outputStreamFactory(uri, "wt")
+                        ?: backupFail(
+                            BackupFailure.OutputFailure,
+                            "SAF destination cannot be opened",
+                            stage = BackupStage.OutputOpen
+                        )
+                } catch (error: BackupException) {
+                    throw error
+                } catch (error: Exception) {
+                    backupFailure(BackupFailure.OutputFailure, BackupStage.OutputOpen, error)
+                }
+                writePreparedBackup(output, prepared.archiveFile)
+                verifyWrittenDocument(uri)
+                BackupCreationResult(prepared.createdAtEpochMillis, prepared.summary)
+            } catch (error: BackupException) {
+                logFailure(error)
+                throw error
+            } finally {
+                prepared.archiveFile.delete()
+                prepared.verificationDirectory.deleteRecursively()
+            }
         }
     }
 
     internal fun createBackup(output: OutputStream): BackupCreationResult {
+        val prepared = prepareValidatedBackup()
+        try {
+            writePreparedBackup(output, prepared.archiveFile)
+            return BackupCreationResult(
+                createdAtEpochMillis = prepared.createdAtEpochMillis,
+                summary = prepared.summary
+            )
+        } finally {
+            prepared.archiveFile.delete()
+            prepared.verificationDirectory.deleteRecursively()
+        }
+    }
+
+    private data class PreparedBackup(
+        val archiveFile: File,
+        val verificationDirectory: File,
+        val createdAtEpochMillis: Long,
+        val summary: BackupSummary
+    )
+
+    private fun prepareValidatedBackup(): PreparedBackup {
         ensureNoRestoreInProgress()
         val bundleDirectory = newRestoreDirectory("candidate-backup")
         val archiveFile = File(paths.restoreRoot, ".backup-${UUID.randomUUID()}.tmp")
+        val verificationDirectory = newRestoreDirectory("candidate-verify")
+        var prepared = false
         try {
             val bundle = bundleBuilder.build(bundleDirectory)
             FileOutputStream(archiveFile).use { archiveOutput ->
@@ -97,25 +151,78 @@ class BackupRestoreManager internal constructor(
                 )
             }
             FileOutputStream(archiveFile, true).use { it.fd.sync() }
-            FileInputStream(archiveFile).use { it.copyTo(output) }
-            output.flush()
-            return BackupCreationResult(
+            FileInputStream(archiveFile).use { input ->
+                val extracted = BackupArchive.extractAndValidate(input, verificationDirectory)
+                inspector.validateBundle(
+                    BackupBundle(
+                        verificationDirectory,
+                        extracted.manifest,
+                        extracted.databaseFile,
+                        extracted.evidenceFiles
+                    )
+                )
+            }
+            val result = PreparedBackup(
+                archiveFile = archiveFile,
+                verificationDirectory = verificationDirectory,
                 createdAtEpochMillis = bundle.manifest.createdAtEpochMillis,
                 summary = bundle.manifest.summary
             )
+            prepared = true
+            return result
         } catch (error: BackupException) {
+            if (error.stage == null) {
+                throw BackupException(
+                    failure = error.failure,
+                    message = error.message ?: "Backup generation failed",
+                    cause = error,
+                    stage = BackupStage.Build
+                )
+            }
             throw error
         } catch (error: Exception) {
-            backupFail(BackupFailure.OutputFailure, "Backup output failed", error)
+            backupFailure(BackupFailure.OutputFailure, BackupStage.Build, error)
         } finally {
             bundleDirectory.deleteRecursively()
-            archiveFile.delete()
+            if (!prepared) {
+                archiveFile.delete()
+                verificationDirectory.deleteRecursively()
+            }
         }
+    }
+
+    private fun writePreparedBackup(output: OutputStream, archiveFile: File) {
+        var failure: BackupException? = null
+        try {
+            FileInputStream(archiveFile).use { input ->
+                try {
+                    input.copyTo(output)
+                } catch (error: Exception) {
+                    failure = backupException(BackupFailure.OutputFailure, BackupStage.OutputWrite, error)
+                }
+            }
+            if (failure == null) {
+                try {
+                    output.flush()
+                } catch (error: Exception) {
+                    failure = backupException(BackupFailure.OutputFailure, BackupStage.OutputFlush, error)
+                }
+            }
+        } finally {
+            try {
+                output.close()
+            } catch (error: Exception) {
+                if (failure == null) {
+                    failure = backupException(BackupFailure.OutputFailure, BackupStage.OutputClose, error)
+                }
+            }
+        }
+        failure?.let { throw it }
     }
 
     suspend fun stageRestore(uri: Uri): RestorePreview = withContext(Dispatchers.IO) {
         mutex.withLock {
-            val input = context.contentResolver.openInputStream(uri)
+            val input = inputStreamFactory(uri)
                 ?: backupFail(BackupFailure.CorruptArchive, "SAF source cannot be opened")
             input.use(::stageRestore)
         }
@@ -257,7 +364,7 @@ class BackupRestoreManager internal constructor(
     private fun verifyWrittenDocument(uri: Uri) {
         val verificationDirectory = newRestoreDirectory("candidate-verify")
         try {
-            val input = context.contentResolver.openInputStream(uri)
+            val input = inputStreamFactory(uri)
                 ?: backupFail(BackupFailure.OutputFailure, "Written SAF document cannot be reopened")
             val extracted = input.use {
                 BackupArchive.extractAndValidate(it, verificationDirectory)
@@ -271,11 +378,42 @@ class BackupRestoreManager internal constructor(
                 )
             )
         } catch (error: BackupException) {
-            backupFail(BackupFailure.OutputFailure, "Written SAF document failed verification", error)
+            backupFail(
+                BackupFailure.OutputFailure,
+                "Written SAF document failed verification",
+                error,
+                BackupStage.OutputVerify
+            )
         } catch (error: Exception) {
-            backupFail(BackupFailure.OutputFailure, "Written SAF document could not be verified", error)
+            backupFailure(BackupFailure.OutputFailure, BackupStage.OutputVerify, error)
         } finally {
             verificationDirectory.deleteRecursively()
         }
+    }
+
+    private fun backupFailure(
+        failure: BackupFailure,
+        stage: BackupStage,
+        cause: Throwable
+    ): Nothing = throw backupException(failure, stage, cause)
+
+    private fun backupException(
+        failure: BackupFailure,
+        stage: BackupStage,
+        cause: Throwable
+    ): BackupException = BackupException(
+        failure = failure,
+        message = "Backup failed during ${stage.name}",
+        cause = cause,
+        stage = stage
+    )
+
+    private fun logFailure(error: BackupException) {
+        Log.e(
+            "WarunBackup",
+            "backup failed stage=${error.stage?.name ?: "unknown"} " +
+                "failure=${error.failure} exception=${error.cause?.javaClass?.name ?: error.javaClass.name}",
+            error.cause ?: error
+        )
     }
 }

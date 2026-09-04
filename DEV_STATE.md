@@ -262,6 +262,17 @@ JVMテストが`app/build/monthly-export-samples/`へ作成した合成テスト
 - Pixel 8の既存検証結果（connected instrumentation 132/132、JVM 572/572）を受入根拠とし、今回重いテストは再実行していない。
 - ローカルIP、ADB serial、認証情報、Evidence内容は記録していない。
 
+## Phase 1.5 固定費Evidenceバックアップ checkpoint（2026-09-04）
+
+- 通常Evidence（`accounting-evidence/stored`）と固定費Evidence（`fixed-cost-evidence/stored`）を正式バックアップ対象として検証する経路を実装した。
+- Evidence IDごとにDB記録のサイズ・SHA-256と原本を照合し、同一IDの重複収録を防止する。両保存先に同一IDがある場合は内容不一致を拒否する。
+- Restore時はManifestの保存先URIに応じて通常Evidence／固定費Evidenceの保存先へ戻す。Room schema、Entity、Migrationは変更していない。
+- アプリ内部でZIP・manifest・DB・Evidenceを完全検証してからSAF出力を行い、SAF出力後の再読込検証も実施する。Build失敗時はDocumentsUIを開かない。
+- Pixel 8のBackup targeted instrumentation 15/15、connected instrumentation全件156/156、JVM全件、compileInstrumentedAndroidTestKotlin、assembleDebug、git diff --checkをPASSした。
+- A90（version 10／0.2.8）へ署名一致確認後に通常APKのみ`install -r`し、Room v17、日報35、Receipt3、Expense45、Evidence45、固定費Application 1、固定費Link 1、Journal 0を保持した。
+- A90で正式バックアップを作成し、110,028,298 bytes、ZIP、manifest、Room v17、DB integrity／foreign key、Evidence45件、固定費PDF 634,790 bytesのサイズ・SHA検証をPASSした。A90上の正式バックアップは保持している。
+- 既存および今回作成された0バイトバックアップ2件は削除していない。Evidence原本、DB、app/release、output、`hs_err_pid3188.log`は変更・削除していない。
+
 ## Phase 1 日報保存外部キー修正監査（2026-09-04）
 
 - A90の読み取り監査で、日報35件、Receipt 3件、Expense 45件、Evidence 45件、固定費Application 1件、固定費Link 1件、月次提出1件、電子提出履歴5件を確認した。
