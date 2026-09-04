@@ -29,6 +29,7 @@ import com.warun.accounting.util.preferredExpenseAmount
 data class DashboardUiState(
     val reports: List<DailyReport> = emptyList(),
     val receipts: List<ReceiptRecord> = emptyList(),
+    val unrelatedReceiptIds: Set<String> = emptySet(),
     val expenses: List<ExpenseRecord> = emptyList(),
     val expenseEvidence: List<ExpenseEvidenceRecord> = emptyList(),
     val fixedCostEvidenceStatuses: List<FixedCostEvidenceStatus> = emptyList(),

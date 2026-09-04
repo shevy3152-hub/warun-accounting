@@ -65,6 +65,7 @@ class DashboardViewModel @Inject constructor(
     private data class BaseUiStateParts(
         val reports: List<DailyReport>,
         val receipts: List<ReceiptRecord>,
+        val unrelatedReceiptIds: List<String>,
         val expenses: List<ExpenseRecord>,
         val cancelledExpenseKeys: Set<ExpenseDateCategoryKey>,
         val submissions: List<MonthlySubmission>,
@@ -77,16 +78,21 @@ class DashboardViewModel @Inject constructor(
         val links: List<ExpensePrepaidLinkRecord>
     )
 
+    private val receiptUiStateParts = combine(
+        repository.observeReceipts(),
+        repository.observeUnrelatedReceiptIds()
+    ) { receipts, unrelatedReceiptIds -> receipts to unrelatedReceiptIds }
     private val baseUiStateParts = combine(
         repository.observeDailyReports(),
-        repository.observeReceipts(),
+        receiptUiStateParts,
         repository.observeExpenseVisibilityRecords(),
         repository.observeMonthlySubmissions(),
         repository.observeAppSettings()
-    ) { reports, receipts, expenseVisibility, submissions, settings ->
+    ) { reports, receiptParts, expenseVisibility, submissions, settings ->
         BaseUiStateParts(
             reports = reports,
-            receipts = receipts,
+            receipts = receiptParts.first,
+            unrelatedReceiptIds = receiptParts.second,
             expenses = expenseVisibility.filterNot { it.isCancelled }.map { it.expense },
             cancelledExpenseKeys = expenseVisibility
                 .asSequence()
@@ -116,6 +122,7 @@ class DashboardViewModel @Inject constructor(
         DashboardUiState(
             reports = parts.reports,
             receipts = parts.receipts,
+            unrelatedReceiptIds = parts.unrelatedReceiptIds.toSet(),
             expenses = parts.expenses,
             expenseEvidence = expenseEvidence,
             fixedCostEvidenceStatuses = fixedCostEvidenceStatuses,
@@ -408,7 +415,13 @@ class DashboardViewModel @Inject constructor(
     }
     fun deleteReceipt(receipt: ReceiptRecord, onResult: (ReceiptDeletionResult) -> Unit = {}) {
         viewModelScope.launch {
-            onResult(repository.deleteUnconfirmedReceipt(receipt.id))
+            onResult(
+                if (receipt.isConfirmed) {
+                    repository.deleteConfirmedReceipt(receipt.id)
+                } else {
+                    repository.deleteUnconfirmedReceipt(receipt.id)
+                }
+            )
         }
     }
 

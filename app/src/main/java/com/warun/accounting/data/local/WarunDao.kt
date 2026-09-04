@@ -42,6 +42,22 @@ interface WarunDao {
 
     @Query(
         """
+        SELECT receipt.id FROM receipts AS receipt
+        WHERE NOT EXISTS (
+            SELECT 1 FROM fixed_cost_receipt_applications AS application
+            WHERE application.receiptId = receipt.id
+        )
+        AND NOT EXISTS (
+            SELECT 1 FROM expense_records AS expense
+            WHERE expense.receiptId = receipt.id
+        )
+        ORDER BY COALESCE(receipt.purchaseDate, receipt.capturedDate, '') DESC, receipt.registeredAt DESC
+        """
+    )
+    fun observeUnrelatedReceiptIds(): Flow<List<String>>
+
+    @Query(
+        """
         SELECT expense.*
         FROM expense_records AS expense
         WHERE NOT EXISTS (
@@ -332,6 +348,32 @@ interface WarunDao {
         return when {
             getReceipt(receiptId) == null -> 0
             getReceipt(receiptId)?.isConfirmed == true -> 2
+            getFixedCostReceiptApplicationByReceipt(receiptId) != null || hasExpenseReference(receiptId) -> 3
+            else -> 4
+        }
+    }
+
+    @Query(
+        """
+        DELETE FROM receipts
+        WHERE id = :receiptId
+          AND isConfirmed = 1
+          AND NOT EXISTS (SELECT 1 FROM fixed_cost_receipt_applications WHERE receiptId = :receiptId)
+          AND NOT EXISTS (SELECT 1 FROM expense_records WHERE receiptId = :receiptId)
+        """
+    )
+    suspend fun deleteConfirmedReceiptIfUnprotected(receiptId: String): Int
+
+    @Transaction
+    suspend fun deleteConfirmedReceipt(receiptId: String): Int {
+        val receipt = getReceipt(receiptId) ?: return 0
+        if (!receipt.isConfirmed) return 2
+        if (getFixedCostReceiptApplicationByReceipt(receiptId) != null || hasExpenseReference(receiptId)) return 3
+        val deleted = deleteConfirmedReceiptIfUnprotected(receiptId)
+        if (deleted == 1) return 1
+        return when {
+            getReceipt(receiptId) == null -> 0
+            getReceipt(receiptId)?.isConfirmed != true -> 2
             getFixedCostReceiptApplicationByReceipt(receiptId) != null || hasExpenseReference(receiptId) -> 3
             else -> 4
         }

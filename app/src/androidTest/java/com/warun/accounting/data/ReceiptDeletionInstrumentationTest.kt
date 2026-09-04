@@ -58,6 +58,34 @@ class ReceiptDeletionInstrumentationTest {
     }
 
     @Test
+    fun unrelatedConfirmedReceiptCanBeDeletedWithoutTouchingOtherRecords() = runBlocking {
+        val confirmed = receipt("confirmed-unrelated", confirmed = true, amount = 0L)
+        database.warunDao().insertReceipt(confirmed)
+        val beforeExpenses = count("expense_records")
+        val beforeEvidence = count("evidence_records")
+
+        assertEquals(ReceiptDeletionResult.Deleted, repository.deleteConfirmedReceipt(confirmed.id))
+        assertEquals(null, database.warunDao().getReceipt(confirmed.id))
+        assertEquals(beforeExpenses, count("expense_records"))
+        assertEquals(beforeEvidence, count("evidence_records"))
+    }
+
+    @Test
+    fun relatedConfirmedReceiptRemainsProtected() = runBlocking {
+        val report = report("confirmed-related-report")
+        val confirmed = receipt("confirmed-related", confirmed = true, amount = 1_000L)
+        val dao = database.warunDao()
+        dao.insertDailyReport(report)
+        dao.insertReceipt(confirmed)
+        dao.insertFixedCostReceiptApplication(
+            FixedCostReceiptApplicationRecord("confirmed-related-app", confirmed.id, report.id, "electricity", "現金", 1L, 1L)
+        )
+
+        assertEquals(ReceiptDeletionResult.Protected, repository.deleteConfirmedReceipt(confirmed.id))
+        assertNotNull(dao.getReceipt(confirmed.id))
+    }
+
+    @Test
     fun fixedCostApplicationAndExpenseReferenceProtectReceipt() = runBlocking {
         val report = report("report")
         val applied = receipt("applied", confirmed = false, amount = 2_000L)

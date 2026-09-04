@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.warun.accounting.backup.BackupException
 import com.warun.accounting.backup.BackupFailure
 import com.warun.accounting.backup.BackupRestoreManager
+import com.warun.accounting.backup.BackupStage
 import com.warun.accounting.backup.RestoreExecutionOutcome
 import com.warun.accounting.backup.RestorePreview
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -87,7 +88,7 @@ class BackupRestoreViewModel @Inject constructor(
                 block()
             } catch (error: BackupException) {
                 _state.value = BackupRestoreUiState(
-                    message = backupFailureMessage(error.failure),
+                    message = backupFailureMessage(error.failure, error.stage),
                     isError = true,
                     restartRequired = error.failure == BackupFailure.RollbackFailure
                 )
@@ -101,7 +102,20 @@ class BackupRestoreViewModel @Inject constructor(
     }
 }
 
-internal fun backupFailureMessage(failure: BackupFailure): String = when (failure) {
+internal fun backupFailureMessage(
+    failure: BackupFailure,
+    stage: BackupStage? = null
+): String {
+    val stageMessage = when (stage) {
+        BackupStage.Build -> "内部バックアップの生成・検証に失敗しました。"
+        BackupStage.OutputOpen -> "保存先を開けませんでした。"
+        BackupStage.OutputWrite -> "保存先への書き込みに失敗しました。"
+        BackupStage.OutputFlush -> "保存先への書き込み確定に失敗しました。"
+        BackupStage.OutputClose -> "保存先を閉じる処理に失敗しました。"
+        BackupStage.OutputVerify -> "保存後のバックアップ検証に失敗しました。"
+        null -> null
+    }
+    val detail = when (failure) {
     BackupFailure.EvidenceMissing ->
         "DBが参照する正式Evidenceが見つからないため、バックアップを作成しませんでした。"
     BackupFailure.EvidenceMismatch ->
@@ -127,4 +141,6 @@ internal fun backupFailureMessage(failure: BackupFailure): String = when (failur
         "復元を完了できませんでした。元データへの復帰を次回起動時に再試行します。"
     BackupFailure.RestoreFailure -> "復元を開始できませんでした。元データは変更していません。"
     BackupFailure.Busy -> "別のバックアップ／復元処理が進行中です。"
+    }
+    return if (stageMessage == null) detail else "$stageMessage\n$detail"
 }

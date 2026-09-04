@@ -83,7 +83,8 @@ class ReceiptDeletionComposeInstrumentationTest {
             WarunTheme {
                 ReceiptList(
                     receipts = listOf(receipt, confirmedReceipt),
-                    onRequestDelete = { selected = it }
+                    onRequestDelete = { selected = it },
+                    deletableReceiptIds = setOf(receipt.id)
                 )
                 selected?.let {
                     ReceiptDeletionDialog(
@@ -134,7 +135,8 @@ class ReceiptDeletionComposeInstrumentationTest {
                 WarunTheme {
                     ReceiptList(
                         receipts = visibleReceipts,
-                        onRequestDelete = { selected = it }
+                        onRequestDelete = { selected = it },
+                        deletableReceiptIds = setOf(receipt.id)
                     )
                     selected?.let {
                         ReceiptDeletionDialog(

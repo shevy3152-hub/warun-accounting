@@ -14,8 +14,8 @@ android {
         applicationId = "com.warun.accounting"
         minSdk = 26
         targetSdk = 35
-        versionCode = 9
-        versionName = "0.2.7"
+        versionCode = 11
+        versionName = "0.2.9"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "DATABASE_NAME", "\"warun-accounting.db\"")
     }

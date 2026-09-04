@@ -49,6 +49,7 @@ import androidx.compose.material.icons.outlined.ReceiptLong
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -134,6 +135,7 @@ import com.warun.accounting.ui.balance.BalanceAnalysisPresentation
 import com.warun.accounting.ui.balance.BalanceAnalysisSource
 import com.warun.accounting.ui.balance.resolveBalanceAnalysis
 import com.warun.accounting.ui.balance.resolveBalanceMetricPeriod
+import com.warun.accounting.ui.balance.creditPurchaseTaxSummaries
 import com.warun.accounting.ui.backup.BackupRestoreSection
 import com.warun.accounting.ui.home.HomeMetricPresentation
 import com.warun.accounting.ui.home.HomeMetricSource
@@ -1397,9 +1399,19 @@ private fun PrimaryActionButton(
     label: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    enabled: Boolean = true
+    enabled: Boolean = true,
+    saved: Boolean = false
 ) {
-    Button(onClick = onClick, enabled = enabled, modifier = modifier.height(52.dp)) {
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier.height(52.dp),
+        colors = if (saved) {
+            ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D6B))
+        } else {
+            ButtonDefaults.buttonColors()
+        }
+    ) {
         Text(label)
     }
 }
@@ -1453,9 +1465,10 @@ private fun SaveActionCard(
     onSaveDraft: () -> Unit,
     onSaveComplete: () -> Unit,
     isSaving: Boolean = false,
-    completeEnabled: Boolean = true
+    completeEnabled: Boolean = true,
+    saved: Boolean = false
 ) {
-    DashboardCard(containerColor = Color(0xFFEFF6FF)) {
+    DashboardCard(containerColor = if (saved) Color(0xFFE8F5F0) else Color(0xFFEFF6FF)) {
         BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
             val isCompact = maxWidth < 520.dp
             if (isCompact) {
@@ -1471,7 +1484,8 @@ private fun SaveActionCard(
                         label = completeLabel,
                         onClick = onSaveComplete,
                         modifier = Modifier.fillMaxWidth().testTag("report-entry-last-action"),
-                        enabled = !isSaving && completeEnabled
+                        enabled = !isSaving && completeEnabled,
+                        saved = saved
                     )
                 }
             } else {
@@ -1492,12 +1506,25 @@ private fun SaveActionCard(
                         label = completeLabel,
                         onClick = onSaveComplete,
                         modifier = Modifier.width(220.dp).testTag("report-entry-last-action"),
-                        enabled = !isSaving && completeEnabled
+                        enabled = !isSaving && completeEnabled,
+                        saved = saved
                     )
                 }
             }
         }
     }
+}
+
+internal fun reportSaveActionLabel(
+    status: String,
+    savingStatus: String?,
+    saved: Boolean
+): String = when {
+    savingStatus == status -> "保存中…"
+    saved && status == DailyReportStatus.Draft -> "✓ 下書き保存済み（再編集）"
+    saved && status == DailyReportStatus.Completed -> "✓ 保存済み（再編集）"
+    status == DailyReportStatus.Draft -> "下書き保存"
+    else -> "入力完了で保存"
 }
 
 @Composable
@@ -1833,6 +1860,9 @@ private fun ReportEntryScreen(
         uiState.cancelledExpenseKeys
     )
     val hasUnsavedChanges = reportInput != cleanReportInput || expenseFormDirty || utilityFieldsEdited
+    val isSavedReport = !hasUnsavedChanges && uiState.reports.any {
+        it.id == reportInput.id && it.status == reportInput.status
+    }
     val expenseSaveDecision = reportExpenseSaveDecision(
         reportDate = reportInput.reportDate,
         draftExpense = draftExpenseInput,
@@ -2310,6 +2340,7 @@ private fun ReportEntryScreen(
             onExpenseFormDirtyChanged = { expenseFormDirty = it },
             onDraftExpenseChanged = { draftExpenseInput = it },
             savingStatus = savingStatus,
+            isSavedReport = isSavedReport,
             onSave = { status -> saveCurrentReport(status) }
         )
         DailyReportList(uiState.reports.take(3))
@@ -2347,6 +2378,7 @@ private fun DailyReportForm(
     onExpenseFormDirtyChanged: (Boolean) -> Unit,
     onDraftExpenseChanged: (ExpenseInput?) -> Unit,
     savingStatus: String?,
+    isSavedReport: Boolean = false,
     onSave: (String) -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -2409,11 +2441,12 @@ private fun DailyReportForm(
             )
         }
         SaveActionCard(
-            draftLabel = if (savingStatus == DailyReportStatus.Draft) "保存中…" else "下書き保存",
-            completeLabel = if (savingStatus == DailyReportStatus.Completed) "保存中…" else "入力完了で保存",
+            draftLabel = reportSaveActionLabel(DailyReportStatus.Draft, savingStatus, isSavedReport),
+            completeLabel = reportSaveActionLabel(DailyReportStatus.Completed, savingStatus, isSavedReport),
             onSaveDraft = { onSave(DailyReportStatus.Draft) },
             onSaveComplete = { onSave(DailyReportStatus.Completed) },
-            isSaving = savingStatus != null
+            isSaving = savingStatus != null,
+            saved = isSavedReport
         )
     }
 }
@@ -3827,7 +3860,8 @@ private fun ReceiptScreen(
             unconfirmedOnly = showUnconfirmedOnly,
             onReceiptClick = onOpenFixedCost,
             onRequestDelete = { receipt -> if (deletingReceiptId == null) receiptToDelete = receipt },
-            deletingReceiptId = deletingReceiptId
+            deletingReceiptId = deletingReceiptId,
+            deletableReceiptIds = uiState.unrelatedReceiptIds
         )
     }
 
@@ -3868,7 +3902,7 @@ internal fun ReceiptDeletionDialog(
 ) {
     AlertDialog(
         onDismissRequest = { if (!isDeleting) onDismiss() },
-        title = { Text("レシートを削除しますか？") },
+        title = { Text(if (receipt.isConfirmed) "確認済みレシートを削除しますか？" else "レシートを削除しますか？") },
         text = {
             Column {
                 Text("支払先: ${receipt.storeName?.takeIf { it.isNotBlank() } ?: "未設定"}")
@@ -3876,6 +3910,7 @@ internal fun ReceiptDeletionDialog(
                 Text("金額: ${receipt.totalAmount.toYen()}")
                 Spacer(Modifier.height(8.dp))
                 Text("この操作は取り消せません。")
+                if (receipt.isConfirmed) Text("日報金額は変更されません。")
             }
         },
         confirmButton = {
@@ -3892,7 +3927,8 @@ internal fun ReceiptList(
     unconfirmedOnly: Boolean = false,
     onReceiptClick: (String) -> Unit = {},
     onRequestDelete: ((ReceiptRecord) -> Unit)? = null,
-    deletingReceiptId: String? = null
+    deletingReceiptId: String? = null,
+    deletableReceiptIds: Set<String> = emptySet()
 ) {
     DashboardCard {
         Text(
@@ -3922,7 +3958,7 @@ internal fun ReceiptList(
                             Text("${receipt.totalAmount.toYen()} / ${if (receipt.isConfirmed) "確認済み" else "確認待ち"}")
                             if (unconfirmedOnly) Text("固定費かどうかは未判定です", color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        if (onRequestDelete != null && !receipt.isConfirmed) {
+                        if (onRequestDelete != null && receipt.id in deletableReceiptIds) {
                             IconButton(
                                 enabled = deletingReceiptId == null,
                                 modifier = Modifier.testTag("receipt-delete-${receipt.id}"),
@@ -4091,14 +4127,19 @@ private fun BalanceSummaryCards(
             SummaryCard("要確認レシート件数", "${summary.unconfirmedReceiptCount}件", modifier = cardModifier)
         }
     }
-    val supplierTotals = supplierCreditPurchaseTotals(
+    val supplierTaxSummaries = creditPurchaseTaxSummaries(
         uiState.expenses,
         YearMonth.from(period.start),
     )
     DashboardCard {
         Text("仕入先別（掛け）", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        TotalRow("トキノ屋", supplierTotals.tokinoYa.toYen())
-        TotalRow("サカツ", supplierTotals.sakatsu.toYen())
+        supplierTaxSummaries.forEach { summary ->
+            Text("掛仕入 ${summary.supplierName} 合計 ¥${"%,d".format(summary.grossAmount)}")
+            Text(
+                "（内 消費税${summary.taxRatePercent}% ¥${"%,d".format(summary.taxAmount)}）",
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 

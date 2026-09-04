@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.Flow
 interface AccountingRepository {
     fun observeDailyReports(): Flow<List<DailyReport>>
     fun observeReceipts(): Flow<List<ReceiptRecord>>
+    fun observeUnrelatedReceiptIds(): Flow<List<String>>
     fun observeExpenseRecords(): Flow<List<ExpenseRecord>>
     fun observeExpenseVisibilityRecords(): Flow<List<ExpenseVisibilityRecord>>
     fun observeCancelledExpenseRecordsForAuditByDate(expenseDate: String): Flow<List<ExpenseRecord>>
@@ -60,6 +61,7 @@ interface AccountingRepository {
     suspend fun deleteExpenseRecord(expense: ExpenseRecord)
     suspend fun deleteReceipt(receipt: ReceiptRecord)
     suspend fun deleteUnconfirmedReceipt(receiptId: String): ReceiptDeletionResult
+    suspend fun deleteConfirmedReceipt(receiptId: String): ReceiptDeletionResult
     suspend fun saveSupplierCandidate(candidate: SupplierCandidateRecord)
     suspend fun saveMonthlySubmission(submission: MonthlySubmission)
     suspend fun saveAppSettings(settings: AppSettings)

@@ -30,6 +30,8 @@ class OfflineAccountingRepository @Inject constructor(
 
     override fun observeReceipts(): Flow<List<ReceiptRecord>> = dao.observeReceipts()
 
+    override fun observeUnrelatedReceiptIds(): Flow<List<String>> = dao.observeUnrelatedReceiptIds()
+
     override fun observeExpenseRecords(): Flow<List<ExpenseRecord>> = dao.observeExpenseRecords()
 
     override fun observeExpenseVisibilityRecords(): Flow<List<ExpenseVisibilityRecord>> =
@@ -163,6 +165,20 @@ class OfflineAccountingRepository @Inject constructor(
 
     override suspend fun deleteUnconfirmedReceipt(receiptId: String): ReceiptDeletionResult = try {
         when (dao.deleteUnconfirmedReceipt(receiptId)) {
+            1 -> ReceiptDeletionResult.Deleted
+            2 -> ReceiptDeletionResult.AlreadyConfirmed
+            3 -> ReceiptDeletionResult.Protected
+            0 -> ReceiptDeletionResult.NotFound
+            else -> ReceiptDeletionResult.Failed
+        }
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (_: Exception) {
+        ReceiptDeletionResult.Failed
+    }
+
+    override suspend fun deleteConfirmedReceipt(receiptId: String): ReceiptDeletionResult = try {
+        when (dao.deleteConfirmedReceipt(receiptId)) {
             1 -> ReceiptDeletionResult.Deleted
             2 -> ReceiptDeletionResult.AlreadyConfirmed
             3 -> ReceiptDeletionResult.Protected
