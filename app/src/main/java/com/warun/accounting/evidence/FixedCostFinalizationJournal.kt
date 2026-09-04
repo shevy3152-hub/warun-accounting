@@ -24,7 +24,8 @@ data class FixedCostJournalEvidence(
     val sha256: String,
     val byteSize: Long,
     val sortOrder: Int,
-    val state: FixedCostFinalizationState
+    val state: FixedCostFinalizationState,
+    val sourceUri: String? = null
 )
 
 data class FixedCostFinalizationEntry(
@@ -162,6 +163,15 @@ class FixedCostFinalizationJournal(
         if (file.isFile && !file.delete()) throw FixedCostJournalException("Journal could not be removed")
     }
 
+    @Synchronized
+    fun abandonPrepared(applicationId: String) {
+        val entry = find(applicationId) ?: return
+        check(entry.state == FixedCostFinalizationState.Prepared) { "Only Prepared journals can be abandoned" }
+        if (!journalFileFor(applicationId).delete()) {
+            throw FixedCostJournalException("Journal could not be removed")
+        }
+    }
+
     fun journalFileFor(applicationId: String): File {
         validateId(applicationId)
         return File(journalDirectory, "$Prefix$applicationId$Suffix")
@@ -195,6 +205,7 @@ class FixedCostFinalizationJournal(
             properties["evidence.$index.mediaType"] = item.mediaType
             properties["evidence.$index.pendingPath"] = item.pendingPath
             properties["evidence.$index.finalPath"] = item.finalPath
+            item.sourceUri?.let { properties["evidence.$index.sourceUri"] = it }
             properties["evidence.$index.sha256"] = item.sha256
             properties["evidence.$index.byteSize"] = item.byteSize.toString()
             properties["evidence.$index.sortOrder"] = item.sortOrder.toString()
@@ -227,7 +238,8 @@ class FixedCostFinalizationJournal(
                 properties.requiredAllowEmpty("evidence.$index.sha256"),
                 properties.requiredLong("evidence.$index.byteSize"),
                 properties.requiredInt("evidence.$index.sortOrder"),
-                FixedCostFinalizationState.valueOf(properties.required("evidence.$index.state"))
+                FixedCostFinalizationState.valueOf(properties.required("evidence.$index.state")),
+                properties.getProperty("evidence.$index.sourceUri")
             ).also { item ->
                 check(ValidId.matches(item.evidenceId))
                 check(item.mediaType in setOf("image/jpeg", "image/png", "application/pdf"))

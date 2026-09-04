@@ -4,6 +4,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Rule
 import org.junit.Test
@@ -37,6 +38,20 @@ class FixedCostEvidenceFoundationTest {
         assertThrows(FixedCostEvidenceFileException::class.java) {
             store.promotePending(id, "image/png")
         }
+    }
+
+    @Test
+    fun pdfWithTrailingWhitespaceIsAcceptedWithoutChangingItsBytes() {
+        val store = FixedCostEvidenceFileStore(folder.newFolder("pending")!!, folder.newFolder("stored")!!)
+        val bytes = "%PDF-1.7\nbody\n%%EOF\n\u0000\u0000".toByteArray()
+        val pending = store.pendingFileFor("pdf-trailing", "application/pdf").apply {
+            requireNotNull(parentFile).mkdirs()
+            writeBytes(bytes)
+        }
+        val result = store.promotePending("pdf-trailing", "application/pdf")
+        assertEquals(bytes.size.toLong(), result.byteSize)
+        assertEquals(bytes.toList(), File(result.finalPath).readBytes().toList())
+        assertFalse(pending.exists())
     }
 
     @Test

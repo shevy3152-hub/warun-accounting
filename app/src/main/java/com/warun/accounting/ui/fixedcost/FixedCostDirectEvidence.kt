@@ -1,8 +1,8 @@
 package com.warun.accounting.ui.fixedcost
 
 import android.content.ContentResolver
+import android.content.Intent
 import android.net.Uri
-import android.provider.OpenableColumns
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -43,6 +43,8 @@ import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 data class FixedCostDirectEvidenceUiState(
     val attachments: List<FixedCostEvidenceAttachment> = emptyList(),
@@ -56,10 +58,29 @@ class FixedCostDirectEvidenceViewModel @Inject constructor(
     private val savedStateHandle: SavedStateHandle,
     private val coordinator: FixedCostEvidenceSaveCoordinator
 ) : ViewModel() {
+    private val ownedPersistableUriGrants = mutableSetOf<String>()
     private val _state = MutableStateFlow(
         FixedCostDirectEvidenceUiState(restoreAttachments())
     )
     val state = _state.asStateFlow()
+
+    fun recoverPreparedJournal(dailyReportId: String, fixedCostType: String) {
+        val key = "direct:$dailyReportId:$fixedCostType"
+        val applicationId = UUID.nameUUIDFromBytes(
+            "fixed-cost-application:$key".toByteArray(StandardCharsets.UTF_8)
+        ).toString()
+        viewModelScope.launch(Dispatchers.IO) {
+            if (coordinator.abandonEligiblePreparedJournal(applicationId) ==
+                com.warun.accounting.evidence.FixedCostPreparedJournalRecovery.Protected
+            ) {
+                _state.value = _state.value.copy(
+                    message = resultMessage(FixedCostSaveResult.RecoveryRequired(
+                        IllegalStateException("Fixed-cost journal requires recovery")
+                    ))
+                )
+            }
+        }
+    }
 
     fun addUri(resolver: ContentResolver, uri: Uri, mediaType: String?) {
         if (_state.value.isSaving) return
@@ -68,24 +89,33 @@ class FixedCostDirectEvidenceViewModel @Inject constructor(
         if (mime !in setOf("image/jpeg", "image/png", "application/pdf")) {
             return setMessage("JPEG、PNG、PDFだけ登録できます")
         }
-        val size = resolver.query(uri, arrayOf(OpenableColumns.SIZE, OpenableColumns.DISPLAY_NAME), null, null, null)
-            ?.use { cursor ->
-                if (!cursor.moveToFirst()) return@use null
-                val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
-                FixedCostEvidenceAttachment(
-                    uri.toString(),
-                    if (nameIndex >= 0) cursor.getString(nameIndex) ?: "Evidence" else "Evidence",
-                    mime,
-                    if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) cursor.getLong(sizeIndex) else -1L,
-                    0
-                )
-            } ?: FixedCostEvidenceAttachment(uri.toString(), "Evidence", mime, -1L, 0)
-        if (_state.value.attachments.any { it.uri == size.uri }) return
-        if (size.byteSize !in 1..FixedCostEvidenceFileStore.MaxBytes) {
-            return setMessage("Evidenceのサイズを確認できません")
+        if (_state.value.attachments.any { it.uri == uri.toString() }) return
+        if (uri.scheme == ContentResolver.SCHEME_CONTENT) {
+            val persisted = runCatching {
+                resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }.isSuccess
+            if (persisted) ownedPersistableUriGrants += uri.toString()
         }
-        update(_state.value.attachments + size)
+        viewModelScope.launch {
+            when (val inspected = withContext(Dispatchers.IO) {
+                inspectFixedCostEvidenceUri(resolver, uri, mime)
+            }) {
+                is FixedCostEvidenceUriInspection.Ready -> update(
+                    _state.value.attachments + FixedCostEvidenceAttachment(
+                        uri.toString(), inspected.metadata.displayName, inspected.metadata.mediaType,
+                        inspected.metadata.byteSize, 0
+                    )
+                )
+                FixedCostEvidenceUriInspection.TooLarge -> {
+                    releaseOwnedGrant(resolver, uri.toString())
+                    setMessage("Evidenceが50 MiBを超えています")
+                }
+                FixedCostEvidenceUriInspection.Unavailable -> {
+                    releaseOwnedGrant(resolver, uri.toString())
+                    setMessage("Evidenceのサイズを確認できません。別のファイルを選択してください")
+                }
+            }
+        }
     }
 
     fun save(resolver: ContentResolver, dailyReportId: String, fixedCostType: String, amount: Long) {
@@ -110,8 +140,23 @@ class FixedCostDirectEvidenceViewModel @Inject constructor(
             _state.value = _state.value.copy(
                 isSaving = false,
                 result = result,
-                message = if (result == FixedCostSaveResult.Success) "証憑を保存しました。" else "証憑を保存できませんでした。"
+                message = resultMessage(result)
             )
+            if (result == FixedCostSaveResult.Success) {
+                current.attachments.forEach { releaseOwnedGrant(resolver, it.uri) }
+            }
+        }
+    }
+
+    fun cancel(resolver: ContentResolver) {
+        _state.value.attachments.forEach { releaseOwnedGrant(resolver, it.uri) }
+        _state.value = _state.value.copy(attachments = emptyList())
+        savedStateHandle.remove<ArrayList<String>>(AttachmentsKey)
+    }
+
+    private fun releaseOwnedGrant(resolver: ContentResolver, uri: String) {
+        if (ownedPersistableUriGrants.remove(uri)) {
+            runCatching { resolver.releasePersistableUriPermission(Uri.parse(uri), Intent.FLAG_GRANT_READ_URI_PERMISSION) }
         }
     }
 
@@ -151,6 +196,9 @@ fun FixedCostDirectEvidenceScreen(
             onCaptureConsumed()
         }
     }
+    LaunchedEffect(dailyReportId, fixedCostType) {
+        viewModel.recoverPreparedJournal(dailyReportId, fixedCostType)
+    }
     LaunchedEffect(state.result) { if (state.result == FixedCostSaveResult.Success) onDone() }
     Column(Modifier.fillMaxSize().padding(16.dp).testTag("fixed-cost-direct-screen"), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("${fixedCostLabelForUi(fixedCostType)}の証憑", style = MaterialTheme.typography.headlineSmall)
@@ -169,7 +217,7 @@ fun FixedCostDirectEvidenceScreen(
             enabled = !state.isSaving && amount > 0L && state.attachments.isNotEmpty(),
             modifier = Modifier.fillMaxWidth().testTag("fixed-cost-direct-save")
         ) { if (state.isSaving) CircularProgressIndicator() else Text("確認して保存") }
-        TextButton(onClick = onDismiss, enabled = !state.isSaving) { Text("閉じる") }
+        TextButton(onClick = { viewModel.cancel(context.contentResolver); onDismiss() }, enabled = !state.isSaving) { Text("閉じる") }
     }
 }
 

@@ -262,6 +262,16 @@ JVMテストが`app/build/monthly-export-samples/`へ作成した合成テスト
 - Pixel 8の既存検証結果（connected instrumentation 132/132、JVM 572/572）を受入根拠とし、今回重いテストは再実行していない。
 - ローカルIP、ADB serial、認証情報、Evidence内容は記録していない。
 
+## Phase 1 日報保存外部キー修正監査（2026-09-04）
+
+- A90の読み取り監査で、日報35件、Receipt 3件、Expense 45件、Evidence 45件、固定費Application 1件、固定費Link 1件、月次提出1件、電子提出履歴5件を確認した。
+- 2026-08-23の日報の電気代41,617円を保持し、固定費PDF 1件（634,790 bytes、stored）のDBメタデータと実ファイルSHA-256一致を確認した。
+- Journal 0件、Room v17、integrity check／foreign key check PASS。A90の既存正式データは変更していない。
+- 日報保存失敗の原因は、既存日報の`INSERT OR REPLACE`が参照中の日報親行を置換し、固定費Applicationの外部キー制約に抵触したことと確定した。
+- `DailyReport`保存をUPDATE優先・新規時のみINSERTのRoom transactionへ変更し、固定費参照を保持した再保存と新規日報INSERTをPixel 8で確認した。
+- Phase 1修正後のPixel 8 targeted 12/12、connected 148/148、JVM全件、compileInstrumentedAndroidTestKotlin、assembleDebug、git diff --checkはPASSした。
+- A90へは通常APKのinstall-rのみ実施し、instrumented APKは導入していない。再保存操作は実施していない。
+
 ## v0.2.7 最近のレシート削除 A90受入 checkpoint（2026-09-02）
 
 - versionCode 9、versionName 0.2.7。Room schema v17、Migration差分なし。

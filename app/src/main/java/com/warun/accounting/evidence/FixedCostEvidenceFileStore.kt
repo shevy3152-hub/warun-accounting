@@ -74,7 +74,7 @@ class FixedCostEvidenceFileStore(
             var size = 0L
             val first = ByteArray(8)
             var firstCount = 0
-            val tail = ByteArray(5)
+            val tail = ByteArray(1024)
             var tailCount = 0
             val input = inputOpener.open(resolver, source.uri)
                 ?: throw FixedCostEvidenceFileException("Evidence source could not be opened")
@@ -177,7 +177,7 @@ class FixedCostEvidenceFileStore(
         val digest = MessageDigest.getInstance("SHA-256")
         val first = ByteArray(8)
         var firstCount = 0
-        val tail = ByteArray(5)
+        val tail = ByteArray(1024)
         var tailCount = 0
         var size = 0L
         FileInputStream(file).use { input ->

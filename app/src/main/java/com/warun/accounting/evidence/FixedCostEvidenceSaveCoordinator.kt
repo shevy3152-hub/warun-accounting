@@ -11,6 +11,7 @@ import com.warun.accounting.data.local.WarunDao
 import com.warun.accounting.data.fixedcost.FixedCostSaveResult
 import com.warun.accounting.data.fixedcost.fixedCostPaymentMethodOrNull
 import java.io.File
+import java.net.URI
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -44,6 +45,12 @@ fun interface FixedCostFailureInjector {
 
 object NoOpFixedCostFailureInjector : FixedCostFailureInjector {
     override fun after(point: FixedCostFailurePoint) = Unit
+}
+
+enum class FixedCostPreparedJournalRecovery {
+    NotFound,
+    Abandoned,
+    Protected
 }
 
 @Singleton
@@ -124,7 +131,8 @@ class FixedCostEvidenceSaveCoordinator @Inject constructor(
                     sha256 = "",
                     byteSize = 0L,
                     sortOrder = source.sortOrder,
-                    state = FixedCostFinalizationState.Prepared
+                    state = FixedCostFinalizationState.Prepared,
+                    sourceUri = source.uri.toString()
                 )
             }
             journal.prepare(
@@ -225,8 +233,15 @@ class FixedCostEvidenceSaveCoordinator @Inject constructor(
         if (request.directRegistrationKey != null && currentAmount <= 0L) return FixedCostSaveResult.AmountConflict
         if (currentAmount != 0L && currentAmount != receipt.totalAmount) return FixedCostSaveResult.AmountConflict
         return try {
-        save(resolver, request)
-        FixedCostSaveResult.Success
+            if (request.directRegistrationKey != null) {
+                abandonEligiblePreparedJournal(
+                    UUID.nameUUIDFromBytes(
+                        "fixed-cost-application:${request.directRegistrationKey}".toByteArray()
+                    ).toString()
+                )
+            }
+            save(resolver, request)
+            FixedCostSaveResult.Success
         } catch (error: FixedCostAmountConflictException) {
             FixedCostSaveResult.AmountConflict
         } catch (error: FixedCostEvidenceFileException) {
@@ -234,6 +249,57 @@ class FixedCostEvidenceSaveCoordinator @Inject constructor(
         } catch (error: Exception) {
             FixedCostSaveResult.RecoveryRequired(error)
         }
+    }
+
+    /**
+     * Removes only a fully orphaned pre-file-finalization journal for a direct registration.
+     * A missing source URI is treated as legacy metadata; a recorded non-file source is
+     * intentionally not auto-recovered because its existence cannot be proven without a resolver.
+     */
+    suspend fun abandonEligiblePreparedJournal(applicationId: String): FixedCostPreparedJournalRecovery =
+        withContext(Dispatchers.IO) {
+            mutex.withLock {
+                val entry = journal.find(applicationId) ?: return@withLock FixedCostPreparedJournalRecovery.NotFound
+                if (entry.state != FixedCostFinalizationState.Prepared ||
+                    entry.evidence.any { item ->
+                        item.state != FixedCostFinalizationState.Prepared ||
+                            item.byteSize != 0L ||
+                            item.sha256.isNotEmpty() ||
+                            item.pendingPath.fileExists() ||
+                            item.finalPath.fileExists() ||
+                            !sourceIsAbsent(item.sourceUri)
+                    }
+                ) return@withLock FixedCostPreparedJournalRecovery.Protected
+
+                val report = dao.getDailyReport(entry.dailyReportId)
+                    ?: return@withLock FixedCostPreparedJournalRecovery.Protected
+                if (report.fixedCostAmount(entry.fixedCostType) != entry.appliedAmount ||
+                    dao.getReceipt(entry.receiptId) != null ||
+                    dao.getFixedCostReceiptApplication(entry.applicationId) != null ||
+                    dao.getFixedCostReceiptApplicationByReceipt(entry.receiptId) != null ||
+                    dao.getFixedCostReceiptApplicationByReportAndType(
+                        entry.dailyReportId,
+                        entry.fixedCostType
+                    ) != null ||
+                    entry.evidence.any { item ->
+                        dao.getEvidenceRecord(item.evidenceId) != null ||
+                            dao.getFixedCostApplicationIdForEvidence(item.evidenceId) != null ||
+                            dao.getExpenseIdForEvidence(item.evidenceId) != null
+                    }
+                ) return@withLock FixedCostPreparedJournalRecovery.Protected
+
+                journal.abandonPrepared(applicationId)
+                FixedCostPreparedJournalRecovery.Abandoned
+            }
+        }
+
+    private fun String.fileExists(): Boolean = runCatching { File(this).isFile }.getOrDefault(true)
+
+    private fun sourceIsAbsent(sourceUri: String?): Boolean {
+        if (sourceUri == null) return true
+        val uri = runCatching { URI(sourceUri) }.getOrNull() ?: return false
+        return uri.scheme.equals("file", ignoreCase = true) &&
+            runCatching { !File(uri).exists() }.getOrDefault(false)
     }
 
     suspend fun recover() = withContext(Dispatchers.IO) {
@@ -261,7 +327,23 @@ class FixedCostEvidenceSaveCoordinator @Inject constructor(
                     }
                 if (current.state != FixedCostFinalizationState.AllFilesStored) return@forEach
                 val report = dao.getDailyReport(current.dailyReportId) ?: return@forEach
-                val receipt = dao.getReceipt(current.receiptId) ?: return@forEach
+                val directRegistration = current.receiptId.startsWith("fixed-cost-")
+                val receipt = dao.getReceipt(current.receiptId) ?: if (directRegistration) {
+                    ReceiptRecord(
+                        id = current.receiptId,
+                        purchaseDate = report.reportDate,
+                        capturedDate = report.reportDate,
+                        registeredAt = current.createdAt,
+                        storeName = fixedCostLabel(current.fixedCostType),
+                        totalAmount = current.appliedAmount,
+                        taxAmount = 0L,
+                        registrationNumber = null,
+                        expenseCategory = null,
+                        isConfirmed = true,
+                        memo = "日報から固定費Evidenceを登録",
+                        updatedAt = current.updatedAt
+                    )
+                } else return@forEach
                 val evidence = current.evidence.map { item ->
                     val file = File(item.finalPath)
                     EvidenceRecord(
@@ -277,13 +359,11 @@ class FixedCostEvidenceSaveCoordinator @Inject constructor(
                     current.fixedCostType, paymentMethodFor(current.fixedCostType), current.createdAt, current.updatedAt
                 )
                 val links = current.evidence.map { FixedCostEvidenceLinkRecord(current.applicationId, it.evidenceId, it.sortOrder, current.updatedAt) }
-                dao.applyFixedCostEvidence(
-                    report,
-                    receipt,
-                    application,
-                    evidence,
-                    links
-                )
+                if (directRegistration) {
+                    dao.applyDirectFixedCostEvidence(report, receipt, application, evidence, links)
+                } else {
+                    dao.applyFixedCostEvidence(report, receipt, application, evidence, links)
+                }
                 journal.markDatabaseApplied(current.applicationId)
                 journal.complete(current.applicationId)
             }

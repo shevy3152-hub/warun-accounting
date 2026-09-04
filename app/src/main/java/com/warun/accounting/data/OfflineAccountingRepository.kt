@@ -99,7 +99,7 @@ class OfflineAccountingRepository @Inject constructor(
     override suspend fun getAllExpenseRecordsForEvidenceRecovery(): List<ExpenseRecord> =
         dao.getAllExpenseRecordsForEvidenceRecovery()
 
-    override suspend fun saveDailyReport(report: DailyReport) = dao.insertDailyReport(report)
+    override suspend fun saveDailyReport(report: DailyReport) = dao.saveDailyReportSafely(report)
 
     override suspend fun saveDailyReportWithExpense(report: DailyReport, expense: ExpenseRecord?) {
         requireNonPrepaidExpense(expense)

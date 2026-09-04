@@ -8,7 +8,6 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
-import android.provider.OpenableColumns
 import android.widget.ImageView
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -151,26 +150,43 @@ class FixedCostEvidenceViewModel @Inject constructor(
     }
 
     fun addUris(resolver: ContentResolver, uris: List<Uri>) {
-        val existing = _state.value.attachments.map { it.uri }.toSet()
-        val additions = uris.distinctBy { it.toString() }.filterNot { it.toString() in existing }.mapNotNull { uri ->
-            val mime = resolver.getType(uri)?.substringBefore(';')?.lowercase()
-            if (mime !in setOf("image/jpeg", "image/png", "application/pdf")) return@mapNotNull null
-            val size = resolver.query(uri, arrayOf(OpenableColumns.SIZE, OpenableColumns.DISPLAY_NAME), null, null, null)
-                ?.use { c -> if (c.moveToFirst()) {
-                    val name = c.getString(c.getColumnIndexOrThrow(OpenableColumns.DISPLAY_NAME))
-                    val sizeIndex = c.getColumnIndex(OpenableColumns.SIZE)
-                    FixedCostEvidenceAttachment(uri.toString(), name, requireNotNull(mime), if (sizeIndex >= 0 && !c.isNull(sizeIndex)) c.getLong(sizeIndex) else -1L, 0)
-                } else null } ?: return@mapNotNull null
-            val persistable = runCatching {
-                resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }.isSuccess
-            if (persistable) ownedPersistableUriGrants += uri.toString()
-            if (!persistable && resolver.openInputStream(uri)?.use { true } != true) return@mapNotNull null
-            size
+        if (_state.value.isSaving) return
+        val candidates = uris.distinctBy { it.toString() }.filterNot { candidate ->
+            _state.value.attachments.any { it.uri == candidate.toString() }
         }
-        val next = normalizeFixedCostEvidenceAttachments(_state.value.attachments + additions)
-        savedStateHandle[AttachmentsKey] = ArrayList(next.map { encode(it) })
-        _state.value = _state.value.copy(attachments = next, message = if (additions.size < uris.distinct().size) "利用できない形式・URIを除外しました。現在は読めますが、アプリ終了後は再選択が必要な場合があります。" else null)
+        viewModelScope.launch {
+            val results = withContext(Dispatchers.IO) { candidates.map { uri ->
+                val mime = resolver.getType(uri)?.substringBefore(';')?.lowercase()
+                if (mime !in setOf("image/jpeg", "image/png", "application/pdf")) {
+                    uri to FixedCostEvidenceUriInspection.Unavailable
+                } else {
+                    val persistable = uri.scheme == ContentResolver.SCHEME_CONTENT && runCatching {
+                        resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }.isSuccess
+                    if (persistable) ownedPersistableUriGrants += uri.toString()
+                    uri to inspectFixedCostEvidenceUri(resolver, uri, requireNotNull(mime))
+                }
+            } }
+            results.forEach { (uri, result) ->
+                if (result !is FixedCostEvidenceUriInspection.Ready) releaseOwnedGrant(resolver, uri.toString())
+            }
+            val additions = results.mapNotNull { (uri, result) ->
+                (result as? FixedCostEvidenceUriInspection.Ready)?.metadata?.let { metadata ->
+                    FixedCostEvidenceAttachment(uri.toString(), metadata.displayName, metadata.mediaType, metadata.byteSize, 0)
+                }
+            }
+            val hasTooLarge = results.any { it.second == FixedCostEvidenceUriInspection.TooLarge }
+            val next = normalizeFixedCostEvidenceAttachments(_state.value.attachments + additions)
+            savedStateHandle[AttachmentsKey] = ArrayList(next.map { encode(it) })
+            _state.value = _state.value.copy(
+                attachments = next,
+                message = when {
+                    hasTooLarge -> "Evidenceが50 MiBを超えています"
+                    additions.size < candidates.size -> "利用できない形式・URI、またはサイズを確認できないファイルを除外しました。再選択してください"
+                    else -> null
+                }
+            )
+        }
     }
 
     fun remove(index: Int, resolver: ContentResolver) {
@@ -243,7 +259,7 @@ class FixedCostEvidenceViewModel @Inject constructor(
     companion object { private const val AttachmentsKey = "fixed-cost-evidence-attachments" }
 }
 
-private fun resultMessage(result: FixedCostSaveResult): String = when (result) {
+internal fun resultMessage(result: FixedCostSaveResult): String = when (result) {
     FixedCostSaveResult.Success -> "日報へ反映し、証憑を保存しました。"
     FixedCostSaveResult.MissingDailyReport -> "対象日報がありません。先に日報を作成してください。"
     FixedCostSaveResult.MissingEvidence -> "Evidenceを1件以上添付してください。"

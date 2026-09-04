@@ -6,6 +6,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
+import androidx.room.Update
 import androidx.room.Upsert
 import com.warun.accounting.data.export.MonthlyExportSourceSnapshot
 import com.warun.accounting.data.export.FixedCostEvidenceExportRecord
@@ -277,8 +278,18 @@ interface WarunDao {
     @Query("SELECT * FROM electronic_submission_records WHERE id = :id")
     suspend fun getElectronicSubmissionRecord(id: String): ElectronicSubmissionRecord?
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertDailyReport(report: DailyReport)
+
+    @Update
+    suspend fun updateDailyReport(report: DailyReport): Int
+
+    @Transaction
+    suspend fun saveDailyReportSafely(report: DailyReport) {
+        if (updateDailyReport(report) == 0) {
+            insertDailyReport(report)
+        }
+    }
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertReceipt(receipt: ReceiptRecord)
@@ -495,7 +506,7 @@ interface WarunDao {
 
     @Transaction
     suspend fun saveDailyReportWithExpense(report: DailyReport, expense: ExpenseRecord?) {
-        insertDailyReport(report)
+        saveDailyReportSafely(report)
         expense?.let { insertExpenseRecord(it) }
     }
 
@@ -518,7 +529,7 @@ interface WarunDao {
         evidence: EvidenceRecord,
         link: ExpenseEvidenceLinkRecord
     ) {
-        insertDailyReport(report)
+        saveDailyReportSafely(report)
         saveExpenseWithEvidence(expense, evidence, link)
     }
 

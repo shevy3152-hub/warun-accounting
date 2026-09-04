@@ -85,6 +85,89 @@ class FixedCostEvidenceSaveInstrumentationTest {
     }
 
     @Test
+    fun fullyOrphanedPreparedDirectJournalIsCollectedBeforeSameKeyRetry() = runBlocking {
+        val fixture = fixture("orphan-receipt", "orphan-report")
+        dao.deleteReceipt(fixture.receipt)
+        dao.updateFixedCostAmountIfEmpty(fixture.report.id, FixedCostType.Electricity, 7_000L, 2)
+        val key = "direct:${fixture.report.id}:${FixedCostType.Electricity}"
+        val receiptId = "fixed-cost-" + UUID.nameUUIDFromBytes(key.toByteArray())
+        val applicationId = UUID.nameUUIDFromBytes("fixed-cost-application:$key".toByteArray()).toString()
+        val journal = FixedCostFinalizationJournal(File(root, "orphan-journal"))
+        journal.prepare(
+            applicationId, receiptId, fixture.report.id, FixedCostType.Electricity, "現金", 7_000L,
+            listOf(FixedCostJournalEvidence("orphan-evidence", "image/jpeg", File(root, "missing-pending").path, File(root, "missing-final").path, "", 0L, 0, FixedCostFinalizationState.Prepared))
+        )
+        val input = File(root, "orphan-input").apply {
+            writeBytes(byteArrayOf(0xff.toByte(), 0xd8.toByte(), 0xff.toByte(), 1, 0xff.toByte(), 0xd9.toByte()))
+        }
+        val store = FixedCostEvidenceFileStore(File(root, "orphan-pending"), File(root, "orphan-stored"))
+        val coordinator = FixedCostEvidenceSaveCoordinator(dao, store, journal, NoOpFixedCostFailureInjector)
+        assertEquals(FixedCostPreparedJournalRecovery.Abandoned, coordinator.abandonEligiblePreparedJournal(applicationId))
+        assertEquals(0, journal.loadAll().entries.size)
+        val result = coordinator.saveResult(
+            context.contentResolver,
+            FixedCostEvidenceSaveRequest(
+                receiptId, fixture.report.id, FixedCostType.Electricity, "現金", 7_000L,
+                listOf(FixedCostEvidenceSource(android.net.Uri.fromFile(input), "image/jpeg", 0)), key
+            )
+        )
+        assertEquals(FixedCostSaveResult.Success, result)
+        assertEquals(1L, count("fixed_cost_receipt_applications"))
+        assertEquals(1L, count("fixed_cost_evidence_links"))
+        assertEquals(1L, count("evidence_records"))
+        assertEquals(0L, count("expense_records"))
+        assertEquals(7_000L, dao.getDailyReport(fixture.report.id)!!.electricityExpense)
+        assertTrue(dao.getReceipt(receiptId)!!.isConfirmed)
+        assertEquals(0, journal.loadAll().entries.size)
+    }
+
+    @Test
+    fun preparedJournalWithFilesOrResolvedMetadataRemainsProtected() = runBlocking {
+        val cases = listOf("pending", "final", "size", "sha")
+        cases.forEach { kind ->
+            val fixture = fixture("protected-$kind-receipt", "protected-$kind-report")
+            dao.deleteReceipt(fixture.receipt)
+            dao.updateFixedCostAmountIfEmpty(fixture.report.id, FixedCostType.Electricity, 7_000L, 2)
+            val key = "direct:${fixture.report.id}:${FixedCostType.Electricity}"
+            val appId = UUID.nameUUIDFromBytes("fixed-cost-application:$key".toByteArray()).toString()
+            val pending = File(root, "protected-$kind-pending")
+            val final = File(root, "protected-$kind-final")
+            if (kind == "pending") pending.writeBytes(byteArrayOf(1))
+            if (kind == "final") final.writeBytes(byteArrayOf(1))
+            val evidence = FixedCostJournalEvidence(
+                "protected-$kind-evidence", "image/jpeg", pending.path, final.path,
+                if (kind == "sha") "a".repeat(64) else "", if (kind == "size") 1L else 0L, 0,
+                FixedCostFinalizationState.Prepared
+            )
+            val journal = FixedCostFinalizationJournal(File(root, "protected-$kind-journal"))
+            journal.prepare(appId, "fixed-cost-$kind", fixture.report.id, FixedCostType.Electricity, "現金", 7_000L, listOf(evidence))
+            val coordinator = FixedCostEvidenceSaveCoordinator(
+                dao, FixedCostEvidenceFileStore(File(root, "protected-$kind-store-pending"), File(root, "protected-$kind-store-final")), journal, NoOpFixedCostFailureInjector
+            )
+            assertEquals(FixedCostPreparedJournalRecovery.Protected, coordinator.abandonEligiblePreparedJournal(appId))
+            assertEquals(1, journal.loadAll().entries.size)
+        }
+    }
+
+    @Test
+    fun preparedJournalWithReceiptReferenceRemainsProtected() = runBlocking {
+        val fixture = fixture("referenced-receipt", "referenced-report")
+        dao.deleteReceipt(fixture.receipt)
+        dao.updateFixedCostAmountIfEmpty(fixture.report.id, FixedCostType.Electricity, 7_000L, 2)
+        val key = "direct:${fixture.report.id}:${FixedCostType.Electricity}"
+        val receiptId = "fixed-cost-referenced"
+        val appId = UUID.nameUUIDFromBytes("fixed-cost-application:$key".toByteArray()).toString()
+        val referenced = fixture.receipt.copy(id = receiptId, isConfirmed = true, totalAmount = 7_000L)
+        dao.insertReceipt(referenced)
+        val journal = FixedCostFinalizationJournal(File(root, "referenced-journal"))
+        journal.prepare(appId, receiptId, fixture.report.id, FixedCostType.Electricity, "現金", 7_000L,
+            listOf(FixedCostJournalEvidence("referenced-evidence", "image/jpeg", File(root, "none-p").path, File(root, "none-f").path, "", 0L, 0, FixedCostFinalizationState.Prepared)))
+        val coordinator = FixedCostEvidenceSaveCoordinator(dao, FixedCostEvidenceFileStore(File(root, "referenced-p"), File(root, "referenced-f")), journal, NoOpFixedCostFailureInjector)
+        assertEquals(FixedCostPreparedJournalRecovery.Protected, coordinator.abandonEligiblePreparedJournal(appId))
+        assertEquals(1, journal.loadAll().entries.size)
+    }
+
+    @Test
     fun zeroAmountRejectsBeforeCreatingFixedCostRecords() = runBlocking {
         val fixture = fixture("zero-receipt", "zero-report")
         val input = File(root, "zero-input").apply {
@@ -244,6 +327,50 @@ class FixedCostEvidenceSaveInstrumentationTest {
         assertTrue(dao.getReceipt(fixture.receipt.id)!!.isConfirmed)
         assertEquals(1L, count("fixed_cost_receipt_applications"))
         assertEquals(1L, count("fixed_cost_evidence_links"))
+    }
+
+    @Test
+    fun dailyReportUpdatePreservesFixedCostForeignKeyReferences() = runBlocking {
+        val fixture = fixture("existing-receipt", "existing-report")
+        val input = File(root, "existing-input").apply {
+            writeBytes(byteArrayOf(0xff.toByte(), 0xd8.toByte(), 0xff.toByte(), 1, 0xff.toByte(), 0xd9.toByte()))
+        }
+        val result = FixedCostEvidenceSaveCoordinator(
+            dao,
+            FixedCostEvidenceFileStore(File(root, "existing-pending"), File(root, "existing-stored")),
+            FixedCostFinalizationJournal(File(root, "existing-journal")),
+            NoOpFixedCostFailureInjector
+        ).saveResult(
+            context.contentResolver,
+            FixedCostEvidenceSaveRequest(
+                fixture.receipt.id, fixture.report.id, FixedCostType.Electricity, "現金", 7_000L,
+                listOf(FixedCostEvidenceSource(android.net.Uri.fromFile(input), "image/jpeg", 0))
+            )
+        )
+        assertEquals(FixedCostSaveResult.Success, result)
+        val application = dao.getFixedCostReceiptApplicationByReceipt(fixture.receipt.id)!!
+        val evidenceId = dao.getFixedCostEvidenceLinks(application.applicationId).single().evidenceId
+        val beforeReceipt = dao.getReceipt(fixture.receipt.id)
+        val beforeEvidence = dao.getEvidenceRecord(evidenceId)
+
+        val newReport = fixture.report.copy(id = "new-report", reportDate = "2026-09-01")
+        dao.saveDailyReportSafely(newReport)
+        assertEquals(newReport, dao.getDailyReport(newReport.id))
+
+        dao.saveDailyReportSafely(fixture.report.copy(status = DailyReportStatus.Completed, memo = "再保存"))
+
+        assertEquals(DailyReportStatus.Completed, dao.getDailyReport(fixture.report.id)!!.status)
+        assertEquals(1L, count("fixed_cost_receipt_applications"))
+        assertEquals(1L, count("fixed_cost_evidence_links"))
+        assertEquals(1L, count("evidence_records"))
+        assertEquals(1L, count("receipts"))
+        assertEquals(beforeReceipt, dao.getReceipt(fixture.receipt.id))
+        assertEquals(beforeEvidence, dao.getEvidenceRecord(evidenceId))
+        assertEquals(0L, count("expense_records"))
+        assertTrue(database.openHelper.writableDatabase.query("PRAGMA foreign_key_check").use { !it.moveToFirst() })
+        assertEquals("ok", database.openHelper.writableDatabase.query("PRAGMA integrity_check").use {
+            it.moveToFirst(); it.getString(0)
+        })
     }
 
     @Test
