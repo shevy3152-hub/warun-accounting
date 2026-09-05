@@ -22,9 +22,10 @@ internal fun DateInputTextField(
     modifier: Modifier = Modifier,
     isError: Boolean = false,
     trailingIcon: (@Composable () -> Unit)? = null,
+    resetKey: Any? = null,
     onValueChange: (String) -> Unit
 ) {
-    var fieldValue by remember(value) {
+    var fieldValue by remember(value, resetKey) {
         mutableStateOf(
             TextFieldValue(
                 text = value,

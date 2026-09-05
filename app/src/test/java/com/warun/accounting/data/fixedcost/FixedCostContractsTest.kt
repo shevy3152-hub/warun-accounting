@@ -65,4 +65,32 @@ class FixedCostContractsTest {
         assertEquals(FixedCostEvidenceRegistrationState.REGISTERED, registered.registrationState(1L))
         assertEquals(1, registered.evidence.size)
     }
+
+    @Test
+    fun evidenceButtonLabelOnlyUsesMatchingDateAndType() {
+        val statuses = listOf(
+            FixedCostEvidenceStatus("report-23", "electricity", "app-23", listOf(storedEvidence("evidence-23"))),
+            FixedCostEvidenceStatus("report-24", "electricity", "app-24", listOf(storedEvidence("evidence-24"))),
+            FixedCostEvidenceStatus("report-23", "gas", "app-gas", listOf(storedEvidence("evidence-gas")))
+        )
+
+        assertEquals(1, fixedCostEvidenceCount(statuses, "report-23", "electricity"))
+        assertEquals(0, fixedCostEvidenceCount(statuses, "report-23", "communication"))
+        assertEquals(0, fixedCostEvidenceCount(statuses, "report-missing", "electricity"))
+        assertEquals("✓ 保存済み（再編集）", fixedCostEvidenceButtonLabel(1))
+        assertEquals("証憑追加", fixedCostEvidenceButtonLabel(0))
+    }
+
+    private fun storedEvidence(id: String) = EvidenceRecord(
+        id = id,
+        captureId = "capture-$id",
+        storedUri = "file:///$id",
+        byteSize = 1L,
+        sha256 = "a".repeat(64),
+        state = EvidenceRecordState.Stored,
+        createdAt = 1L,
+        storedAt = 2L,
+        updatedAt = 2L,
+        mediaType = "image/jpeg"
+    )
 }

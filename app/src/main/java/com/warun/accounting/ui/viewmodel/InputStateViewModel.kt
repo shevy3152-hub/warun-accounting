@@ -75,6 +75,15 @@ class InputStateViewModel @Inject constructor(
         savedStateHandle[ReportInitializedKey] = true
     }
 
+    fun synchronizeReportIfUnedited(input: DailyReportInput): Boolean {
+        if (reportInputState.value != cleanReportInputState.value) return false
+        if (reportInputState.value.reportDate != input.reportDate) return false
+        if (input.id.isBlank()) return false
+        reportInputState.value = input
+        cleanReportInputState.value = input
+        return true
+    }
+
     fun openReport(input: DailyReportInput) {
         clearPrepaidOperationFor(draftExpenseInputState.value?.id)
         reportInputState.value = input

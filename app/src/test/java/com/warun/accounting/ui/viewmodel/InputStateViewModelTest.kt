@@ -12,6 +12,55 @@ import org.junit.Test
 
 class InputStateViewModelTest {
     @Test
+    fun reportInitializedBeforeReportsLoadSynchronizesExistingIdWhenStillUnedited() {
+        val state = InputStateViewModel(SavedStateHandle())
+        val date = "2026-08-23"
+
+        state.initializeReport(DailyReportInput(reportDate = date))
+
+        val resolved = DailyReportInput(id = "report-2026-08-23", reportDate = date)
+        assertTrue(state.synchronizeReportIfUnedited(resolved))
+        assertEquals(resolved, state.reportInputState.value)
+        assertEquals(resolved, state.cleanReportInputState.value)
+    }
+
+    @Test
+    fun reportInitializedBeforeReportsLoadDoesNotOverwriteStartedInput() {
+        val state = InputStateViewModel(SavedStateHandle())
+        val date = "2026-08-23"
+        state.initializeReport(DailyReportInput(reportDate = date))
+        val edited = state.reportInputState.value.copy(electricityExpense = "41617")
+        state.reportInputState.value = edited
+
+        val resolved = DailyReportInput(id = "report-2026-08-23", reportDate = date)
+        assertFalse(state.synchronizeReportIfUnedited(resolved))
+        assertEquals(edited, state.reportInputState.value)
+    }
+
+    @Test
+    fun changingToExistingDateUsesResolvedIdAfterConfirmation() {
+        val state = InputStateViewModel(SavedStateHandle())
+        val original = DailyReportInput(id = "report-22", reportDate = "2026-08-22")
+        val target = DailyReportInput(id = "report-23", reportDate = "2026-08-23")
+        state.initializeReport(original)
+        state.pendingReportDateState.value = target.reportDate
+
+        state.openReport(target)
+
+        assertEquals(target, state.reportInputState.value)
+    }
+
+    @Test
+    fun cancellingDateChangeKeepsOriginalInput() {
+        val state = InputStateViewModel(SavedStateHandle())
+        val original = DailyReportInput(id = "report-22", reportDate = "2026-08-22", electricityExpense = "100")
+        state.initializeReport(original)
+        state.pendingReportDateState.value = "2026-08-23"
+        state.pendingReportDateState.value = null
+
+        assertEquals(original, state.reportInputState.value)
+    }
+    @Test
     fun reportInputAndPendingDateRestoreFromSavedState() {
         val handle = SavedStateHandle()
         val first = InputStateViewModel(handle)

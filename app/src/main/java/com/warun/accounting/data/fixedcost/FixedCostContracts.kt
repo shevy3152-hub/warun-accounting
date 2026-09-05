@@ -44,6 +44,17 @@ data class FixedCostEvidenceStatus(
     val evidence: List<EvidenceRecord>
 )
 
+fun fixedCostEvidenceCount(
+    statuses: List<FixedCostEvidenceStatus>,
+    dailyReportId: String,
+    fixedCostType: String
+): Int = statuses.firstOrNull {
+    it.dailyReportId == dailyReportId && it.fixedCostType == fixedCostType
+}?.evidence?.size ?: 0
+
+fun fixedCostEvidenceButtonLabel(storedEvidenceCount: Int): String =
+    if (storedEvidenceCount > 0) "✓ 保存済み（再編集）" else "証憑追加"
+
 enum class FixedCostEvidenceRegistrationState {
     NONE,
     MISSING,

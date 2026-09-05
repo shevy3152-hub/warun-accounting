@@ -186,6 +186,8 @@ import com.warun.accounting.ui.fixedcost.FixedCostEvidenceStatusRows
 import com.warun.accounting.ui.fixedcost.FixedCostDirectEvidenceScreen
 import com.warun.accounting.data.fixedcost.FixedCostEvidenceRegistrationState
 import com.warun.accounting.data.fixedcost.registrationState
+import com.warun.accounting.data.fixedcost.fixedCostEvidenceButtonLabel
+import com.warun.accounting.data.fixedcost.fixedCostEvidenceCount
 import com.warun.accounting.ui.util.currentMonthString
 import com.warun.accounting.ui.util.todayString
 import com.warun.accounting.ui.util.toYen
@@ -1702,8 +1704,7 @@ private fun ReportEntryScreen(
     val initialReportDate = remember(initialDate) { initialDate ?: DailyReportInput().reportDate }
 
     fun inputForDate(reportDate: String): DailyReportInput =
-        uiState.reports.firstOrNull { it.reportDate == reportDate }?.toInput()
-            ?: DailyReportInput(reportDate = reportDate)
+        resolveDailyReportInputForDate(uiState.reports, reportDate)
 
     inputStateViewModel.initializeReport(inputForDate(initialReportDate))
     var reportInput by inputStateViewModel.reportInputState
@@ -1869,6 +1870,12 @@ private fun ReportEntryScreen(
         expenseFormDirty = expenseFormDirty
     )
     val currentCancellationReportDate by rememberUpdatedState(reportInput.reportDate)
+
+    LaunchedEffect(reportInput.reportDate, uiState.reports, hasUnsavedChanges) {
+        if (!hasUnsavedChanges) {
+            inputStateViewModel.synchronizeReportIfUnedited(inputForDate(reportInput.reportDate))
+        }
+    }
 
     LaunchedEffect(expenseCancellationViewModel) {
         expenseCancellationViewModel.events.collect { event ->
@@ -2305,6 +2312,7 @@ private fun ReportEntryScreen(
             expenses = reportExpenses,
             expenseEvidence = uiState.expenseEvidence,
             fixedCostEvidenceStatuses = uiState.fixedCostEvidenceStatuses,
+            pendingReportDate = pendingReportDate,
             previewExpenses = liveReportExpenses,
             cancelledExpenseKeys = uiState.cancelledExpenseKeys,
             draftExpenseInput = draftExpenseInput,
@@ -2354,6 +2362,7 @@ private fun DailyReportForm(
     expenses: List<ExpenseRecord>,
     expenseEvidence: List<ExpenseEvidenceRecord>,
     fixedCostEvidenceStatuses: List<com.warun.accounting.data.fixedcost.FixedCostEvidenceStatus>,
+    pendingReportDate: String?,
     previewExpenses: List<ExpenseRecord>,
     cancelledExpenseKeys: Set<ExpenseDateCategoryKey>,
     draftExpenseInput: ExpenseInput?,
@@ -2388,6 +2397,7 @@ private fun DailyReportForm(
                 enteredReportDates = enteredReportDates,
                 onInputChange = onInputChange,
                 onCalendarDateSelected = onCalendarDateSelected,
+                pendingReportDate = pendingReportDate,
                 modifier = cardModifier
             )
             SalesCard(
@@ -2456,6 +2466,7 @@ private fun BasicInfoCard(
     enteredReportDates: Set<String>,
     onInputChange: (DailyReportInput) -> Unit,
     onCalendarDateSelected: (String) -> Unit,
+    pendingReportDate: String?,
     modifier: Modifier = Modifier.fillMaxWidth()
 ) {
     FormCard(modifier = modifier) {
@@ -2465,10 +2476,9 @@ private fun BasicInfoCard(
                 value = input.reportDate,
                 markedDates = enteredReportDates,
                 modifier = fieldModifier,
-                onCalendarDateSelected = onCalendarDateSelected
-            ) {
-                onInputChange(input.copy(reportDate = it))
-            }
+                onCalendarDateSelected = onCalendarDateSelected,
+                resetKey = pendingReportDate
+            )
             AppTextField(
                 label = "記入者",
                 value = input.authorName,
@@ -2485,7 +2495,7 @@ private fun ReportDateField(
     markedDates: Set<String>,
     modifier: Modifier = Modifier.fillMaxWidth(),
     onCalendarDateSelected: (String) -> Unit,
-    onDateChange: (String) -> Unit
+    resetKey: Any? = null
 ) {
     var showCalendar by remember { mutableStateOf(false) }
 
@@ -2504,7 +2514,12 @@ private fun ReportDateField(
     DateInputTextField(
         label = "日付",
         value = value,
-        onValueChange = onDateChange,
+        resetKey = resetKey,
+        onValueChange = { candidate ->
+            if (parseDateOrNull(candidate) != null) {
+                onCalendarDateSelected(candidate)
+            }
+        },
         trailingIcon = {
             IconButton(onClick = { showCalendar = true }) {
                 Icon(Icons.Outlined.CalendarMonth, contentDescription = "カレンダーを開く")
@@ -5158,8 +5173,7 @@ private fun FixedCostEntryRow(
     onOpen: (String) -> Unit,
     onValueChange: (String) -> Unit
 ) {
-    val count = statuses.firstOrNull { it.dailyReportId == reportId && it.fixedCostType == fixedCostType }
-        ?.evidence?.size ?: 0
+    val count = fixedCostEvidenceCount(statuses, reportId, fixedCostType)
     Row(modifier = fieldModifier, verticalAlignment = Alignment.CenterVertically) {
         AppTextField(label, value, KeyboardType.Number, Modifier.weight(1f), clearZeroOnFocus = true, onValueChange = onValueChange)
         TextButton(
@@ -5167,7 +5181,7 @@ private fun FixedCostEntryRow(
             modifier = Modifier.testTag("fixed-cost-direct-$fixedCostType")
         ) {
             Icon(Icons.Outlined.AttachFile, contentDescription = null)
-            Text(if (count > 0) "証憑${count}件" else "証憑追加")
+            Text(fixedCostEvidenceButtonLabel(count))
         }
     }
 }
@@ -5620,6 +5634,12 @@ private fun String.toReportStatusLabel(): String =
         DailyReportStatus.Completed -> "完了"
         else -> "下書き"
     }
+
+internal fun resolveDailyReportInputForDate(
+    reports: List<DailyReport>,
+    reportDate: String
+): DailyReportInput = reports.firstOrNull { it.reportDate == reportDate }?.toInput()
+    ?: DailyReportInput(reportDate = reportDate)
 
 internal fun DailyReport.toInput(): DailyReportInput =
     DailyReportInput(
