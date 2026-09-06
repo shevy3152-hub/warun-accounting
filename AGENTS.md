@@ -24,7 +24,7 @@
 - 言語／UI: Kotlin 2.0.21、Jetpack Compose、Material 3
 - Android: AGP 8.7.3、compileSdk/targetSdk 35、minSdk 26、Java/JVM 17
 - DI／状態管理: Hilt 2.52、ViewModel、Coroutines/Flow、SavedStateHandle
-- DB: Room 2.6.1、KSP、DB名 `warun-accounting.db`、schema version 15
+- DB: Room 2.6.1、KSP、DB名 `warun-accounting.db`、schema version 18
 - カメラ: CameraX 1.5.3
 - OCR: ML Kit Japanese Text Recognition 16.0.1
 - Gradle Wrapper: 9.3.0
@@ -46,7 +46,7 @@
 - `ExpenseRecord` による支出明細、支払先候補、支払方法、個別保存
 - 日報と支出のTransaction保存、および未保存入力の画面遷移ガード
 - 支出日と日報日が異なる未保存支出を一括保存せず、個別保存へ誘導する安全ガード
-- Roomによる端末内永続化と、schema 6〜15のMigration
+- Roomによる端末内永続化と、schema 6〜18のMigration
 - CameraXによる支出レシート撮影、内部pending領域へのJPEG保存、再撮影／破棄時の清掃
 - ML Kitによる日本語OCR全文取得
 - OCR全文から店舗名、購入日時、合計金額の候補抽出
@@ -56,10 +56,10 @@
 - プリペイド口座、CHARGE／PURCHASE／REVERSALの不変台帳、ExpenseRecordとの永続リンク
 - 新規プリペイド支出、保存済み支出のプリペイド属性編集、全支払方法の保存済み支出の論理取消
 - 取消済み支出の通常一覧・集計からの除外、legacy fallback再計上防止、日報詳細の監査表示
-- SAFによるRoom v15＋正式Evidenceの検証可能な手動バックアップ／復元、復元journalとrollback、別環境での正式Evidence URI再割当
+- SAFによるRoom v18＋正式Evidenceの検証可能な手動バックアップ／復元、v15／v17バックアップ復元互換、復元journalとrollback、別環境での正式Evidence URI再割当
 - 税理士への紙提出済みローカル記録。実際に紙資料を渡した後だけ記録し、電子ファイル生成・メール送信・電子提出は行わない
 
-Android Auto Backup／端末間転送は、Roomと正式Evidenceの部分復元を実運用保証にしないため無効化している。手動バックアップはv15からv15だけを許可し、cache、OCR一時ファイル、pending撮影画像、Evidence finalization journalを含めない。
+Android Auto Backup／端末間転送は、Roomと正式Evidenceの部分復元を実運用保証にしないため無効化している。手動バックアップは現行v18を正式対象とし、v15／v17バックアップ復元互換を維持する。cache、OCR一時ファイル、pending撮影画像、Evidence finalization journalを含めない。
 
 現時点では、OCRフローからのExpenseRecord自動保存およびReceiptRecord保存、正式Evidenceの削除・差し替え、複数画像追加UI、通帳画像管理、カテゴリ／支払方法の自動判定は未実装です。Phase 4Aで過去に正式化済みでも永続リンクがない孤立画像は自動関連付けしません。通常のReceiptRecord保存経路は既に存在するため、OCRフローの未実装事項と混同しないでください。
 
@@ -215,7 +215,7 @@ Safety, correctness, data integrity, and auditability take priority over speed a
 
 ## Room、Migration、保存仕様
 
-- 現在のRoom schema versionは15。schema JSONは `app/schemas/com.warun.accounting.data.local.WarunDatabase/` の6〜15。
+- 現在のRoom schema versionは18。schema JSONは `app/schemas/com.warun.accounting.data.local.WarunDatabase/` の6〜18。
 - `MIGRATION_13_14`は`expense_cancellations`と一意Indexを追加し、既存テーブルへのALTER／UPDATE／backfillは行わない。
 - `MIGRATION_14_15`は既存取消行を全件保持したままプリペイド台帳参照をnullable化し、非プリペイド取消を架空の台帳IDなしで同じ監査テーブルへ保存できるようにする。
 - 過去Migrationは既存ユーザーデータの契約である。既存Migrationや既存schema JSONを後から書き換えない。

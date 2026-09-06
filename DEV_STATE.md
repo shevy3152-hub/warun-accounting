@@ -6,9 +6,10 @@
 
 - 基準ブランチ: `feature/ui-foundation`
 - 現行リリース: `versionCode = 11`、`versionName = "0.2.9"`
-- Room schema: v17。Room Entity、DAO、Migration、既存DB保存仕様は今回変更していない。
+- Room schema: v18。Evidence現在登録先とappend-only監査履歴を追加し、v17→v18 Migrationで既存固定費Linkをbackfillしている。
 - Phase 2〜4の機能実装、自動検証、A90手動受入は完了し、各PhaseをPASSと判定した。
-- 実装commitは作成済み。記録commit作成後もpushは行わず、次の作業はpush前監査とpush判断とする。
+- Phase 5の機能実装、自動検証、A90手動受入は完了し、PASSと判定した。
+- 実装commitは`3a6ff0c3501e47083a5deeb8f7d37187dc887c24`。記録commit作成後に通常pushを行う予定である。
 
 ## Phase 2〜4完了記録
 
@@ -32,6 +33,19 @@
 - サカツの資料は`2026-09-03`納品書であり、2026年8月の3件そのものではない。この点を記録したうえで、10%外税の入力仕様確認根拠として扱った。
 - Phase 4全体はPASSを確定した。
 
+## Phase 5: Evidence登録先変更・関連付け解除
+
+- Evidence画像とEvidenceRecordを維持したまま、現在の登録先を変更・解除・未分類Evidenceから再登録できる基盤とUIを実装した。
+- 登録先変更・解除・再登録では、日報金額、Receipt、税額、月次集計、Evidence画像、EvidenceRecordの識別情報・URI・サイズ・SHA-256・撮影／保存日時を自動変更しない。
+- Evidence単位の現在登録先テーブルとappend-only監査履歴を追加した。監査操作は`ASSIGN`、`UNLINK`、`REASSIGN`で記録する。
+- v17→v18 Migrationで既存の固定費Evidence Linkを現在登録先へbackfillし、根拠のない監査履歴は生成しない。
+- v15／v17バックアップ復元互換と、v18の現在登録先・監査履歴を含むバックアップ／復元を実装した。
+- Phase 5A対象Instrumentationは24/24 PASS。Pixel emulator（Android 14／API 34）の全Instrumentationは167/167 PASS。
+- A90ではDebug APKの`install -r`、既存データ保持、保存済みEvidence画像、登録先変更／解除UI、注意文、確認ダイアログのキャンセルを確認した。実際の変更・解除・再登録は実施していない。
+- A90 Instrumentationは未実施。A90で`user_version=18`の直接SQL確認は未実施だが、v18アプリはDBを正常に開き、既存データとv18 UIを表示した。
+- 移行前正式バックアップ`warun-90-pre-phase5-20260906.zip`をA90上に作成した。サイズは110,028,298 bytes、SHA-256は`e0f8ddc059cecc377e5084914d45d57c41009f2eebd34800b7c7e7291cc733e9`。
+- A90の既存データを保持したまま`install -r`に成功した。保護対象とPixel関連の一時成果物は保持し、リポジトリへコピーしていない。
+
 ## 検証結果
 
 - `testDebugUnitTest`: PASS。
@@ -52,9 +66,10 @@
 
 ## Gitと次の作業
 
-- 実装commitメッセージ: `fix: synchronize fixed-cost evidence state`
-- 記録commitメッセージ: `docs: record phase 2 to 4 acceptance`
-- pushは未実施。記録commit後に可能なら`git fetch origin`だけを行い、branch、HEAD、ahead／behind、working tree、保護対象を再確認してからpush可否を判断する。
+- Phase 2〜4記録commitメッセージ: `docs: record phase 2 to 4 acceptance`
+- Phase 5実装commitメッセージ: `feat: manage fixed-cost evidence assignments`
+- Phase 5記録commitメッセージ: `docs: record phase 5 evidence assignment acceptance`
+- Phase 5記録commit時点ではpush前であり、push後にbranch、HEAD、ahead／behind、working tree、保護対象を再確認する。
 - commit、push、fetchの結果やSHAは、実行後のGit状態を正として報告する。
 
 ## 継続中の未確定事項
