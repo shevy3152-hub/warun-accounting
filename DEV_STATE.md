@@ -69,7 +69,7 @@
 - Phase 2〜4記録commitメッセージ: `docs: record phase 2 to 4 acceptance`
 - Phase 5実装commitメッセージ: `feat: manage fixed-cost evidence assignments`
 - Phase 5記録commitメッセージ: `docs: record phase 5 evidence assignment acceptance`
-- Phase 5記録commit時点ではpush前であり、push後にbranch、HEAD、ahead／behind、working tree、保護対象を再確認する。
+- Phase 5の実装・受入記録はfeature/ui-foundationへcommitされ、originへ通常push済み。
 - commit、push、fetchの結果やSHAは、実行後のGit状態を正として報告する。
 
 ## 継続中の未確定事項
