@@ -55,6 +55,15 @@
 - 移行前正式バックアップ`warun-90-pre-phase5-20260906.zip`をA90上に作成した。サイズは110,028,298 bytes、SHA-256は`e0f8ddc059cecc377e5084914d45d57c41009f2eebd34800b7c7e7291cc733e9`。
 - A90の既存データを保持したまま`install -r`に成功した。保護対象とPixel関連の一時成果物は保持し、リポジトリへコピーしていない。
 
+## 正式署名release APK受入
+
+- 正式署名release APKの生成・基本検証はPASSした。applicationIdは`com.warun.accounting`、versionCode／versionNameは`11 / 0.2.9`、Roomはv18、`debuggable=false`、`testOnly=false`、zipalign／apksignerはPASS、署名はv2／v3である。
+- Pixel 8／Android 14／API 34へ正式署名release APKを導入し、起動、ホーム、日報入力、収支確認、日／月サマリー、Evidence空状態、バックアップ画面の受入をPASSした。空データは日／月とも0円表示で、取得エラーは表示されなかった。
+- Crash／FATAL／ANRは確認されず、Pixelは終了後ADB一覧を空にした。A90はDebug版のままで、正式署名release版は導入していない。
+- 受入APKは`58,635,261 bytes`、SHA-256は`E09B96EF540C85656FDC6533AB234DAE5867115CA989DED81FB977F4362156C3`、証明書SHA-256は`1648dafe05c22b720ececdf60ca6f4a3b3623291ee61876e2806d0822f9044b6`である。
+- APKは`C:\Users\user\Documents\warun-private\releases\0.2.9-vc11\warun-accounting-0.2.9-vc11-release-signed.apk`へコピーして恒久保管した。Temp側の候補は削除していない。
+- A90を正式署名release版へ切り替える場合は、正式バックアップを維持したうえでDebug版をアンインストールし、正式署名release版を導入してバックアップを復元する。実施時に改めて受入確認を行う。
+
 ## 検証結果
 
 - `testDebugUnitTest`: PASS。
