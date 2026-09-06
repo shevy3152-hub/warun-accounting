@@ -153,6 +153,31 @@ class BusinessMetricViewModelTest {
     }
 
     @Test
+    fun switchingFromAugustToSeptemberUsesTheNewMonthlyData() = runTest(dispatcher) {
+        val reports = MutableStateFlow(
+            listOf(
+                report(id = "august", reportDate = "2026-08-23", sales = 12_000L),
+                report(id = "september", reportDate = "2026-09-03", sales = 3_000L),
+            )
+        )
+        val viewModel = viewModel(reports = reports)
+        val collector = launch { viewModel.state.collect {} }
+        val august = MetricPeriod.Monthly(YearMonth.of(2026, 8))
+        val september = MetricPeriod.Monthly(YearMonth.of(2026, 9))
+
+        viewModel.selectPeriod(august)
+        advanceUntilIdle()
+        assertEquals(12_000L, (viewModel.state.value as BusinessMetricUiState.Success).report.recordedSales.value?.yen)
+
+        viewModel.selectPeriod(september)
+        advanceUntilIdle()
+        val updated = viewModel.state.value as BusinessMetricUiState.Success
+        assertEquals(september, updated.report.period)
+        assertEquals(3_000L, updated.report.recordedSales.value?.yen)
+        collector.cancel()
+    }
+
+    @Test
     fun providerReemitRecalculatesMonthlySalesAndExpensesWithoutChangingSelectedPeriod() = runTest(dispatcher) {
         val reports = MutableStateFlow(listOf(report(sales = 0L)))
         val visibility = MutableStateFlow(listOf(visibility("expense-1", ExpenseCategory.OtherExpense, false)))

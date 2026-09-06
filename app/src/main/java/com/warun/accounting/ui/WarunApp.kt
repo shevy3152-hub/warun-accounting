@@ -1133,7 +1133,10 @@ private fun SidebarSummary(uiState: DashboardUiState, liveSummary: SidebarSummar
     var mode by rememberSaveable { mutableStateOf(defaultSidebarSummaryMode) }
     val monthlyBusinessMetricViewModel: BusinessMetricViewModel = hiltViewModel(key = "sidebar-monthly")
     val monthlyBusinessMetricState by monthlyBusinessMetricViewModel.state.collectAsStateWithLifecycle()
-    val month = YearMonth.parse(currentMonthString())
+    val month = sidebarSummaryMonth(
+        reportDate = liveSummary?.reportDate,
+        fallbackMonth = YearMonth.parse(currentMonthString()),
+    )
     val monthPeriod = MetricPeriod.Monthly(month)
     LaunchedEffect(monthPeriod) { monthlyBusinessMetricViewModel.selectPeriod(monthPeriod) }
     val summary = resolveSidebarSummary(uiState, liveSummary)
@@ -1149,14 +1152,20 @@ private fun SidebarSummary(uiState: DashboardUiState, liveSummary: SidebarSummar
             SummaryLine("現金残高", summary.closingCash.toYen(), Color.White)
             SummaryLine("現金差額", uiState.todayCashDifference.toYen(), Color.White)
         } else {
-            val metric = monthlyBusinessMetricState as? BusinessMetricUiState.Success
-            val sales = (metric?.report?.recordedSales?.value as? MetricValue.Amount)?.yen
-            val expenses = (metric?.report?.recordedExpenses?.value as? MetricValue.Amount)?.yen
-            SummaryLine("今月の売上", sales?.toYen() ?: "取得できません", Color.White)
-            SummaryLine("今月の支出", expenses?.toYen() ?: "取得できません", Color.White)
+            val metric = resolveSidebarMonthlyMetric(monthlyBusinessMetricState, monthPeriod)
+            val monthLabel = if (liveSummary?.reportDate.isNullOrBlank()) "今月" else "対象月"
+            val unavailableText = when (metric) {
+                SidebarMonthlyMetricResolution.Loading -> "読み込み中"
+                SidebarMonthlyMetricResolution.Failure -> "取得できません"
+                is SidebarMonthlyMetricResolution.Ready -> "データ不足"
+            }
+            val sales = (metric as? SidebarMonthlyMetricResolution.Ready)?.salesYen
+            val expenses = (metric as? SidebarMonthlyMetricResolution.Ready)?.expensesYen
+            SummaryLine("${monthLabel}の売上", sales?.toYen() ?: unavailableText, Color.White)
+            SummaryLine("${monthLabel}の支出", expenses?.toYen() ?: unavailableText, Color.White)
             SummaryLine(
-                "今月の概算差額",
-                if (sales != null && expenses != null) (sales - expenses).toYen() else "取得できません",
+                "${monthLabel}の概算差額",
+                if (sales != null && expenses != null) (sales - expenses).toYen() else unavailableText,
                 Color(0xFF6EE78A)
             )
             SummaryLine("要確認レシート", "${unconfirmedReceiptsForMonth(uiState.receipts, month).size}件", Color.White)
@@ -1598,7 +1607,8 @@ internal fun reportExpenseSaveDecision(
 internal data class SidebarSummaryOverride(
     val salesTotal: Long,
     val estimatedBalance: Long,
-    val closingCash: Long
+    val closingCash: Long,
+    val reportDate: String? = null,
 )
 
 internal fun resolveSidebarSummary(
@@ -1941,7 +1951,8 @@ private fun ReportEntryScreen(
             SidebarSummaryOverride(
                 salesTotal = totals.totalSales,
                 estimatedBalance = totals.todayBalance,
-                closingCash = totals.actualClosingCash
+                closingCash = totals.actualClosingCash,
+                reportDate = reportInput.reportDate,
             )
         )
     }
