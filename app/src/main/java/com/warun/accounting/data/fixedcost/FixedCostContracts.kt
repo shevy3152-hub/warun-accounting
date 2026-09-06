@@ -6,6 +6,40 @@ import com.warun.accounting.data.local.FixedCostEvidenceLinkRecord
 import com.warun.accounting.data.local.FixedCostReceiptApplicationRecord
 import com.warun.accounting.data.local.ReceiptRecord
 
+val supportedFixedCostTypes: Set<String> = setOf(
+    "electricity",
+    "water",
+    "communication",
+    "gas"
+)
+
+object FixedCostEvidenceAssociationOperation {
+    const val Reassign = "REASSIGN"
+    const val Unlink = "UNLINK"
+    const val Assign = "ASSIGN"
+
+    val all: Set<String> = setOf(Reassign, Unlink, Assign)
+}
+
+data class FixedCostEvidenceTarget(
+    val dailyReportId: String,
+    val fixedCostType: String
+)
+
+sealed interface FixedCostEvidenceAssociationResult {
+    data object Success : FixedCostEvidenceAssociationResult
+    data object EvidenceNotFound : FixedCostEvidenceAssociationResult
+    data object EvidenceNotStored : FixedCostEvidenceAssociationResult
+    data object CurrentTargetMismatch : FixedCostEvidenceAssociationResult
+    data object DailyReportNotFound : FixedCostEvidenceAssociationResult
+    data object InvalidFixedCostType : FixedCostEvidenceAssociationResult
+    data object LinkedToExpense : FixedCostEvidenceAssociationResult
+    data object AlreadyAssigned : FixedCostEvidenceAssociationResult
+    data object SameTarget : FixedCostEvidenceAssociationResult
+    data object OperationAlreadyUsed : FixedCostEvidenceAssociationResult
+    data class Failure(val cause: Throwable) : FixedCostEvidenceAssociationResult
+}
+
 enum class ExistingAmountState {
     EMPTY,
     SAME,
@@ -63,7 +97,7 @@ enum class FixedCostEvidenceRegistrationState {
 }
 
 fun FixedCostEvidenceStatus.registrationState(amount: Long): FixedCostEvidenceRegistrationState = when {
-    applicationId != null && evidence.isNotEmpty() -> FixedCostEvidenceRegistrationState.REGISTERED
+    evidence.isNotEmpty() -> FixedCostEvidenceRegistrationState.REGISTERED
     applicationId != null -> FixedCostEvidenceRegistrationState.NEEDS_REVIEW
     amount > 0L -> FixedCostEvidenceRegistrationState.MISSING
     else -> FixedCostEvidenceRegistrationState.NONE

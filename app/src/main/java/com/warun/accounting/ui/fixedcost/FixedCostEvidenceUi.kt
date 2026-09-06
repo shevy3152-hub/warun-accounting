@@ -136,6 +136,11 @@ class FixedCostEvidenceViewModel @Inject constructor(
         }
     }
 
+    fun refresh(receiptId: String) {
+        _state.value = _state.value.copy(isLoading = true)
+        load(receiptId)
+    }
+
     fun selectType(type: String) = reload(type = type)
     fun selectDate(date: String) = reload(date = date)
 
@@ -277,15 +282,30 @@ fun FixedCostEvidenceScreen(
     receiptId: String,
     onBack: () -> Unit,
     onOpenReport: (String) -> Unit,
-    viewModel: FixedCostEvidenceViewModel = hiltViewModel()
+    viewModel: FixedCostEvidenceViewModel = hiltViewModel(),
+    associationViewModel: FixedCostEvidenceAssociationViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val associationState by associationViewModel.state.collectAsStateWithLifecycle()
     var showConfirm by remember { mutableStateOf(false) }
+    var showAddChoice by remember { mutableStateOf(false) }
+    var showUnclassified by remember { mutableStateOf(false) }
+    var pendingAssignment by remember { mutableStateOf<String?>(null) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         viewModel.addUris(context.contentResolver, uris)
     }
     LaunchedEffect(receiptId) { viewModel.load(receiptId) }
+    LaunchedEffect(associationState.lastOperationId) {
+        if (pendingAssignment != null && associationState.lastOperationId != null) {
+            if (associationState.lastResult == com.warun.accounting.data.fixedcost.FixedCostEvidenceAssociationResult.Success) {
+                viewModel.refresh(receiptId)
+            }
+            pendingAssignment = null
+            showUnclassified = false
+            associationViewModel.clearResult()
+        }
+    }
     BackHandler(enabled = !state.isSaving) {
         viewModel.cancel(context.contentResolver)
         onBack()
@@ -335,7 +355,12 @@ fun FixedCostEvidenceScreen(
             Text(existingAmountMessage(snapshot, receipt.totalAmount), modifier = Modifier.testTag(if (snapshot.existingAmountState == ExistingAmountState.CONFLICT) "fixed-cost-conflict" else "fixed-cost-amount-state"), color = if (snapshot.existingAmountState == ExistingAmountState.CONFLICT) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface)
         }
         item {
-            Button(onClick = { picker.launch(arrayOf("image/jpeg", "image/png", "application/pdf")) }, enabled = !state.isSaving, modifier = Modifier.testTag("fixed-cost-evidence-add")) { Text("Evidenceを選択") }
+            Button(
+                onClick = { if (associationState.unclassifiedEvidence.isEmpty()) picker.launch(arrayOf("image/jpeg", "image/png", "application/pdf")) else showAddChoice = true },
+                enabled = !state.isSaving && !associationState.isBusy,
+                modifier = Modifier.testTag("fixed-cost-evidence-add")
+            ) { Text("証憑追加") }
+            associationState.message?.let { Text(it, modifier = Modifier.testTag("fixed-cost-association-message"), color = MaterialTheme.colorScheme.error) }
         }
         items(state.attachments) { attachment ->
             Card(modifier = Modifier.testTag("fixed-cost-attachments")) { Column(Modifier.padding(10.dp)) {
@@ -360,6 +385,24 @@ fun FixedCostEvidenceScreen(
         confirmButton = { Button(onClick = { showConfirm = false; viewModel.save(context.contentResolver) }) { Text("保存") } },
         dismissButton = { TextButton(onClick = { showConfirm = false }) { Text("キャンセル") } }
     )
+    if (showAddChoice) UnclassifiedEvidenceChoiceDialog(
+        onNewEvidence = { showAddChoice = false; picker.launch(arrayOf("image/jpeg", "image/png", "application/pdf")) },
+        onChooseUnclassified = { showAddChoice = false; showUnclassified = true },
+        onDismiss = { showAddChoice = false }
+    )
+    if (showUnclassified) {
+        val report = snapshot.dailyReport
+        if (report != null) UnclassifiedEvidencePickerDialog(
+            evidence = associationState.unclassifiedEvidence,
+            targetDate = report.reportDate,
+            targetType = state.selectedType,
+            onConfirm = { evidenceId ->
+                pendingAssignment = evidenceId
+                associationViewModel.assign(evidenceId, com.warun.accounting.data.fixedcost.FixedCostEvidenceTarget(report.id, state.selectedType))
+            },
+            onDismiss = { showUnclassified = false }
+        )
+    }
 }
 
 private fun existingAmountMessage(snapshot: FixedCostDetailSnapshot, amount: Long): String = when (snapshot.existingAmountState) {

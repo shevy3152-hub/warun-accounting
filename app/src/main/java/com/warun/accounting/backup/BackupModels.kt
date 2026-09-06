@@ -3,8 +3,10 @@ package com.warun.accounting.backup
 object BackupContract {
     const val FormatVersion = 2
     const val LegacyFormatVersion = 1
-    const val CurrentRoomSchemaVersion = 17
-    const val CurrentRoomIdentityHash = "43a2c87a4820fd4c21d76c9f2582f297"
+    const val CurrentRoomSchemaVersion = 18
+    const val CurrentRoomIdentityHash = "13716d80b158b7407173af4310b0b9e4"
+    const val PriorRoomSchemaVersion = 17
+    const val PriorRoomIdentityHash = "43a2c87a4820fd4c21d76c9f2582f297"
     const val PreviousRoomSchemaVersion = 16
     const val PreviousRoomIdentityHash = "e2b19e095274ae3cace88936de475a41"
     const val LegacyRoomSchemaVersion = 15
@@ -12,6 +14,7 @@ object BackupContract {
     val SupportedRoomIdentityHashes = mapOf(
         LegacyRoomSchemaVersion to LegacyRoomIdentityHash,
         PreviousRoomSchemaVersion to PreviousRoomIdentityHash,
+        PriorRoomSchemaVersion to PriorRoomIdentityHash,
         CurrentRoomSchemaVersion to CurrentRoomIdentityHash
     )
     const val ManifestEntry = "manifest.xml"

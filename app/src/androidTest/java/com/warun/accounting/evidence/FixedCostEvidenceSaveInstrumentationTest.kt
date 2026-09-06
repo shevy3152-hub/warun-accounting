@@ -69,6 +69,8 @@ class FixedCostEvidenceSaveInstrumentationTest {
         assertEquals("現金", application!!.paymentMethod)
         assertEquals(3, dao.getFixedCostEvidenceLinks(application.applicationId).size)
         assertEquals(listOf(0, 1, 2), dao.getFixedCostEvidenceLinks(application.applicationId).map { it.sortOrder })
+        assertEquals(3L, count("fixed_cost_evidence_assignments"))
+        assertEquals(3L, count("fixed_cost_evidence_assignment_audits"))
         assertEquals(7_000L, dao.getDailyReport(fixture.report.id)!!.electricityExpense)
         assertTrue(dao.getReceipt(fixture.receipt.id)!!.isConfirmed)
         assertEquals(expenseCountBefore, count("expense_records"))
@@ -76,6 +78,8 @@ class FixedCostEvidenceSaveInstrumentationTest {
         files.forEachIndexed { index, file ->
             val link = dao.getFixedCostEvidenceLinks(application.applicationId)[index]
             val evidence = dao.getEvidenceRecord(link.evidenceId)!!
+            assertEquals(fixture.report.id, dao.getFixedCostEvidenceAssignment(evidence.id)!!.dailyReportId)
+            assertEquals(FixedCostType.Electricity, dao.getFixedCostEvidenceAssignment(evidence.id)!!.fixedCostType)
             assertEquals(bytes[index].second.size.toLong(), evidence.byteSize)
             assertEquals(sha256(bytes[index].second), evidence.sha256)
             assertEquals(bytes[index].first.substringBefore(';'), evidence.mediaType)
@@ -114,6 +118,8 @@ class FixedCostEvidenceSaveInstrumentationTest {
         assertEquals(FixedCostSaveResult.Success, result)
         assertEquals(1L, count("fixed_cost_receipt_applications"))
         assertEquals(1L, count("fixed_cost_evidence_links"))
+        assertEquals(1L, count("fixed_cost_evidence_assignments"))
+        assertEquals(1L, count("fixed_cost_evidence_assignment_audits"))
         assertEquals(1L, count("evidence_records"))
         assertEquals(0L, count("expense_records"))
         assertEquals(7_000L, dao.getDailyReport(fixture.report.id)!!.electricityExpense)

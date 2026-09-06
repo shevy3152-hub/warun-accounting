@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
 package com.warun.accounting.ui.fixedcost
 
 import android.graphics.Bitmap
@@ -14,15 +16,21 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -34,7 +42,9 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.warun.accounting.data.local.EvidenceRecord
+import com.warun.accounting.data.fixedcost.FixedCostEvidenceTarget
 import com.warun.accounting.evidence.FixedCostEvidenceFileStore
 import com.warun.accounting.ui.image.ZoomableReceiptImage
 import java.io.File
@@ -51,7 +61,9 @@ private sealed interface FixedCostViewerState {
 fun FixedCostEvidenceViewer(
     evidence: List<EvidenceRecord>,
     initialIndex: Int,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    managementContext: FixedCostEvidenceManagementContext? = null,
+    associationViewModel: FixedCostEvidenceAssociationViewModel? = null
 ) {
     if (evidence.isEmpty()) return
     var index by remember(evidence, initialIndex) {
@@ -59,6 +71,31 @@ fun FixedCostEvidenceViewer(
     }
     val current = evidence[index]
     val state by fixedCostViewerState(LocalContext.current, current)
+    val associationState = associationViewModel?.state?.collectAsStateWithLifecycle()?.value
+    var showReassign by remember(current.id) { mutableStateOf(false) }
+    var showUnlink by remember(current.id) { mutableStateOf(false) }
+    var showReassignConfirm by remember(current.id) { mutableStateOf(false) }
+    var selectedDate by remember(current.id) { mutableStateOf<String?>(null) }
+    var selectedType by remember(current.id) { mutableStateOf(managementContext?.fixedCostType.orEmpty()) }
+    var operationStarted by remember(current.id) { mutableStateOf(false) }
+
+    val managementContextAllowed = managementContext == null || managementContext.evidenceId == evidence.getOrNull(initialIndex.coerceIn(evidence.indices))?.id
+    var activeManagementContext by remember(evidence, initialIndex) {
+        mutableStateOf(managementContext?.takeIf { managementContextAllowed })
+    }
+    androidx.compose.runtime.LaunchedEffect(index, current.id) {
+        activeManagementContext = activeManagementContext?.copy(evidenceId = current.id)
+    }
+    val currentContext = activeManagementContext
+    val currentReport = associationState?.reports?.firstOrNull { it.id == currentContext?.dailyReportId }
+    val selectedReport = associationState?.reports?.firstOrNull { it.reportDate == selectedDate }
+    val sameTarget = selectedReport?.id == currentContext?.dailyReportId && selectedType == currentContext?.fixedCostType
+
+    androidx.compose.runtime.LaunchedEffect(associationState?.lastOperationId) {
+        if (associationState?.lastResult != null && associationState.lastResult != com.warun.accounting.data.fixedcost.FixedCostEvidenceAssociationResult.Success) {
+            operationStarted = false
+        }
+    }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -103,6 +140,14 @@ fun FixedCostEvidenceViewer(
                         )
                     }
                 }
+                if (currentContext != null) {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("登録先：${currentReport?.reportDate ?: currentContext?.dailyReportId.orEmpty()} / ${fixedCostTypeLabel(currentContext?.fixedCostType.orEmpty())}", modifier = Modifier.testTag("fixed-cost-viewer-current-target"))
+                        Button(onClick = { showReassign = true }, enabled = !operationStarted && associationState?.isBusy != true, modifier = Modifier.fillMaxWidth().testTag("fixed-cost-viewer-reassign")) { Text("登録先を変更") }
+                        TextButton(onClick = { showUnlink = true }, enabled = !operationStarted && associationState?.isBusy != true, modifier = Modifier.fillMaxWidth().testTag("fixed-cost-viewer-unlink")) { Text("関連付けを解除") }
+                        associationState?.message?.let { Text(it, modifier = Modifier.testTag("fixed-cost-viewer-operation-message"), color = if (associationState.lastResult is com.warun.accounting.data.fixedcost.FixedCostEvidenceAssociationResult.Failure) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant) }
+                    }
+                }
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(8.dp),
                     horizontalArrangement = Arrangement.SpaceBetween
@@ -114,7 +159,87 @@ fun FixedCostEvidenceViewer(
             }
         }
     }
+
+    if (showReassign) {
+        AlertDialog(
+            onDismissRequest = { if (!associationState?.isBusy.orFalse()) showReassign = false },
+            title = { Text("登録先を変更") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("変更前：${currentReport?.reportDate ?: currentContext?.dailyReportId.orEmpty()} / ${fixedCostTypeLabel(currentContext?.fixedCostType.orEmpty())}")
+                    Text("変更後の日付")
+                    var expanded by remember { mutableStateOf(false) }
+                    ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { if (associationState?.isBusy != true) expanded = !expanded }) {
+                        OutlinedButton(onClick = { expanded = true }, enabled = associationState?.isBusy != true, modifier = Modifier.menuAnchor().fillMaxWidth()) {
+                            Text(selectedDate ?: "保存済みの日報から選択")
+                            ExposedDropdownMenuDefaults.TrailingIcon(expanded)
+                        }
+                        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                            associationState?.reports.orEmpty().sortedByDescending { it.reportDate }.forEach { report ->
+                                DropdownMenuItem(text = { Text(report.reportDate) }, onClick = { selectedDate = report.reportDate; expanded = false })
+                            }
+                        }
+                    }
+                    Text("変更後の固定費種別")
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        listOf("electricity" to "電気代", "gas" to "ガス代", "water" to "水道代", "communication" to "通信費").forEach { (type, label) ->
+                            TextButton(onClick = { selectedType = type }, enabled = associationState?.isBusy != true, modifier = Modifier.testTag("fixed-cost-reassign-type-$type")) { Text(if (selectedType == type) "✓$label" else label) }
+                        }
+                    }
+                    Text("証憑画像の登録先だけを変更します。日報の金額は自動変更されません。")
+                    if (selectedDate != null && selectedReport == null) Text("先に正しい日付の日報を保存してください。", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { showReassign = false; showReassignConfirm = true },
+                    enabled = selectedReport != null && !sameTarget && associationState?.isBusy != true,
+                    modifier = Modifier.testTag("fixed-cost-reassign-next")
+                ) { Text("変更内容を確認") }
+            },
+            dismissButton = { TextButton(onClick = { showReassign = false }) { Text("キャンセル") } }
+        )
+    }
+    if (showReassignConfirm) {
+        AlertDialog(
+            onDismissRequest = { if (!associationState?.isBusy.orFalse()) showReassignConfirm = false },
+            title = { Text("登録先を変更しますか") },
+            text = { Text("変更前：${currentReport?.reportDate ?: currentContext?.dailyReportId.orEmpty()} / ${fixedCostTypeLabel(currentContext?.fixedCostType.orEmpty())}\n変更後：${selectedReport?.reportDate.orEmpty()} / ${fixedCostTypeLabel(selectedType)}\n証憑画像の登録先だけを変更します。日報の金額は自動変更されません。") },
+            confirmButton = {
+                Button(onClick = {
+                    val vm = associationViewModel
+                    val ctx = currentContext
+                    val report = selectedReport
+                    if (vm == null || ctx == null || report == null) return@Button
+                    operationStarted = true
+                    vm.reassign(ctx, FixedCostEvidenceTarget(report.id, selectedType))
+                    showReassignConfirm = false
+                }, enabled = !operationStarted && associationState?.isBusy != true, modifier = Modifier.testTag("fixed-cost-reassign-confirm")) { Text("確定") }
+            },
+            dismissButton = { TextButton(onClick = { showReassignConfirm = false }) { Text("キャンセル") } }
+        )
+    }
+    if (showUnlink) {
+        AlertDialog(
+            onDismissRequest = { if (!associationState?.isBusy.orFalse()) showUnlink = false },
+            title = { Text("関連付けを解除しますか") },
+            text = { Text("日報との関連付けだけを解除します。保存済みの証憑画像と日報の金額は削除されません。") },
+            confirmButton = {
+                OutlinedButton(onClick = {
+                    val vm = associationViewModel
+                    val ctx = currentContext
+                    if (vm == null || ctx == null) return@OutlinedButton
+                    operationStarted = true
+                    vm.unlink(ctx)
+                    showUnlink = false
+                }, enabled = !operationStarted && associationState?.isBusy != true, modifier = Modifier.testTag("fixed-cost-unlink-confirm")) { Text("解除する") }
+            },
+            dismissButton = { TextButton(onClick = { showUnlink = false }) { Text("キャンセル") } }
+        )
+    }
 }
+
+private fun Boolean?.orFalse(): Boolean = this == true
 
 @Composable
 private fun fixedCostViewerState(context: android.content.Context, evidence: EvidenceRecord) = produceState<FixedCostViewerState>(

@@ -7,10 +7,14 @@ import com.warun.accounting.data.local.EvidenceRecord
 import com.warun.accounting.data.local.ExpenseEvidenceLinkRecord
 import com.warun.accounting.data.local.ExpenseEvidenceRecord
 import com.warun.accounting.data.local.ExpenseVisibilityRecord
+import com.warun.accounting.data.local.FixedCostEvidenceAssignmentAuditRecord
+import com.warun.accounting.data.local.FixedCostEvidenceAssignmentRecord
 import com.warun.accounting.data.local.MonthlySubmission
 import com.warun.accounting.data.local.ReceiptRecord
 import com.warun.accounting.data.local.SupplierCandidateRecord
 import com.warun.accounting.data.fixedcost.FixedCostDetailSnapshot
+import com.warun.accounting.data.fixedcost.FixedCostEvidenceAssociationResult
+import com.warun.accounting.data.fixedcost.FixedCostEvidenceTarget
 import com.warun.accounting.data.fixedcost.FixedCostEvidenceStatus
 import kotlinx.coroutines.flow.Flow
 
@@ -23,6 +27,28 @@ interface AccountingRepository {
     fun observeCancelledExpenseRecordsForAuditByDate(expenseDate: String): Flow<List<ExpenseRecord>>
     fun observeStoredExpenseEvidence(): Flow<List<ExpenseEvidenceRecord>>
     fun observeFixedCostEvidenceStatuses(): Flow<List<FixedCostEvidenceStatus>>
+    fun observeUnclassifiedFixedCostEvidence(): Flow<List<EvidenceRecord>>
+    suspend fun getFixedCostEvidenceAssignment(evidenceId: String): FixedCostEvidenceAssignmentRecord?
+    suspend fun getFixedCostEvidenceAssignmentAudits(evidenceId: String): List<FixedCostEvidenceAssignmentAuditRecord>
+    suspend fun reassignFixedCostEvidence(
+        evidenceId: String,
+        expectedCurrentTarget: FixedCostEvidenceTarget,
+        newTarget: FixedCostEvidenceTarget,
+        operationId: String,
+        executedAt: Long
+    ): FixedCostEvidenceAssociationResult
+    suspend fun unlinkFixedCostEvidence(
+        evidenceId: String,
+        expectedCurrentTarget: FixedCostEvidenceTarget,
+        operationId: String,
+        executedAt: Long
+    ): FixedCostEvidenceAssociationResult
+    suspend fun assignFixedCostEvidence(
+        evidenceId: String,
+        target: FixedCostEvidenceTarget,
+        operationId: String,
+        executedAt: Long
+    ): FixedCostEvidenceAssociationResult
     fun observeExpenseRecordsByDateAndCategory(expenseDate: String, category: String): Flow<List<ExpenseRecord>>
     fun observeExpenseTotalByDateAndCategory(expenseDate: String, category: String): Flow<Long>
     fun observeSupplierCandidates(): Flow<List<SupplierCandidateRecord>>

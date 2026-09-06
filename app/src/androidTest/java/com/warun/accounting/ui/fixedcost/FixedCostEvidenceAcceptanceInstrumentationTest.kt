@@ -179,6 +179,68 @@ class FixedCostEvidenceAcceptanceInstrumentationTest {
         composeRule.onNodeWithTag("fixed-cost-viewer-close").performClick()
     }
 
+    @Test
+    fun managementViewerShowsActionsOnlyWithExplicitContextAndCancelKeepsViewer() {
+        val evidence = listOf(fileEvidence("managed-one", "image/jpeg", 0), fileEvidence("managed-two", "image/jpeg", 1))
+        scenario.onActivity { activity ->
+            activity.setContent {
+                androidx.compose.material3.MaterialTheme {
+                    FixedCostEvidenceViewer(
+                        evidence = evidence,
+                        initialIndex = 1,
+                        onDismiss = {},
+                        managementContext = FixedCostEvidenceManagementContext("managed-two", firstReport.id, "communication")
+                    )
+                }
+            }
+        }
+        composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("fixed-cost-viewer-content").fetchSemanticsNodes().isNotEmpty() }
+        composeRule.onNodeWithTag("fixed-cost-viewer-reassign").assertIsDisplayed().performClick()
+        composeRule.onNodeWithText("証憑画像の登録先だけを変更します。日報の金額は自動変更されません。").assertIsDisplayed()
+        composeRule.onNodeWithText("キャンセル").performClick()
+        composeRule.onNodeWithTag("fixed-cost-viewer").assertIsDisplayed()
+        composeRule.onNodeWithTag("fixed-cost-viewer-unlink").performClick()
+        composeRule.onNodeWithText("日報との関連付けだけを解除します。保存済みの証憑画像と日報の金額は削除されません。").assertIsDisplayed()
+        composeRule.onNodeWithText("キャンセル").performClick()
+    }
+
+    @Test
+    fun ordinaryViewerDoesNotExposeManagementActions() {
+        val evidence = listOf(fileEvidence("display-only", "image/jpeg", 0))
+        scenario.onActivity { activity ->
+            activity.setContent {
+                androidx.compose.material3.MaterialTheme {
+                    FixedCostEvidenceViewer(evidence = evidence, initialIndex = 0, onDismiss = {})
+                }
+            }
+        }
+        composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("fixed-cost-viewer-content").fetchSemanticsNodes().isNotEmpty() }
+        composeRule.onNodeWithTag("fixed-cost-viewer-reassign").assertDoesNotExist()
+        composeRule.onNodeWithTag("fixed-cost-viewer-unlink").assertDoesNotExist()
+    }
+
+    @Test
+    fun unclassifiedPickerUsesEvidenceIdWhenSelectingAmongMultiple() {
+        val evidence = listOf(fileEvidence("unclassified-one", "image/jpeg", 0), fileEvidence("unclassified-two", "image/jpeg", 1))
+        var selected: String? = null
+        scenario.onActivity { activity ->
+            activity.setContent {
+                androidx.compose.material3.MaterialTheme {
+                    UnclassifiedEvidencePickerDialog(
+                        evidence = evidence,
+                        targetDate = firstDate,
+                        targetType = "communication",
+                        onConfirm = { selected = it },
+                        onDismiss = {}
+                    )
+                }
+            }
+        }
+        composeRule.onNodeWithTag("unclassified-evidence-unclassified-two").performClick()
+        composeRule.onNodeWithTag("unclassified-evidence-confirm").performClick()
+        assertEquals("unclassified-two", selected)
+    }
+
     private fun report(
         id: String,
         date: String,
@@ -216,6 +278,16 @@ class FixedCostEvidenceAcceptanceInstrumentationTest {
             database.warunDao().insertEvidenceRecord(item)
             database.warunDao().insertFixedCostEvidenceLink(
                 FixedCostEvidenceLinkRecord(applicationId, item.id, evidence.indexOf(item), now)
+            )
+            database.warunDao().insertFixedCostEvidenceAssignment(
+                com.warun.accounting.data.local.FixedCostEvidenceAssignmentRecord(
+                    evidenceId = item.id,
+                    dailyReportId = report.id,
+                    fixedCostType = type,
+                    sortOrder = evidence.indexOf(item),
+                    assignedAt = now,
+                    updatedAt = now
+                )
             )
         }
     }

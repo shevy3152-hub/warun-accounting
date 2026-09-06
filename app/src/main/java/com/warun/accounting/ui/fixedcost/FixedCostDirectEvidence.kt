@@ -18,11 +18,15 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -182,10 +186,15 @@ fun FixedCostDirectEvidenceScreen(
     onOpenCamera: () -> Unit,
     onDone: () -> Unit,
     onDismiss: () -> Unit,
-    viewModel: FixedCostDirectEvidenceViewModel = hiltViewModel()
+    viewModel: FixedCostDirectEvidenceViewModel = hiltViewModel(),
+    associationViewModel: FixedCostEvidenceAssociationViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val associationState by associationViewModel.state.collectAsStateWithLifecycle()
+    var showAddChoice by remember { mutableStateOf(false) }
+    var showUnclassified by remember { mutableStateOf(false) }
+    var pendingAssignment by remember { mutableStateOf<String?>(null) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri ?: return@rememberLauncherForActivityResult
         viewModel.addUri(context.contentResolver, uri, context.contentResolver.getType(uri))
@@ -200,6 +209,14 @@ fun FixedCostDirectEvidenceScreen(
         viewModel.recoverPreparedJournal(dailyReportId, fixedCostType)
     }
     LaunchedEffect(state.result) { if (state.result == FixedCostSaveResult.Success) onDone() }
+    LaunchedEffect(associationState.lastOperationId) {
+        if (pendingAssignment != null && associationState.lastOperationId != null) {
+            val success = associationState.lastResult == com.warun.accounting.data.fixedcost.FixedCostEvidenceAssociationResult.Success
+            pendingAssignment = null
+            associationViewModel.clearResult()
+            if (success) onDone()
+        }
+    }
     Column(Modifier.fillMaxSize().padding(16.dp).testTag("fixed-cost-direct-screen"), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("${fixedCostLabelForUi(fixedCostType)}の証憑", style = MaterialTheme.typography.headlineSmall)
         Text("日報金額：${amount}円")
@@ -207,6 +224,13 @@ fun FixedCostDirectEvidenceScreen(
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = onOpenCamera, enabled = !state.isSaving && amount > 0L, modifier = Modifier.testTag("fixed-cost-direct-camera")) { Text("カメラ撮影") }
             Button(onClick = { picker.launch(arrayOf("image/jpeg", "image/png", "application/pdf")) }, enabled = !state.isSaving && amount > 0L, modifier = Modifier.testTag("fixed-cost-direct-picker")) { Text("ファイル選択") }
+        }
+        if (associationState.unclassifiedEvidence.isNotEmpty()) {
+            OutlinedButton(
+                onClick = { showAddChoice = true },
+                enabled = !state.isSaving && amount > 0L && !associationState.isBusy,
+                modifier = Modifier.fillMaxWidth().testTag("fixed-cost-direct-unclassified")
+            ) { Text("未分類の証憑から選ぶ") }
         }
         state.attachments.forEach { item ->
             Text("${item.displayName} / ${item.mediaType} / ${item.byteSize} bytes")
@@ -219,6 +243,22 @@ fun FixedCostDirectEvidenceScreen(
         ) { if (state.isSaving) CircularProgressIndicator() else Text("確認して保存") }
         TextButton(onClick = { viewModel.cancel(context.contentResolver); onDismiss() }, enabled = !state.isSaving) { Text("閉じる") }
     }
+    if (showAddChoice) UnclassifiedEvidenceChoiceDialog(
+        onNewEvidence = { showAddChoice = false; picker.launch(arrayOf("image/jpeg", "image/png", "application/pdf")) },
+        onChooseUnclassified = { showAddChoice = false; showUnclassified = true },
+        onDismiss = { showAddChoice = false }
+    )
+    if (showUnclassified) UnclassifiedEvidencePickerDialog(
+        evidence = associationState.unclassifiedEvidence,
+        targetDate = associationState.reports.firstOrNull { it.id == dailyReportId }?.reportDate ?: "対象日報",
+        targetType = fixedCostType,
+        onConfirm = { evidenceId ->
+            pendingAssignment = evidenceId
+            associationViewModel.assign(evidenceId, com.warun.accounting.data.fixedcost.FixedCostEvidenceTarget(dailyReportId, fixedCostType))
+            showUnclassified = false
+        },
+        onDismiss = { showUnclassified = false }
+    )
 }
 
 private fun fixedCostLabelForUi(type: String): String = when (type) {

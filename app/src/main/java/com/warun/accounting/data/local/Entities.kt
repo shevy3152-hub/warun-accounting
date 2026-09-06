@@ -190,6 +190,55 @@ data class FixedCostEvidenceLinkRecord(
     val linkedAt: Long
 )
 
+/** The current fixed-cost destination of one stored Evidence record. */
+@Entity(
+    tableName = "fixed_cost_evidence_assignments",
+    foreignKeys = [
+        ForeignKey(
+            entity = EvidenceRecord::class,
+            parentColumns = ["id"],
+            childColumns = ["evidenceId"],
+            onDelete = ForeignKey.NO_ACTION
+        ),
+        ForeignKey(
+            entity = DailyReport::class,
+            parentColumns = ["id"],
+            childColumns = ["dailyReportId"],
+            onDelete = ForeignKey.RESTRICT
+        )
+    ],
+    indices = [
+        Index(value = ["dailyReportId", "fixedCostType"]),
+        Index(value = ["dailyReportId", "fixedCostType", "sortOrder"], unique = true)
+    ]
+)
+data class FixedCostEvidenceAssignmentRecord(
+    @PrimaryKey val evidenceId: String,
+    val dailyReportId: String,
+    val fixedCostType: String,
+    val sortOrder: Int,
+    val assignedAt: Long,
+    val updatedAt: Long
+)
+
+/** Append-only audit record for Evidence-only fixed-cost association changes. */
+@Entity(
+    tableName = "fixed_cost_evidence_assignment_audits",
+    indices = [
+        Index(value = ["evidenceId", "executedAt"])
+    ]
+)
+data class FixedCostEvidenceAssignmentAuditRecord(
+    @PrimaryKey val operationId: String,
+    val evidenceId: String,
+    val operationType: String,
+    val beforeDailyReportId: String?,
+    val beforeFixedCostType: String?,
+    val afterDailyReportId: String?,
+    val afterFixedCostType: String?,
+    val executedAt: Long
+)
+
 @Entity(
     tableName = "expense_evidence_links",
     primaryKeys = ["expenseId", "evidenceId"],

@@ -33,7 +33,7 @@ class BackupVersion15CompatibilityTest {
     )
 
     @Test
-    fun version15BackupDatabaseIsAcceptedAndMigratesToVersion16() {
+    fun version15BackupDatabaseIsAcceptedAndMigratesToCurrentVersion() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val databaseName = "backup-version-15-${UUID.randomUUID()}"
         migrationHelper.createDatabase(databaseName, 15).use { database ->
@@ -75,12 +75,13 @@ class BackupVersion15CompatibilityTest {
         val migrated = Room.databaseBuilder(context, WarunDatabase::class.java, databaseName)
             .addMigrations(
                 DatabaseModule.MIGRATION_15_16,
-                DatabaseModule.MIGRATION_16_17
+                DatabaseModule.MIGRATION_16_17,
+                DatabaseModule.MIGRATION_17_18
             )
             .build()
         try {
             val sqlite = migrated.openHelper.writableDatabase
-            assertEquals(17, sqlite.version)
+            assertEquals(18, sqlite.version)
             assertEquals(
                 1L,
                 sqlite.query("SELECT COUNT(*) FROM monthly_submissions").use { cursor ->
@@ -136,7 +137,7 @@ class BackupVersion15CompatibilityTest {
             assertEquals(BackupContract.CurrentRoomSchemaVersion, candidate.manifest.roomSchemaVersion)
             assertEquals(candidate.databaseFile.length(), candidate.manifest.database.size)
             assertEquals(BackupArchive.sha256(candidate.databaseFile), candidate.manifest.database.sha256)
-            assertEquals(17, BackupDatabaseInspector().inspect(candidate.databaseFile).schemaVersion)
+            assertEquals(18, BackupDatabaseInspector().inspect(candidate.databaseFile).schemaVersion)
             SQLiteDatabase.openDatabase(
                 candidate.databaseFile.absolutePath,
                 null,
@@ -155,7 +156,7 @@ class BackupVersion15CompatibilityTest {
             assertEquals(RestoreExecutionOutcome.Applied, manager.restore(preview.token).outcome)
             live = Room.databaseBuilder(context, WarunDatabase::class.java, liveName).build()
             val sqlite = live.openHelper.writableDatabase
-            assertEquals(17, sqlite.version)
+            assertEquals(18, sqlite.version)
             assertEquals(
                 1L,
                 sqlite.query("SELECT COUNT(*) FROM monthly_submissions").use { cursor ->
@@ -223,9 +224,64 @@ class BackupVersion15CompatibilityTest {
             assertTrue(
                 paths.restoreRoot.listFiles().orEmpty().none { it.name.startsWith("candidate-") }
             )
-            assertEquals(17, live.openHelper.readableDatabase.version)
+            assertEquals(18, live.openHelper.readableDatabase.version)
         } finally {
             live.close()
+            context.deleteDatabase(sourceName)
+            context.deleteDatabase(liveName)
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun stagedV17UpgradeBackfillsCurrentFixedCostAssignment() = runBlocking {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val token = UUID.randomUUID().toString()
+        val sourceName = "backup-version-17-source-$token"
+        val liveName = "backup-version-17-live-$token"
+        val root = File(context.cacheDir, "backup-version-17-restore-$token")
+        val paths = BackupPaths(
+            databaseFile = context.getDatabasePath(liveName),
+            liveEvidenceDirectory = File(root, "accounting-evidence/stored"),
+            workRoot = File(root, "accounting-backup")
+        )
+        val archive = version17Archive(context, sourceName, root)
+        var live = Room.databaseBuilder(context, WarunDatabase::class.java, liveName).build()
+        try {
+            live.openHelper.writableDatabase
+            val manager = BackupRestoreManager(
+                context,
+                live,
+                paths,
+                BackupDatabaseInspector(),
+                RestoreInstallInterceptor.None,
+                StagedDatabaseUpgradeInterceptor.None
+            )
+            val preview = manager.stageRestore(ByteArrayInputStream(archive))
+            val candidate = BackupBundleLoader(paths, BackupDatabaseInspector()).load(
+                File(paths.restoreRoot, "candidate-${preview.token}")
+            )
+            assertEquals(BackupContract.CurrentRoomSchemaVersion, candidate.manifest.roomSchemaVersion)
+            SQLiteDatabase.openDatabase(
+                candidate.databaseFile.absolutePath,
+                null,
+                SQLiteDatabase.OPEN_READONLY or SQLiteDatabase.NO_LOCALIZED_COLLATORS
+            ).use { staged ->
+                assertEquals(1L, staged.longValue("SELECT COUNT(*) FROM fixed_cost_evidence_assignments"))
+                assertEquals("report-v17-backup", staged.stringValue("SELECT dailyReportId FROM fixed_cost_evidence_assignments"))
+                assertEquals(0L, staged.longValue("SELECT COUNT(*) FROM fixed_cost_evidence_assignment_audits"))
+            }
+            assertEquals(RestoreExecutionOutcome.Applied, manager.restore(preview.token).outcome)
+            live = Room.databaseBuilder(context, WarunDatabase::class.java, liveName).build()
+            assertEquals(18, live.openHelper.readableDatabase.version)
+            assertEquals(
+                1L,
+                live.openHelper.readableDatabase.query(
+                    "SELECT COUNT(*) FROM fixed_cost_evidence_assignments"
+                ).use { cursor -> cursor.moveToFirst(); cursor.getLong(0) }
+            )
+        } finally {
+            if (live.isOpen) live.close()
             context.deleteDatabase(sourceName)
             context.deleteDatabase(liveName)
             root.deleteRecursively()
@@ -285,6 +341,97 @@ class BackupVersion15CompatibilityTest {
                 manifest,
                 databaseFile,
                 mapOf("evidence-v15" to evidenceFile)
+            )
+        }.toByteArray()
+    }
+
+    private fun version17Archive(context: Context, databaseName: String, root: File): ByteArray {
+        val oldUri = "file:/data/user/99/old-warun/evidence_evidence-v17-backup.jpg"
+        val evidenceBytes = byteArrayOf(0xff.toByte(), 0xd8.toByte(), 0xff.toByte(), 7, 0xff.toByte(), 0xd9.toByte())
+        val evidenceSha = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(evidenceBytes)
+            .joinToString("") { "%02x".format(it) }
+        migrationHelper.createDatabase(databaseName, 17).use { database ->
+            database.execSQL(
+                """
+                INSERT INTO daily_reports(
+                    id, reportDate, status, authorName, cashSales, cardSales, qrSales,
+                    accountsReceivableSales, otherSales, foodPurchases, alcoholPurchases,
+                    consumablesExpense, utilitiesExpense, electricityExpense, gasExpense,
+                    waterExpense, communicationExpense, rentExpense, accountantFeeExpense,
+                    miscellaneousExpense, otherExpense, openingCash, actualClosingCash,
+                    customerCount, groupCount, memo, createdAt, updatedAt, hasActualClosingCash
+                ) VALUES ('report-v17-backup', '2026-08-23', 'completed', NULL, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, NULL, 10, 11, 0)
+                """.trimIndent()
+            )
+            database.execSQL(
+                """
+                INSERT INTO receipts(
+                    id, purchaseDate, capturedDate, registeredAt, storeName, totalAmount,
+                    taxAmount, registrationNumber, expenseCategory, isConfirmed, memo, updatedAt
+                ) VALUES ('receipt-v17-backup', '2026-08-23', '2026-08-23', 10, 'fixed-cost', 100, 0,
+                    NULL, NULL, 1, NULL, 11)
+                """.trimIndent()
+            )
+            database.execSQL(
+                """
+                INSERT INTO fixed_cost_receipt_applications(
+                    applicationId, receiptId, dailyReportId, fixedCostType, paymentMethod,
+                    appliedAt, updatedAt
+                ) VALUES ('application-v17-backup', 'receipt-v17-backup', 'report-v17-backup', 'electricity', '現金', 20, 21)
+                """.trimIndent()
+            )
+            database.execSQL(
+                """
+                INSERT INTO evidence_records(
+                    id, captureId, storedUri, byteSize, sha256, state, createdAt, storedAt, updatedAt, mediaType
+                ) VALUES ('evidence-v17-backup', 'capture-v17-backup', ?, ?, ?, 'stored', 30, 31, 32, 'image/jpeg')
+                """.trimIndent(),
+                arrayOf(oldUri, evidenceBytes.size, evidenceSha)
+            )
+            database.execSQL(
+                """
+                INSERT INTO fixed_cost_evidence_links(applicationId, evidenceId, sortOrder, linkedAt)
+                VALUES ('application-v17-backup', 'evidence-v17-backup', 0, 33)
+                """.trimIndent()
+            )
+        }
+        val databaseFile = context.getDatabasePath(databaseName)
+        val inspection = BackupDatabaseInspector().inspect(databaseFile)
+        val evidenceFile = File(root, "archive-evidence-v17-backup.jpg").apply {
+            parentFile?.mkdirs()
+            writeBytes(evidenceBytes)
+        }
+        val manifest = BackupManifest(
+            formatVersion = BackupContract.FormatVersion,
+            createdAtEpochMillis = 1L,
+            appVersion = "test-v17",
+            roomSchemaVersion = BackupContract.PriorRoomSchemaVersion,
+            database = BackupArchiveEntry(
+                BackupContract.DatabaseEntry,
+                databaseFile.length(),
+                BackupArchive.sha256(databaseFile)
+            ),
+            evidence = listOf(
+                BackupEvidenceEntry(
+                    evidenceId = "evidence-v17-backup",
+                    storedUri = oldUri,
+                    archiveEntry = BackupArchiveEntry(
+                        BackupContract.evidenceEntry("evidence-v17-backup"),
+                        evidenceFile.length(),
+                        evidenceSha
+                    )
+                )
+            ),
+            summary = inspection.summary
+        )
+        return ByteArrayOutputStream().also { output ->
+            BackupArchive.write(
+                output,
+                manifest,
+                databaseFile,
+                mapOf("evidence-v17-backup" to evidenceFile)
             )
         }.toByteArray()
     }

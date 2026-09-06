@@ -8,12 +8,16 @@ import com.warun.accounting.data.local.ExpenseEvidenceLinkRecord
 import com.warun.accounting.data.local.ExpenseEvidenceRecord
 import com.warun.accounting.data.local.ExpenseVisibilityRecord
 import com.warun.accounting.data.local.ExpensePrepaidLinkDao
+import com.warun.accounting.data.local.FixedCostEvidenceAssignmentAuditRecord
+import com.warun.accounting.data.local.FixedCostEvidenceAssignmentRecord
 import com.warun.accounting.data.local.MonthlySubmission
 import com.warun.accounting.data.local.ReceiptRecord
 import com.warun.accounting.data.local.SupplierCandidateRecord
 import com.warun.accounting.data.local.WarunDao
 import com.warun.accounting.data.fixedcost.ExistingAmountState
 import com.warun.accounting.data.fixedcost.FixedCostDetailSnapshot
+import com.warun.accounting.data.fixedcost.FixedCostEvidenceAssociationResult
+import com.warun.accounting.data.fixedcost.FixedCostEvidenceTarget
 import com.warun.accounting.data.fixedcost.FixedCostEvidenceStatus
 import com.warun.accounting.util.PaymentMethodPrepaid
 import com.warun.accounting.util.normalizePaymentMethod
@@ -76,6 +80,52 @@ class OfflineAccountingRepository @Inject constructor(
                 )
             }
         }
+
+    override fun observeUnclassifiedFixedCostEvidence(): Flow<List<EvidenceRecord>> =
+        dao.observeUnclassifiedFixedCostEvidence()
+
+    override suspend fun getFixedCostEvidenceAssignment(
+        evidenceId: String
+    ): FixedCostEvidenceAssignmentRecord? = dao.getFixedCostEvidenceAssignment(evidenceId)
+
+    override suspend fun getFixedCostEvidenceAssignmentAudits(
+        evidenceId: String
+    ): List<FixedCostEvidenceAssignmentAuditRecord> =
+        dao.getFixedCostEvidenceAssignmentAudits(evidenceId)
+
+    override suspend fun reassignFixedCostEvidence(
+        evidenceId: String,
+        expectedCurrentTarget: FixedCostEvidenceTarget,
+        newTarget: FixedCostEvidenceTarget,
+        operationId: String,
+        executedAt: Long
+    ): FixedCostEvidenceAssociationResult = runAssociation {
+        dao.reassignFixedCostEvidence(
+            evidenceId,
+            expectedCurrentTarget,
+            newTarget,
+            operationId,
+            executedAt
+        )
+    }
+
+    override suspend fun unlinkFixedCostEvidence(
+        evidenceId: String,
+        expectedCurrentTarget: FixedCostEvidenceTarget,
+        operationId: String,
+        executedAt: Long
+    ): FixedCostEvidenceAssociationResult = runAssociation {
+        dao.unlinkFixedCostEvidence(evidenceId, expectedCurrentTarget, operationId, executedAt)
+    }
+
+    override suspend fun assignFixedCostEvidence(
+        evidenceId: String,
+        target: FixedCostEvidenceTarget,
+        operationId: String,
+        executedAt: Long
+    ): FixedCostEvidenceAssociationResult = runAssociation {
+        dao.assignFixedCostEvidence(evidenceId, target, operationId, executedAt)
+    }
 
     override fun observeExpenseRecordsByDateAndCategory(expenseDate: String, category: String): Flow<List<ExpenseRecord>> =
         dao.observeExpenseRecordsByDateAndCategory(expenseDate, category)
@@ -236,6 +286,16 @@ class OfflineAccountingRepository @Inject constructor(
         ) {
             "Prepaid expenses must use the prepaid purchase transaction"
         }
+    }
+
+    private suspend fun runAssociation(
+        operation: suspend () -> FixedCostEvidenceAssociationResult
+    ): FixedCostEvidenceAssociationResult = try {
+        operation()
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Throwable) {
+        FixedCostEvidenceAssociationResult.Failure(error)
     }
 }
 

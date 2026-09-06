@@ -6,6 +6,7 @@ import android.database.sqlite.SQLiteDatabase
 import com.warun.accounting.BuildConfig
 import com.warun.accounting.data.local.Migration15To16Schema
 import com.warun.accounting.data.local.Migration16To17Schema
+import com.warun.accounting.data.local.Migration17To18Schema
 import com.warun.accounting.data.local.WarunDatabase
 import java.io.File
 import java.io.FileInputStream
@@ -145,6 +146,9 @@ class BackupDatabaseInspector {
                     }
                 }
             }
+            if (schema >= BackupContract.CurrentRoomSchemaVersion) {
+                validateCurrentFixedCostEvidenceAssociations(database)
+            }
             DatabaseInspection(
                 schemaVersion = schema,
                 evidence = evidence,
@@ -227,8 +231,102 @@ class BackupDatabaseInspector {
     private fun SQLiteDatabase.count(table: String): Long =
         longValue("SELECT COUNT(*) FROM `$table`")
 
+    private fun validateCurrentFixedCostEvidenceAssociations(database: SQLiteDatabase) {
+        val assignmentCount = database.count("fixed_cost_evidence_assignments")
+        val validAssignmentCount = database.longValue(
+            """
+            SELECT COUNT(*)
+            FROM fixed_cost_evidence_assignments AS assignment
+            INNER JOIN evidence_records AS evidence ON evidence.id = assignment.evidenceId
+            WHERE evidence.state = 'stored'
+              AND evidence.storedAt IS NOT NULL
+              AND assignment.fixedCostType IN ('electricity', 'water', 'communication', 'gas')
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM expense_evidence_links AS expense
+                  WHERE expense.evidenceId = assignment.evidenceId
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM expense_cancellations AS cancellation
+                        WHERE cancellation.expenseId = expense.expenseId
+                    )
+              )
+            """.trimIndent()
+        )
+        if (assignmentCount != validAssignmentCount) {
+            backupFail(
+                BackupFailure.CorruptDatabase,
+                "Current fixed-cost Evidence assignments are invalid"
+            )
+        }
+        val duplicateSortOrders = database.longValue(
+            """
+            SELECT COUNT(*) FROM (
+                SELECT dailyReportId, fixedCostType, sortOrder
+                FROM fixed_cost_evidence_assignments
+                GROUP BY dailyReportId, fixedCostType, sortOrder
+                HAVING COUNT(*) > 1
+            )
+            """.trimIndent()
+        )
+        if (duplicateSortOrders != 0L) {
+            backupFail(BackupFailure.CorruptDatabase, "Fixed-cost Evidence sort order is duplicated")
+        }
+        database.rawQuery(
+            """
+            SELECT operationId, evidenceId, operationType,
+                   beforeDailyReportId, beforeFixedCostType,
+                   afterDailyReportId, afterFixedCostType
+            FROM fixed_cost_evidence_assignment_audits
+            """.trimIndent(),
+            null
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val operationId = cursor.getString(0)
+                val evidenceId = cursor.getString(1)
+                val operationType = cursor.getString(2)
+                val beforeReport = cursor.getStringOrNull(3)
+                val beforeType = cursor.getStringOrNull(4)
+                val afterReport = cursor.getStringOrNull(5)
+                val afterType = cursor.getStringOrNull(6)
+                val validTransition = when (operationType) {
+                    "ASSIGN" -> beforeReport == null && beforeType == null &&
+                        afterReport != null && afterType != null
+                    "UNLINK" -> beforeReport != null && beforeType != null &&
+                        afterReport == null && afterType == null
+                    "REASSIGN" -> beforeReport != null && beforeType != null &&
+                        afterReport != null && afterType != null
+                    else -> false
+                }
+                if (operationId.isBlank() || evidenceId.isBlank() || !validTransition ||
+                    !supportedFixedCostType(beforeType) || !supportedFixedCostType(afterType) ||
+                    database.longValue(
+                        "SELECT COUNT(*) FROM evidence_records WHERE id = ?",
+                        arrayOf(evidenceId)
+                    ) != 1L
+                ) {
+                    backupFail(BackupFailure.CorruptDatabase, "Fixed-cost Evidence audit is invalid")
+                }
+            }
+        }
+    }
+
+    private fun supportedFixedCostType(type: String?): Boolean =
+        type == null || type in setOf("electricity", "water", "communication", "gas")
+
+    private fun Cursor.getStringOrNull(index: Int): String? =
+        if (isNull(index)) null else getString(index)
+
     private fun SQLiteDatabase.longValue(sql: String): Long =
         rawQuery(sql, null).use { cursor ->
+            if (!cursor.moveToFirst()) {
+                backupFail(BackupFailure.CorruptDatabase, "SQLite query returned no value")
+            }
+            cursor.getLong(0)
+        }
+
+    private fun SQLiteDatabase.longValue(sql: String, selectionArgs: Array<String>): Long =
+        rawQuery(sql, selectionArgs).use { cursor ->
             if (!cursor.moveToFirst()) {
                 backupFail(BackupFailure.CorruptDatabase, "SQLite query returned no value")
             }
@@ -528,7 +626,7 @@ fun interface StagedDatabaseUpgradeInterceptor {
 }
 
 /**
- * Upgrades an already extracted and Evidence-rebased v15/v16 candidate before it can become live.
+ * Upgrades an already extracted and Evidence-rebased v15-v17 candidate before it can become live.
  * Only the isolated candidate database is opened. The manifest is rewritten and the upgraded bundle is
  * fully inspected before stageRestore publishes its token.
  */
@@ -544,7 +642,8 @@ class StagedBackupDatabaseUpgrader(
         }
         if (bundle.manifest.roomSchemaVersion !in setOf(
                 BackupContract.LegacyRoomSchemaVersion,
-                BackupContract.PreviousRoomSchemaVersion
+                BackupContract.PreviousRoomSchemaVersion,
+                BackupContract.PriorRoomSchemaVersion
             )
         ) {
             backupFail(BackupFailure.UnsupportedSchema, "Staged database cannot be upgraded")
@@ -564,7 +663,11 @@ class StagedBackupDatabaseUpgrader(
             if (bundle.manifest.roomSchemaVersion == BackupContract.LegacyRoomSchemaVersion) {
                 Migration15To16Schema.Statements.forEach(database::execSQL)
             }
-            Migration16To17Schema.Statements.forEach(database::execSQL)
+            if (bundle.manifest.roomSchemaVersion <= BackupContract.PreviousRoomSchemaVersion) {
+                Migration16To17Schema.Statements.forEach(database::execSQL)
+            }
+            Migration17To18Schema.Statements.forEach(database::execSQL)
+            verifyStagedFixedCostEvidenceBackfill(database)
             interceptor.afterSchemaStatements()
             val updatedIdentity = database.compileStatement(
                 "UPDATE room_master_table SET identity_hash = ? WHERE id = 42"
@@ -598,6 +701,49 @@ class StagedBackupDatabaseUpgrader(
             output.fd.sync()
         }
         return bundle.copy(manifest = updatedManifest).also(inspector::validateBundle)
+    }
+}
+
+private fun verifyStagedFixedCostEvidenceBackfill(database: SQLiteDatabase) {
+    val sourceCount = database.rawQuery(
+        "SELECT COUNT(*) FROM fixed_cost_evidence_links",
+        null
+    ).use { cursor ->
+        check(cursor.moveToFirst()) { "Migration verification query returned no row" }
+        cursor.getLong(0)
+    }
+    val targetCount = database.rawQuery(
+        "SELECT COUNT(*) FROM fixed_cost_evidence_assignments",
+        null
+    ).use { cursor ->
+        check(cursor.moveToFirst()) { "Migration verification query returned no row" }
+        cursor.getLong(0)
+    }
+    check(sourceCount == targetCount) {
+        "Fixed-cost Evidence assignment backfill count mismatch"
+    }
+    val mismatchCount = database.rawQuery(
+        """
+        SELECT COUNT(*)
+        FROM fixed_cost_evidence_links AS link
+        INNER JOIN fixed_cost_receipt_applications AS application
+            ON application.applicationId = link.applicationId
+        LEFT JOIN fixed_cost_evidence_assignments AS assignment
+            ON assignment.evidenceId = link.evidenceId
+           AND assignment.dailyReportId = application.dailyReportId
+           AND assignment.fixedCostType = application.fixedCostType
+           AND assignment.sortOrder = link.sortOrder
+           AND assignment.assignedAt = link.linkedAt
+           AND assignment.updatedAt = link.linkedAt
+        WHERE assignment.evidenceId IS NULL
+        """.trimIndent(),
+        null
+    ).use { cursor ->
+        check(cursor.moveToFirst()) { "Migration verification query returned no row" }
+        cursor.getLong(0)
+    }
+    check(mismatchCount == 0L) {
+        "Fixed-cost Evidence assignment backfill content mismatch"
     }
 }
 

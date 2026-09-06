@@ -184,6 +184,8 @@ import com.warun.accounting.ui.fixedcost.FixedCostEvidenceScreen
 import com.warun.accounting.ui.fixedcost.FixedCostEvidenceViewer
 import com.warun.accounting.ui.fixedcost.FixedCostEvidenceStatusRows
 import com.warun.accounting.ui.fixedcost.FixedCostDirectEvidenceScreen
+import com.warun.accounting.ui.fixedcost.FixedCostEvidenceAssociationViewModel
+import com.warun.accounting.ui.fixedcost.FixedCostEvidenceManagementContext
 import com.warun.accounting.data.fixedcost.FixedCostEvidenceRegistrationState
 import com.warun.accounting.data.fixedcost.registrationState
 import com.warun.accounting.data.fixedcost.fixedCostEvidenceButtonLabel
@@ -365,13 +367,13 @@ private object ReceiptRoutes {
     const val Unconfirmed = "receipt_unconfirmed?targetMonth={targetMonth}"
     const val FixedCostDetail = "receipt_fixed_cost/{receiptId}"
     const val DirectFixedCost = "receipt_fixed_cost_direct/{dailyReportId}/{fixedCostType}"
-    const val FixedCostViewer = "receipt_fixed_cost_viewer/{dailyReportId}/{fixedCostType}"
+    const val FixedCostViewer = "receipt_fixed_cost_viewer/{dailyReportId}/{fixedCostType}/{evidenceId}"
 
     fun fixedCostDetail(receiptId: String): String = "receipt_fixed_cost/${Uri.encode(receiptId)}"
     fun directFixedCost(dailyReportId: String, fixedCostType: String): String =
         "receipt_fixed_cost_direct/${Uri.encode(dailyReportId)}/${Uri.encode(fixedCostType)}"
-    fun fixedCostViewer(dailyReportId: String, fixedCostType: String): String =
-        "receipt_fixed_cost_viewer/${Uri.encode(dailyReportId)}/${Uri.encode(fixedCostType)}"
+    fun fixedCostViewer(dailyReportId: String, fixedCostType: String, evidenceId: String): String =
+        "receipt_fixed_cost_viewer/${Uri.encode(dailyReportId)}/${Uri.encode(fixedCostType)}/${Uri.encode(evidenceId)}"
     fun unconfirmed(targetMonth: String? = null): String =
         targetMonth?.let { "receipt_unconfirmed?targetMonth=${Uri.encode(it)}" } ?: "receipt_unconfirmed"
 }
@@ -554,6 +556,7 @@ fun WarunApp(
 ) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val fixedCostAssociationViewModel: FixedCostEvidenceAssociationViewModel = hiltViewModel()
     val evidenceRecoveryNotice by viewModel.evidenceRecoveryNotice.collectAsStateWithLifecycle()
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
@@ -716,7 +719,8 @@ fun WarunApp(
                 AppNavHost(
                     uiState = uiState,
                     evidenceRecoveryIssueCount = evidenceRecoveryNotice.issueCount,
-                    viewModel = viewModel,
+                     viewModel = viewModel,
+                     fixedCostAssociationViewModel = fixedCostAssociationViewModel,
                     navController = navController,
                     contentPadding = padding,
                     onNavigateSingleTop = guardedNavigateSingleTop,
@@ -739,6 +743,7 @@ fun WarunApp(
                     uiState = uiState,
                     evidenceRecoveryIssueCount = evidenceRecoveryNotice.issueCount,
                     viewModel = viewModel,
+                    fixedCostAssociationViewModel = fixedCostAssociationViewModel,
                     navController = navController,
                     contentPadding = PaddingValues(0.dp),
                     modifier = Modifier.weight(1f),
@@ -759,6 +764,7 @@ private fun AppNavHost(
     uiState: DashboardUiState,
     evidenceRecoveryIssueCount: Int,
     viewModel: DashboardViewModel,
+    fixedCostAssociationViewModel: FixedCostEvidenceAssociationViewModel,
     navController: NavHostController,
     contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
@@ -803,7 +809,7 @@ private fun AppNavHost(
                 onOpenReceiptCamera = { navController.navigate(ReceiptRoutes.Camera) },
                 onOpenFixedCostEvidence = { reportId, type ->
                     val stored = uiState.fixedCostEvidenceStatuses.firstOrNull { it.dailyReportId == reportId && it.fixedCostType == type }?.evidence.orEmpty()
-                    navController.navigate(if (stored.isEmpty()) ReceiptRoutes.directFixedCost(reportId, type) else ReceiptRoutes.fixedCostViewer(reportId, type))
+                    navController.navigate(if (stored.isEmpty()) ReceiptRoutes.directFixedCost(reportId, type) else ReceiptRoutes.fixedCostViewer(reportId, type, stored.first().id))
                 },
                 capturedReceipt = capturedReceipt,
                 onCaptureReceived = { capturedReceipt = it },
@@ -854,7 +860,8 @@ private fun AppNavHost(
             FixedCostEvidenceScreen(
                 receiptId = backStackEntry.arguments?.getString("receiptId").orEmpty(),
                 onBack = onPopBackStack,
-                onOpenReport = { reportDate -> onNavigate(ReportRoutes.detail(reportDate)) }
+                onOpenReport = { reportDate -> onNavigate(ReportRoutes.detail(reportDate)) },
+                associationViewModel = fixedCostAssociationViewModel
             )
         }
         composable(
@@ -879,20 +886,29 @@ private fun AppNavHost(
                 onCaptureConsumed = { captured = null },
                 onOpenCamera = { navController.navigate(ReceiptRoutes.Camera) },
                 onDone = onPopBackStack,
-                onDismiss = onPopBackStack
+                onDismiss = onPopBackStack,
+                associationViewModel = fixedCostAssociationViewModel
             )
         }
         composable(
             route = ReceiptRoutes.FixedCostViewer,
             arguments = listOf(
                 navArgument("dailyReportId") { type = NavType.StringType },
-                navArgument("fixedCostType") { type = NavType.StringType }
+                navArgument("fixedCostType") { type = NavType.StringType },
+                navArgument("evidenceId") { type = NavType.StringType }
             )
         ) { backStackEntry ->
             val reportId = backStackEntry.arguments?.getString("dailyReportId").orEmpty()
             val type = backStackEntry.arguments?.getString("fixedCostType").orEmpty()
+            val evidenceId = backStackEntry.arguments?.getString("evidenceId").orEmpty()
             val evidence = uiState.fixedCostEvidenceStatuses.firstOrNull { it.dailyReportId == reportId && it.fixedCostType == type }?.evidence.orEmpty()
-            FixedCostEvidenceViewer(evidence = evidence, initialIndex = 0, onDismiss = onPopBackStack)
+            FixedCostEvidenceViewer(
+                evidence = evidence,
+                initialIndex = evidence.indexOfFirst { it.id == evidenceId }.coerceAtLeast(0),
+                onDismiss = onPopBackStack,
+                managementContext = FixedCostEvidenceManagementContext(evidenceId, reportId, type),
+                associationViewModel = fixedCostAssociationViewModel
+            )
         }
         composable(ReceiptRoutes.Camera) {
             ReceiptCameraScreen(
@@ -945,7 +961,8 @@ private fun AppNavHost(
                 uiState = uiState,
                 reportDate = reportDate,
                 onBack = onPopBackStack,
-                onEntry = { onNavigate(ReportRoutes.entry(reportDate)) }
+                onEntry = { onNavigate(ReportRoutes.entry(reportDate)) },
+                associationViewModel = fixedCostAssociationViewModel
             )
         }
         composable(
@@ -967,7 +984,7 @@ private fun AppNavHost(
                 onOpenReceiptCamera = { navController.navigate(ReceiptRoutes.Camera) },
                 onOpenFixedCostEvidence = { reportId, type ->
                     val stored = uiState.fixedCostEvidenceStatuses.firstOrNull { it.dailyReportId == reportId && it.fixedCostType == type }?.evidence.orEmpty()
-                    navController.navigate(if (stored.isEmpty()) ReceiptRoutes.directFixedCost(reportId, type) else ReceiptRoutes.fixedCostViewer(reportId, type))
+                    navController.navigate(if (stored.isEmpty()) ReceiptRoutes.directFixedCost(reportId, type) else ReceiptRoutes.fixedCostViewer(reportId, type, stored.first().id))
                 },
                 capturedReceipt = capturedReceipt,
                 onCaptureReceived = { capturedReceipt = it },
@@ -4466,10 +4483,11 @@ private fun ReportDetailScreen(
     reportDate: String,
     onBack: () -> Unit,
     onEntry: () -> Unit,
+    associationViewModel: FixedCostEvidenceAssociationViewModel,
     auditViewModel: ExpenseCancellationAuditViewModel = hiltViewModel()
 ) {
     var selectedEvidence by remember { mutableStateOf<ExpenseEvidenceRecord?>(null) }
-    var selectedFixedCostEvidence by remember { mutableStateOf<Pair<List<com.warun.accounting.data.local.EvidenceRecord>, Int>?>(null) }
+    var selectedFixedCostEvidence by remember { mutableStateOf<Triple<List<com.warun.accounting.data.local.EvidenceRecord>, Int, FixedCostEvidenceManagementContext>?>(null) }
     val cancelledExpenses by auditViewModel.items.collectAsStateWithLifecycle()
     val dayReports = remember(uiState.reports, reportDate) {
         uiState.reports.filter { it.reportDate == reportDate }
@@ -4534,7 +4552,13 @@ private fun ReportDetailScreen(
                 expenses = dayExpenses,
                 cancelledExpenseKeys = uiState.cancelledExpenseKeys,
                 fixedCostEvidenceStatuses = uiState.fixedCostEvidenceStatuses,
-                onOpenFixedCostEvidence = { evidence, index -> selectedFixedCostEvidence = evidence to index }
+                onOpenFixedCostEvidence = { type, evidence, index ->
+                    selectedFixedCostEvidence = Triple(
+                        evidence,
+                        index,
+                        FixedCostEvidenceManagementContext(evidence[index].id, report.id, type)
+                    )
+                }
             )
         }
         if (dayExpenses.isNotEmpty()) {
@@ -4585,11 +4609,13 @@ private fun ReportDetailScreen(
             onDismiss = { selectedEvidence = null }
         )
     }
-    selectedFixedCostEvidence?.let { (evidence, index) ->
+    selectedFixedCostEvidence?.let { (evidence, index, managementContext) ->
         FixedCostEvidenceViewer(
             evidence = evidence,
             initialIndex = index,
-            onDismiss = { selectedFixedCostEvidence = null }
+            onDismiss = { selectedFixedCostEvidence = null },
+            managementContext = managementContext,
+            associationViewModel = associationViewModel
         )
     }
 }
@@ -4743,7 +4769,7 @@ private fun DailyReportDetailCard(
     expenses: List<ExpenseRecord>,
     cancelledExpenseKeys: Set<ExpenseDateCategoryKey>,
     fixedCostEvidenceStatuses: List<com.warun.accounting.data.fixedcost.FixedCostEvidenceStatus>,
-    onOpenFixedCostEvidence: (List<com.warun.accounting.data.local.EvidenceRecord>, Int) -> Unit
+    onOpenFixedCostEvidence: (String, List<com.warun.accounting.data.local.EvidenceRecord>, Int) -> Unit
 ) {
     DashboardCard {
         Text("日報 ${index + 1}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
@@ -4774,7 +4800,7 @@ private fun DailyReportDetailCard(
         FixedCostEvidenceStatusRows(
             report = report,
             statuses = fixedCostEvidenceStatuses,
-            onOpenEvidence = { _, evidence -> onOpenFixedCostEvidence(evidence, 0) }
+            onOpenEvidence = { type, evidence -> onOpenFixedCostEvidence(type, evidence, 0) }
         )
         TotalRow("家賃", report.rentExpense.toYen())
         TotalRow("税理士顧問料", report.accountantFeeExpense.toYen())

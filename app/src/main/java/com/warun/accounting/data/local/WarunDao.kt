@@ -10,12 +10,16 @@ import androidx.room.Update
 import androidx.room.Upsert
 import com.warun.accounting.data.export.MonthlyExportSourceSnapshot
 import com.warun.accounting.data.export.FixedCostEvidenceExportRecord
+import com.warun.accounting.data.fixedcost.FixedCostEvidenceAssociationOperation
+import com.warun.accounting.data.fixedcost.FixedCostEvidenceAssociationResult
+import com.warun.accounting.data.fixedcost.FixedCostEvidenceTarget
+import com.warun.accounting.data.fixedcost.supportedFixedCostTypes
 import kotlinx.coroutines.flow.Flow
 
 data class FixedCostEvidenceStatusRow(
     val dailyReportId: String,
     val fixedCostType: String,
-    val applicationId: String,
+    val applicationId: String?,
     val evidenceId: String?,
     val captureId: String?,
     val storedUri: String?,
@@ -23,7 +27,8 @@ data class FixedCostEvidenceStatusRow(
     val sha256: String?,
     val createdAt: Long?,
     val storedAt: Long?,
-    val mediaType: String?
+    val mediaType: String?,
+    val sortOrder: Int?
 )
 
 @Dao
@@ -114,17 +119,41 @@ interface WarunDao {
                evidence.sha256 AS sha256,
                evidence.createdAt AS createdAt,
                evidence.storedAt AS storedAt,
-               evidence.mediaType AS mediaType
+               evidence.mediaType AS mediaType,
+               assignment.sortOrder AS sortOrder
         FROM fixed_cost_receipt_applications AS application
-        LEFT JOIN fixed_cost_evidence_links AS link
-          ON link.applicationId = application.applicationId
+        LEFT JOIN fixed_cost_evidence_assignments AS assignment
+          ON assignment.dailyReportId = application.dailyReportId
+         AND assignment.fixedCostType = application.fixedCostType
         LEFT JOIN evidence_records AS evidence
-          ON evidence.id = link.evidenceId
+          ON evidence.id = assignment.evidenceId
          AND evidence.state = 'stored'
          AND evidence.storedAt IS NOT NULL
-        ORDER BY application.dailyReportId ASC,
-                 application.fixedCostType ASC,
-                 link.sortOrder ASC
+        UNION ALL
+        SELECT assignment.dailyReportId AS dailyReportId,
+               assignment.fixedCostType AS fixedCostType,
+               NULL AS applicationId,
+               evidence.id AS evidenceId,
+               evidence.captureId AS captureId,
+               evidence.storedUri AS storedUri,
+               evidence.byteSize AS byteSize,
+               evidence.sha256 AS sha256,
+               evidence.createdAt AS createdAt,
+               evidence.storedAt AS storedAt,
+               evidence.mediaType AS mediaType,
+               assignment.sortOrder AS sortOrder
+        FROM fixed_cost_evidence_assignments AS assignment
+        INNER JOIN evidence_records AS evidence
+          ON evidence.id = assignment.evidenceId
+         AND evidence.state = 'stored'
+         AND evidence.storedAt IS NOT NULL
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM fixed_cost_receipt_applications AS application
+            WHERE application.dailyReportId = assignment.dailyReportId
+              AND application.fixedCostType = assignment.fixedCostType
+        )
+        ORDER BY dailyReportId ASC, fixedCostType ASC, sortOrder ASC, evidenceId ASC
         """
     )
     fun observeFixedCostEvidenceStatuses(): Flow<List<FixedCostEvidenceStatusRow>>
@@ -189,9 +218,9 @@ interface WarunDao {
 
     @Query(
         """
-        SELECT application.dailyReportId AS dailyReportId,
+        SELECT assignment.dailyReportId AS dailyReportId,
                report.reportDate AS reportDate,
-               application.fixedCostType AS fixedCostType,
+               assignment.fixedCostType AS fixedCostType,
                evidence.id AS evidenceId,
                evidence.captureId AS captureId,
                evidence.storedUri AS storedUri,
@@ -200,16 +229,15 @@ interface WarunDao {
                evidence.createdAt AS createdAt,
                evidence.storedAt AS storedAt,
                evidence.mediaType AS mediaType,
-               link.sortOrder AS sortOrder
-        FROM fixed_cost_receipt_applications AS application
-        INNER JOIN daily_reports AS report ON report.id = application.dailyReportId
-        INNER JOIN fixed_cost_evidence_links AS link ON link.applicationId = application.applicationId
-        INNER JOIN evidence_records AS evidence ON evidence.id = link.evidenceId
+               assignment.sortOrder AS sortOrder
+        FROM fixed_cost_evidence_assignments AS assignment
+        INNER JOIN daily_reports AS report ON report.id = assignment.dailyReportId
+        INNER JOIN evidence_records AS evidence ON evidence.id = assignment.evidenceId
         WHERE (report.reportDate BETWEEN :from AND :to
            OR substr(report.reportDate, 1, 7) = :targetMonth)
           AND evidence.state = 'stored'
           AND evidence.storedAt IS NOT NULL
-        ORDER BY report.reportDate ASC, application.fixedCostType ASC, link.sortOrder ASC, evidence.id ASC
+        ORDER BY report.reportDate ASC, assignment.fixedCostType ASC, assignment.sortOrder ASC, evidence.id ASC
         """
     )
     suspend fun getStoredFixedCostEvidenceForMonthlyExport(
@@ -422,8 +450,88 @@ interface WarunDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertFixedCostEvidenceLink(link: FixedCostEvidenceLinkRecord): Long
 
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertFixedCostEvidenceAssignment(
+        assignment: FixedCostEvidenceAssignmentRecord
+    )
+
+    @Update
+    suspend fun updateFixedCostEvidenceAssignment(
+        assignment: FixedCostEvidenceAssignmentRecord
+    ): Int
+
+    @Query("DELETE FROM fixed_cost_evidence_assignments WHERE evidenceId = :evidenceId")
+    suspend fun deleteFixedCostEvidenceAssignment(evidenceId: String): Int
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertFixedCostEvidenceAssignmentAudit(
+        audit: FixedCostEvidenceAssignmentAuditRecord
+    )
+
     @Query("SELECT * FROM evidence_records WHERE id = :evidenceId")
     suspend fun getEvidenceRecord(evidenceId: String): EvidenceRecord?
+
+    @Query("SELECT * FROM fixed_cost_evidence_assignments WHERE evidenceId = :evidenceId")
+    suspend fun getFixedCostEvidenceAssignment(
+        evidenceId: String
+    ): FixedCostEvidenceAssignmentRecord?
+
+    @Query(
+        "SELECT * FROM fixed_cost_evidence_assignments " +
+            "WHERE dailyReportId = :dailyReportId AND fixedCostType = :fixedCostType " +
+            "ORDER BY sortOrder ASC, evidenceId ASC"
+    )
+    suspend fun getFixedCostEvidenceAssignmentsForTarget(
+        dailyReportId: String,
+        fixedCostType: String
+    ): List<FixedCostEvidenceAssignmentRecord>
+
+    @Query(
+        "SELECT * FROM fixed_cost_evidence_assignment_audits " +
+            "WHERE evidenceId = :evidenceId ORDER BY executedAt ASC, operationId ASC"
+    )
+    suspend fun getFixedCostEvidenceAssignmentAudits(
+        evidenceId: String
+    ): List<FixedCostEvidenceAssignmentAuditRecord>
+
+    @Query(
+        "SELECT * FROM fixed_cost_evidence_assignment_audits WHERE operationId = :operationId"
+    )
+    suspend fun getFixedCostEvidenceAssignmentAudit(
+        operationId: String
+    ): FixedCostEvidenceAssignmentAuditRecord?
+
+    @Query(
+        "SELECT COALESCE(MAX(sortOrder), -1) + 1 FROM fixed_cost_evidence_assignments " +
+            "WHERE dailyReportId = :dailyReportId AND fixedCostType = :fixedCostType"
+    )
+    suspend fun nextFixedCostEvidenceSortOrder(
+        dailyReportId: String,
+        fixedCostType: String
+    ): Int
+
+    @Query(
+        "SELECT expense.expenseId FROM expense_evidence_links AS expense " +
+            "WHERE expense.evidenceId = :evidenceId AND NOT EXISTS (" +
+            "SELECT 1 FROM expense_cancellations AS cancellation " +
+            "WHERE cancellation.expenseId = expense.expenseId)"
+    )
+    suspend fun getActiveExpenseIdForEvidence(evidenceId: String): String?
+
+    @Query(
+        "SELECT evidence.* FROM evidence_records AS evidence " +
+            "WHERE evidence.state = 'stored' AND evidence.storedAt IS NOT NULL " +
+            "AND NOT EXISTS (" +
+            "SELECT 1 FROM fixed_cost_evidence_assignments AS assignment " +
+            "WHERE assignment.evidenceId = evidence.id) " +
+            "AND NOT EXISTS (" +
+            "SELECT 1 FROM expense_evidence_links AS expense " +
+            "WHERE expense.evidenceId = evidence.id AND NOT EXISTS (" +
+            "SELECT 1 FROM expense_cancellations AS cancellation " +
+            "WHERE cancellation.expenseId = expense.expenseId)) " +
+            "ORDER BY evidence.createdAt ASC, evidence.id ASC"
+    )
+    fun observeUnclassifiedFixedCostEvidence(): Flow<List<EvidenceRecord>>
 
     @Query("SELECT * FROM fixed_cost_receipt_applications WHERE applicationId = :applicationId")
     suspend fun getFixedCostReceiptApplication(applicationId: String): FixedCostReceiptApplicationRecord?
@@ -676,6 +784,217 @@ interface WarunDao {
         ) { "Fixed-cost Evidence link could not be persisted" }
     }
 
+    /** Adds the v18 current-assignment row for a newly finalized fixed-cost Evidence. */
+    private suspend fun ensureFixedCostEvidenceAssignment(
+        evidenceId: String,
+        target: FixedCostEvidenceTarget,
+        sortOrder: Int,
+        assignedAt: Long,
+        operationId: String
+    ) {
+        require(target.fixedCostType in supportedFixedCostTypes) {
+            "Unsupported fixed-cost type"
+        }
+        val evidence = getEvidenceRecord(evidenceId)
+            ?: error("Fixed-cost Evidence does not exist")
+        check(evidence.state == EvidenceRecordState.Stored && evidence.storedAt != null) {
+            "Fixed-cost Evidence must be stored before assigning"
+        }
+        check(getActiveExpenseIdForEvidence(evidenceId) == null) {
+            "Evidence is already linked to an expense"
+        }
+        check(getDailyReport(target.dailyReportId) != null) {
+            "Target DailyReport does not exist"
+        }
+        val current = getFixedCostEvidenceAssignment(evidenceId)
+        if (current != null) {
+            check(
+                current.dailyReportId == target.dailyReportId &&
+                    current.fixedCostType == target.fixedCostType
+            ) { "Evidence is already assigned to another fixed-cost target" }
+            return
+        }
+        insertFixedCostEvidenceAssignment(
+            FixedCostEvidenceAssignmentRecord(
+                evidenceId = evidenceId,
+                dailyReportId = target.dailyReportId,
+                fixedCostType = target.fixedCostType,
+                sortOrder = sortOrder,
+                assignedAt = assignedAt,
+                updatedAt = assignedAt
+            )
+        )
+        insertFixedCostEvidenceAssignmentAudit(
+            FixedCostEvidenceAssignmentAuditRecord(
+                operationId = operationId,
+                evidenceId = evidenceId,
+                operationType = FixedCostEvidenceAssociationOperation.Assign,
+                beforeDailyReportId = null,
+                beforeFixedCostType = null,
+                afterDailyReportId = target.dailyReportId,
+                afterFixedCostType = target.fixedCostType,
+                executedAt = assignedAt
+            )
+        )
+    }
+
+    @Transaction
+    suspend fun reassignFixedCostEvidence(
+        evidenceId: String,
+        expectedCurrentTarget: FixedCostEvidenceTarget,
+        newTarget: FixedCostEvidenceTarget,
+        operationId: String,
+        executedAt: Long
+    ): FixedCostEvidenceAssociationResult {
+        if (newTarget.fixedCostType !in supportedFixedCostTypes ||
+            expectedCurrentTarget.fixedCostType !in supportedFixedCostTypes
+        ) return FixedCostEvidenceAssociationResult.InvalidFixedCostType
+        val evidence = getEvidenceRecord(evidenceId)
+            ?: return FixedCostEvidenceAssociationResult.EvidenceNotFound
+        if (evidence.state != EvidenceRecordState.Stored || evidence.storedAt == null) {
+            return FixedCostEvidenceAssociationResult.EvidenceNotStored
+        }
+        if (getActiveExpenseIdForEvidence(evidenceId) != null) {
+            return FixedCostEvidenceAssociationResult.LinkedToExpense
+        }
+        val current = getFixedCostEvidenceAssignment(evidenceId)
+            ?: return FixedCostEvidenceAssociationResult.CurrentTargetMismatch
+        if (current.dailyReportId != expectedCurrentTarget.dailyReportId ||
+            current.fixedCostType != expectedCurrentTarget.fixedCostType
+        ) return FixedCostEvidenceAssociationResult.CurrentTargetMismatch
+        if (expectedCurrentTarget == newTarget) {
+            return FixedCostEvidenceAssociationResult.SameTarget
+        }
+        if (getDailyReport(newTarget.dailyReportId) == null) {
+            return FixedCostEvidenceAssociationResult.DailyReportNotFound
+        }
+        if (getFixedCostEvidenceAssignmentAudit(operationId) != null) {
+            return FixedCostEvidenceAssociationResult.OperationAlreadyUsed
+        }
+        val updated = updateFixedCostEvidenceAssignment(
+            current.copy(
+                dailyReportId = newTarget.dailyReportId,
+                fixedCostType = newTarget.fixedCostType,
+                sortOrder = nextFixedCostEvidenceSortOrder(
+                    newTarget.dailyReportId,
+                    newTarget.fixedCostType
+                ),
+                updatedAt = executedAt
+            )
+        )
+        check(updated == 1) { "Fixed-cost Evidence assignment could not be updated" }
+        insertFixedCostEvidenceAssignmentAudit(
+            FixedCostEvidenceAssignmentAuditRecord(
+                operationId = operationId,
+                evidenceId = evidenceId,
+                operationType = FixedCostEvidenceAssociationOperation.Reassign,
+                beforeDailyReportId = current.dailyReportId,
+                beforeFixedCostType = current.fixedCostType,
+                afterDailyReportId = newTarget.dailyReportId,
+                afterFixedCostType = newTarget.fixedCostType,
+                executedAt = executedAt
+            )
+        )
+        return FixedCostEvidenceAssociationResult.Success
+    }
+
+    @Transaction
+    suspend fun unlinkFixedCostEvidence(
+        evidenceId: String,
+        expectedCurrentTarget: FixedCostEvidenceTarget,
+        operationId: String,
+        executedAt: Long
+    ): FixedCostEvidenceAssociationResult {
+        if (expectedCurrentTarget.fixedCostType !in supportedFixedCostTypes) {
+            return FixedCostEvidenceAssociationResult.InvalidFixedCostType
+        }
+        val evidence = getEvidenceRecord(evidenceId)
+            ?: return FixedCostEvidenceAssociationResult.EvidenceNotFound
+        if (evidence.state != EvidenceRecordState.Stored || evidence.storedAt == null) {
+            return FixedCostEvidenceAssociationResult.EvidenceNotStored
+        }
+        if (getActiveExpenseIdForEvidence(evidenceId) != null) {
+            return FixedCostEvidenceAssociationResult.LinkedToExpense
+        }
+        val current = getFixedCostEvidenceAssignment(evidenceId)
+            ?: return FixedCostEvidenceAssociationResult.CurrentTargetMismatch
+        if (current.dailyReportId != expectedCurrentTarget.dailyReportId ||
+            current.fixedCostType != expectedCurrentTarget.fixedCostType
+        ) return FixedCostEvidenceAssociationResult.CurrentTargetMismatch
+        if (getFixedCostEvidenceAssignmentAudit(operationId) != null) {
+            return FixedCostEvidenceAssociationResult.OperationAlreadyUsed
+        }
+        check(deleteFixedCostEvidenceAssignment(evidenceId) == 1) {
+            "Fixed-cost Evidence assignment could not be removed"
+        }
+        insertFixedCostEvidenceAssignmentAudit(
+            FixedCostEvidenceAssignmentAuditRecord(
+                operationId = operationId,
+                evidenceId = evidenceId,
+                operationType = FixedCostEvidenceAssociationOperation.Unlink,
+                beforeDailyReportId = current.dailyReportId,
+                beforeFixedCostType = current.fixedCostType,
+                afterDailyReportId = null,
+                afterFixedCostType = null,
+                executedAt = executedAt
+            )
+        )
+        return FixedCostEvidenceAssociationResult.Success
+    }
+
+    @Transaction
+    suspend fun assignFixedCostEvidence(
+        evidenceId: String,
+        target: FixedCostEvidenceTarget,
+        operationId: String,
+        executedAt: Long
+    ): FixedCostEvidenceAssociationResult {
+        if (target.fixedCostType !in supportedFixedCostTypes) {
+            return FixedCostEvidenceAssociationResult.InvalidFixedCostType
+        }
+        val evidence = getEvidenceRecord(evidenceId)
+            ?: return FixedCostEvidenceAssociationResult.EvidenceNotFound
+        if (evidence.state != EvidenceRecordState.Stored || evidence.storedAt == null) {
+            return FixedCostEvidenceAssociationResult.EvidenceNotStored
+        }
+        if (getActiveExpenseIdForEvidence(evidenceId) != null) {
+            return FixedCostEvidenceAssociationResult.LinkedToExpense
+        }
+        if (getFixedCostEvidenceAssignment(evidenceId) != null) {
+            return FixedCostEvidenceAssociationResult.AlreadyAssigned
+        }
+        if (getDailyReport(target.dailyReportId) == null) {
+            return FixedCostEvidenceAssociationResult.DailyReportNotFound
+        }
+        if (getFixedCostEvidenceAssignmentAudit(operationId) != null) {
+            return FixedCostEvidenceAssociationResult.OperationAlreadyUsed
+        }
+        val sortOrder = nextFixedCostEvidenceSortOrder(target.dailyReportId, target.fixedCostType)
+        insertFixedCostEvidenceAssignment(
+            FixedCostEvidenceAssignmentRecord(
+                evidenceId = evidenceId,
+                dailyReportId = target.dailyReportId,
+                fixedCostType = target.fixedCostType,
+                sortOrder = sortOrder,
+                assignedAt = executedAt,
+                updatedAt = executedAt
+            )
+        )
+        insertFixedCostEvidenceAssignmentAudit(
+            FixedCostEvidenceAssignmentAuditRecord(
+                operationId = operationId,
+                evidenceId = evidenceId,
+                operationType = FixedCostEvidenceAssociationOperation.Assign,
+                beforeDailyReportId = null,
+                beforeFixedCostType = null,
+                afterDailyReportId = target.dailyReportId,
+                afterFixedCostType = target.fixedCostType,
+                executedAt = executedAt
+            )
+        )
+        return FixedCostEvidenceAssociationResult.Success
+    }
+
     @Transaction
     suspend fun applyFixedCostEvidence(
         report: DailyReport,
@@ -703,7 +1022,16 @@ interface WarunDao {
         }
         ensureFixedCostReceiptApplication(application)
         for (item in evidence) ensureEvidence(item)
-        for (link in links) ensureFixedCostEvidenceLink(link)
+        for (link in links) {
+            ensureFixedCostEvidenceLink(link)
+            ensureFixedCostEvidenceAssignment(
+                evidenceId = link.evidenceId,
+                target = FixedCostEvidenceTarget(application.dailyReportId, application.fixedCostType),
+                sortOrder = link.sortOrder,
+                assignedAt = link.linkedAt,
+                operationId = "ASSIGN:${application.applicationId}:${link.evidenceId}"
+            )
+        }
         check(markReceiptConfirmed(receipt.id, receipt.updatedAt) == 1 || receipt.isConfirmed) {
             "Receipt confirmation could not be persisted"
         }
@@ -731,7 +1059,16 @@ interface WarunDao {
         insertReceipt(receipt)
         ensureFixedCostReceiptApplication(application)
         for (item in evidence) ensureEvidence(item)
-        for (link in links) ensureFixedCostEvidenceLink(link)
+        for (link in links) {
+            ensureFixedCostEvidenceLink(link)
+            ensureFixedCostEvidenceAssignment(
+                evidenceId = link.evidenceId,
+                target = FixedCostEvidenceTarget(application.dailyReportId, application.fixedCostType),
+                sortOrder = link.sortOrder,
+                assignedAt = link.linkedAt,
+                operationId = "ASSIGN:${application.applicationId}:${link.evidenceId}"
+            )
+        }
     }
 
     private fun DailyReport.fixedCostAmount(type: String): Long = when (type) {

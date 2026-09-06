@@ -7,6 +7,8 @@ import com.warun.accounting.data.local.DailyReport
 import com.warun.accounting.data.local.DailyReportStatus
 import com.warun.accounting.data.local.EvidenceRecord
 import com.warun.accounting.data.local.EvidenceRecordState
+import com.warun.accounting.data.local.FixedCostEvidenceAssignmentAuditRecord
+import com.warun.accounting.data.local.FixedCostEvidenceAssignmentRecord
 import com.warun.accounting.data.local.FixedCostEvidenceLinkRecord
 import com.warun.accounting.data.local.FixedCostReceiptApplicationRecord
 import com.warun.accounting.data.local.ReceiptRecord
@@ -67,6 +69,21 @@ class BackupFixedCostV2InstrumentationTest {
             val file = File(liveEvidence, "evidence_$id.${extension(mime)}").apply { writeBytes(bytes) }
             dao.insertEvidenceRecord(EvidenceRecord(id, "capture-v2-$index", file.toURI().toString(), bytes.size.toLong(), sha256(bytes), EvidenceRecordState.Stored, 1, 1, 1, mime))
             dao.insertFixedCostEvidenceLink(FixedCostEvidenceLinkRecord(application.applicationId, id, index, 2))
+            dao.insertFixedCostEvidenceAssignment(
+                FixedCostEvidenceAssignmentRecord(id, report.id, "electricity", index, 2, 2)
+            )
+            dao.insertFixedCostEvidenceAssignmentAudit(
+                FixedCostEvidenceAssignmentAuditRecord(
+                    operationId = "backup-assign-$id",
+                    evidenceId = id,
+                    operationType = "ASSIGN",
+                    beforeDailyReportId = null,
+                    beforeFixedCostType = null,
+                    afterDailyReportId = report.id,
+                    afterFixedCostType = "electricity",
+                    executedAt = 2
+                )
+            )
             id to Triple(mime, bytes, file)
         }
         database.openHelper.writableDatabase.query("PRAGMA wal_checkpoint(TRUNCATE)").use { it.moveToFirst() }
@@ -75,7 +92,7 @@ class BackupFixedCostV2InstrumentationTest {
         val inspection = BackupDatabaseInspector().inspect(dbFile)
         val evidenceFiles = evidence.associate { it.first to it.second.third }
         val manifest = BackupManifest(
-            BackupContract.FormatVersion, 3, "0.2.2", 17,
+            BackupContract.FormatVersion, 3, "0.2.2", BackupContract.CurrentRoomSchemaVersion,
             BackupArchiveEntry(BackupContract.DatabaseEntry, dbFile.length(), BackupArchive.sha256(dbFile)),
             evidence.map { (id, triple) ->
                 BackupEvidenceEntry(
@@ -102,6 +119,11 @@ class BackupFixedCostV2InstrumentationTest {
             assertTrue(restoredDao.getReceipt(receipt.id)!!.isConfirmed)
             assertEquals(application, restoredDao.getFixedCostReceiptApplication(application.applicationId))
             assertEquals(listOf(0, 1, 2), restoredDao.getFixedCostEvidenceLinks(application.applicationId).map { it.sortOrder })
+            assertEquals(
+                listOf(0, 1, 2),
+                evidence.map { restoredDao.getFixedCostEvidenceAssignment(it.first)!!.sortOrder }
+            )
+            assertEquals(3, evidence.sumOf { restoredDao.getFixedCostEvidenceAssignmentAudits(it.first).size })
             evidence.forEach { (id, triple) ->
                 val restoredEvidence = restoredDao.getEvidenceRecord(id)!!
                 assertEquals(triple.first, restoredEvidence.mediaType)
