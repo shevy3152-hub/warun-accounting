@@ -12,6 +12,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.room.Room
 import androidx.activity.compose.setContent
 import androidx.test.core.app.ActivityScenario
@@ -236,6 +237,26 @@ class FixedCostEvidenceAcceptanceInstrumentationTest {
         }
         composeRule.onNodeWithTag("fixed-cost-direct-screen").assertIsDisplayed()
         composeRule.onNodeWithText("日報金額：3000円").assertIsDisplayed()
+    }
+
+    @Test
+    fun newReportAccountantFeeStaysBlankUntilUserEntersAmount() {
+        val targetDate = LocalDate.now().plusDays(2).toString()
+        composeRule.onNodeWithTag("nav-report_entry").performClick()
+        composeRule.onNodeWithContentDescription("カレンダーを開く").performClick()
+        composeRule.waitUntil(10_000) {
+            composeRule.onAllNodesWithTag("calendar-day-$targetDate").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithTag("calendar-day-$targetDate").performClick()
+
+        val accountantFeeField = composeRule.onNodeWithTag("accountant-fee-field").performScrollTo()
+        accountantFeeField.performClick()
+        assertEquals("", accountantFeeField.fetchSemanticsNode().config[SemanticsProperties.EditableText].text)
+        composeRule.onNodeWithTag("fixed-cost-field-electricity").performScrollTo().performClick()
+        accountantFeeField.performClick()
+        assertEquals("", accountantFeeField.fetchSemanticsNode().config[SemanticsProperties.EditableText].text)
+        accountantFeeField.performTextInput("12345")
+        assertEquals("12345", accountantFeeField.fetchSemanticsNode().config[SemanticsProperties.EditableText].text)
     }
 
     @Test

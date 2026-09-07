@@ -2944,7 +2944,13 @@ private fun ExpenseCard(
                 AppTextField("家賃（ヒロセフサコ）", input.rentExpense, KeyboardType.Number, clearZeroOnFocus = true) {
                     onInputChange(input.copy(rentExpense = it))
                 }
-                AppTextField("税理士顧問料", input.accountantFeeExpense, KeyboardType.Number, clearZeroOnFocus = true, defaultValueOnFirstFocus = "22000") {
+                AppTextField(
+                    "税理士顧問料",
+                    input.accountantFeeExpense,
+                    KeyboardType.Number,
+                    Modifier.testTag("accountant-fee-field"),
+                    clearZeroOnFocus = true
+                ) {
                     onInputChange(input.copy(accountantFeeExpense = it))
                 }
                 DetailedExpenseCategoryRow(VehicleTransportCategory, vehicleTransportTotal) {
