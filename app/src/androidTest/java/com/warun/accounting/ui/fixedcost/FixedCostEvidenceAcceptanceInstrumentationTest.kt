@@ -6,10 +6,12 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextInput
 import androidx.room.Room
 import androidx.activity.compose.setContent
 import androidx.test.core.app.ActivityScenario
@@ -202,6 +204,38 @@ class FixedCostEvidenceAcceptanceInstrumentationTest {
         composeRule.onNodeWithTag("fixed-cost-viewer-unlink").performClick()
         composeRule.onNodeWithText("日報との関連付けだけを解除します。保存済みの証憑画像と日報の金額は削除されません。").assertIsDisplayed()
         composeRule.onNodeWithText("キャンセル").performClick()
+    }
+
+    @Test
+    fun newReportFixedCostEvidencePromptsSaveAndUsesSavedReportId() {
+        val targetDate = LocalDate.now().plusDays(1).toString()
+        composeRule.onNodeWithTag("nav-report_entry").performClick()
+        composeRule.onNodeWithContentDescription("カレンダーを開く").performClick()
+        composeRule.waitUntil(10_000) {
+            composeRule.onAllNodesWithTag("calendar-day-$targetDate").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithTag("calendar-day-$targetDate").performClick()
+        composeRule.onNodeWithTag("fixed-cost-field-electricity")
+            .performScrollTo()
+            .performTextInput("3000")
+        composeRule.onNodeWithTag("fixed-cost-direct-electricity")
+            .performScrollTo()
+            .performClick()
+
+        composeRule.onNodeWithText("日報を保存して証憑を追加").assertIsDisplayed()
+        composeRule.onNodeWithText("証憑を登録するには、現在の入力内容を日報として保存します。").assertIsDisplayed()
+        composeRule.onNodeWithTag("fixed-cost-save-cancel").performClick()
+        composeRule.onNodeWithText("日報を保存して証憑を追加").assertDoesNotExist()
+
+        composeRule.onNodeWithTag("fixed-cost-direct-electricity")
+            .performScrollTo()
+            .performClick()
+        composeRule.onNodeWithTag("fixed-cost-save-and-continue").performClick()
+        composeRule.waitUntil(10_000) {
+            composeRule.onAllNodesWithTag("fixed-cost-direct-screen").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithTag("fixed-cost-direct-screen").assertIsDisplayed()
+        composeRule.onNodeWithText("日報金額：3000円").assertIsDisplayed()
     }
 
     @Test

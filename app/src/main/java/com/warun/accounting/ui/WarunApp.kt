@@ -366,12 +366,12 @@ private object ReceiptRoutes {
     const val Camera = "receipt_camera"
     const val Unconfirmed = "receipt_unconfirmed?targetMonth={targetMonth}"
     const val FixedCostDetail = "receipt_fixed_cost/{receiptId}"
-    const val DirectFixedCost = "receipt_fixed_cost_direct/{dailyReportId}/{fixedCostType}"
+    const val DirectFixedCost = "receipt_fixed_cost_direct/{dailyReportId}/{fixedCostType}/{amount}"
     const val FixedCostViewer = "receipt_fixed_cost_viewer/{dailyReportId}/{fixedCostType}/{evidenceId}"
 
     fun fixedCostDetail(receiptId: String): String = "receipt_fixed_cost/${Uri.encode(receiptId)}"
-    fun directFixedCost(dailyReportId: String, fixedCostType: String): String =
-        "receipt_fixed_cost_direct/${Uri.encode(dailyReportId)}/${Uri.encode(fixedCostType)}"
+    fun directFixedCost(dailyReportId: String, fixedCostType: String, amount: Long): String =
+        "receipt_fixed_cost_direct/${Uri.encode(dailyReportId)}/${Uri.encode(fixedCostType)}/$amount"
     fun fixedCostViewer(dailyReportId: String, fixedCostType: String, evidenceId: String): String =
         "receipt_fixed_cost_viewer/${Uri.encode(dailyReportId)}/${Uri.encode(fixedCostType)}/${Uri.encode(evidenceId)}"
     fun unconfirmed(targetMonth: String? = null): String =
@@ -807,9 +807,9 @@ private fun AppNavHost(
                 onAddSupplierCandidate = viewModel::addSupplierCandidate,
                 onHideSupplierCandidate = viewModel::hideSupplierCandidate,
                 onOpenReceiptCamera = { navController.navigate(ReceiptRoutes.Camera) },
-                onOpenFixedCostEvidence = { reportId, type ->
+                onOpenFixedCostEvidence = { reportId, type, amount ->
                     val stored = uiState.fixedCostEvidenceStatuses.firstOrNull { it.dailyReportId == reportId && it.fixedCostType == type }?.evidence.orEmpty()
-                    navController.navigate(if (stored.isEmpty()) ReceiptRoutes.directFixedCost(reportId, type) else ReceiptRoutes.fixedCostViewer(reportId, type, stored.first().id))
+                    navController.navigate(if (stored.isEmpty()) ReceiptRoutes.directFixedCost(reportId, type, amount) else ReceiptRoutes.fixedCostViewer(reportId, type, stored.first().id))
                 },
                 capturedReceipt = capturedReceipt,
                 onCaptureReceived = { capturedReceipt = it },
@@ -868,12 +868,18 @@ private fun AppNavHost(
             route = ReceiptRoutes.DirectFixedCost,
             arguments = listOf(
                 navArgument("dailyReportId") { type = NavType.StringType },
-                navArgument("fixedCostType") { type = NavType.StringType }
+                navArgument("fixedCostType") { type = NavType.StringType },
+                navArgument("amount") { type = NavType.LongType }
             )
         ) { backStackEntry ->
             val reportId = backStackEntry.arguments?.getString("dailyReportId").orEmpty()
             val type = backStackEntry.arguments?.getString("fixedCostType").orEmpty()
             val report = uiState.reports.firstOrNull { it.id == reportId }
+            val amount = if (backStackEntry.arguments?.containsKey("amount") == true) {
+                backStackEntry.arguments?.getLong("amount") ?: 0L
+            } else {
+                report?.fixedCostAmountForUi(type) ?: 0L
+            }
             var captured by remember { mutableStateOf<ReceiptCaptureResult?>(null) }
             LaunchedEffect(backStackEntry) {
                 consumeReceiptCaptureResult(backStackEntry.savedStateHandle, FixedCostDirectCaptureResultKey)?.let { captured = it }
@@ -881,7 +887,7 @@ private fun AppNavHost(
             FixedCostDirectEvidenceScreen(
                 dailyReportId = reportId,
                 fixedCostType = type,
-                amount = report?.fixedCostAmountForUi(type) ?: 0L,
+                amount = amount,
                 captured = captured,
                 onCaptureConsumed = { captured = null },
                 onOpenCamera = { navController.navigate(ReceiptRoutes.Camera) },
@@ -982,9 +988,9 @@ private fun AppNavHost(
                 onAddSupplierCandidate = viewModel::addSupplierCandidate,
                 onHideSupplierCandidate = viewModel::hideSupplierCandidate,
                 onOpenReceiptCamera = { navController.navigate(ReceiptRoutes.Camera) },
-                onOpenFixedCostEvidence = { reportId, type ->
+                onOpenFixedCostEvidence = { reportId, type, amount ->
                     val stored = uiState.fixedCostEvidenceStatuses.firstOrNull { it.dailyReportId == reportId && it.fixedCostType == type }?.evidence.orEmpty()
-                    navController.navigate(if (stored.isEmpty()) ReceiptRoutes.directFixedCost(reportId, type) else ReceiptRoutes.fixedCostViewer(reportId, type, stored.first().id))
+                    navController.navigate(if (stored.isEmpty()) ReceiptRoutes.directFixedCost(reportId, type, amount) else ReceiptRoutes.fixedCostViewer(reportId, type, stored.first().id))
                 },
                 capturedReceipt = capturedReceipt,
                 onCaptureReceived = { capturedReceipt = it },
@@ -1710,12 +1716,12 @@ private fun AdaptiveMenuButtonLayout(content: @Composable (Modifier) -> Unit) {
 private fun ReportEntryScreen(
     uiState: DashboardUiState,
     initialDate: String? = null,
-    onSaveReport: (DailyReportInput, ExpenseInput?, ReceiptCaptureResult?, (Result<Unit>) -> Unit) -> Unit,
+    onSaveReport: (DailyReportInput, ExpenseInput?, ReceiptCaptureResult?, (Result<String>) -> Unit) -> Unit,
     onSaveExpense: (ExpenseInput, ReceiptCaptureResult?, (Result<Unit>) -> Unit) -> Unit,
     onAddSupplierCandidate: (String, String, String) -> Unit,
     onHideSupplierCandidate: (SupplierCandidateRecord) -> Unit,
     onOpenReceiptCamera: () -> Unit,
-    onOpenFixedCostEvidence: (String, String) -> Unit,
+    onOpenFixedCostEvidence: (String, String, Long) -> Unit,
     capturedReceipt: ReceiptCaptureResult? = null,
     onCaptureReceived: (ReceiptCaptureResult) -> Unit,
     onCaptureCleared: () -> Unit,
@@ -1745,6 +1751,7 @@ private fun ReportEntryScreen(
     val imageImportState by receiptImageImportViewModel.uiState.collectAsStateWithLifecycle()
     val cancellationState by expenseCancellationViewModel.state.collectAsStateWithLifecycle()
     var saveFeedback by remember { mutableStateOf<SaveFeedback?>(null) }
+    var pendingFixedCostEvidenceType by rememberSaveable { mutableStateOf<String?>(null) }
     var expenseSaveInProgress by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val captureStartCoordinator = remember(context) {
@@ -1993,7 +2000,7 @@ private fun ReportEntryScreen(
             isSupportedPaymentMethod(normalizePaymentMethod(paymentMethod))
     }
 
-    fun saveCurrentReport(status: String, afterSuccess: (() -> Unit)? = null) {
+    fun saveCurrentReport(status: String, afterSuccess: ((String) -> Unit)? = null) {
         if (savingStatus != null) return
         val currentExpenseDecision = reportExpenseSaveDecision(
             reportDate = reportInput.reportDate,
@@ -2037,15 +2044,16 @@ private fun ReportEntryScreen(
         onSaveReport(savedInput, expenseToSave, evidenceCapture) { result ->
             savingStatus = null
             result.fold(
-                onSuccess = {
+                onSuccess = { savedReportId ->
                     if (expenseToSave != null && evidenceCapture != null) {
                         inputStateViewModel.markPendingEvidenceStored(
                             expenseId = expenseToSave.id,
                             captureId = evidenceCapture.captureId
                         )
                     }
-                    showSaveSuccess(status, savedInput)
-                    afterSuccess?.invoke()
+                    val savedInputWithId = savedInput.copy(id = savedReportId)
+                    showSaveSuccess(status, savedInputWithId)
+                    afterSuccess?.invoke(savedReportId)
                 },
                 onFailure = { showSaveFailure(savedInput, it) }
             )
@@ -2078,12 +2086,40 @@ private fun ReportEntryScreen(
         }
     }
 
+    fun requestOpenFixedCostEvidence(type: String) {
+        if (reportInput.id.isNotBlank()) {
+            onOpenFixedCostEvidence(reportInput.id, type, reportInput.fixedCostAmountForUi(type))
+            return
+        }
+        if (parseDateOrNull(reportInput.reportDate) == null) {
+            saveFeedback = SaveFeedback(
+                title = "日報を保存できません",
+                body = "有効な日付を入力してから、証憑を追加してください。",
+                isError = true
+            )
+            return
+        }
+        if (reportInput.fixedCostAmountForUi(type) <= 0L) {
+            saveFeedback = SaveFeedback(
+                title = "日報を保存できません",
+                body = "対象固定費の金額を1円以上入力してから、証憑を追加してください。",
+                isError = true
+            )
+            return
+        }
+        pendingFixedCostEvidenceType = type
+    }
+
     LaunchedEffect(reportInput, cleanReportInput, expenseFormDirty, utilityFieldsEdited, savingStatus, draftExpenseInput) {
         navigationGuard?.isActive = true
         navigationGuard?.hasUnsavedChanges = hasUnsavedChanges
         navigationGuard?.isSaving = savingStatus != null
-        navigationGuard?.saveDraftAndContinue = { afterSuccess -> saveCurrentReport(DailyReportStatus.Draft, afterSuccess) }
-        navigationGuard?.saveCompletedAndContinue = { afterSuccess -> saveCurrentReport(DailyReportStatus.Completed, afterSuccess) }
+        navigationGuard?.saveDraftAndContinue = { afterSuccess ->
+            saveCurrentReport(DailyReportStatus.Draft) { _ -> afterSuccess() }
+        }
+        navigationGuard?.saveCompletedAndContinue = { afterSuccess ->
+            saveCurrentReport(DailyReportStatus.Completed) { _ -> afterSuccess() }
+        }
         navigationGuard?.discardChanges = {
             val pendingBeforeDiscard = inputStateViewModel.pendingCaptureOwnedByCurrentDraft()
             val pendingOwnerExpenseId = draftExpenseInput?.id
@@ -2148,7 +2184,7 @@ private fun ReportEntryScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                     Button(
                         onClick = {
-                            saveCurrentReport(DailyReportStatus.Draft) {
+                            saveCurrentReport(DailyReportStatus.Draft) { _ ->
                                 pendingReportDate = null
                                 openReportDate(targetDate)
                             }
@@ -2160,7 +2196,7 @@ private fun ReportEntryScreen(
                     }
                     Button(
                         onClick = {
-                            saveCurrentReport(DailyReportStatus.Completed) {
+                            saveCurrentReport(DailyReportStatus.Completed) { _ ->
                                 pendingReportDate = null
                                 openReportDate(targetDate)
                             }
@@ -2190,6 +2226,40 @@ private fun ReportEntryScreen(
                 }
             },
             dismissButton = {}
+        )
+    }
+    pendingFixedCostEvidenceType?.let { fixedCostType ->
+        val isSaving = savingStatus != null
+        AlertDialog(
+            onDismissRequest = {
+                if (!isSaving) pendingFixedCostEvidenceType = null
+            },
+            title = { Text("日報を保存して証憑を追加") },
+            text = { Text("証憑を登録するには、現在の入力内容を日報として保存します。") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val fixedCostAmount = reportInput.fixedCostAmountForUi(fixedCostType)
+                        saveCurrentReport(reportInput.status) { savedReportId ->
+                            pendingFixedCostEvidenceType = null
+                            onOpenFixedCostEvidence(savedReportId, fixedCostType, fixedCostAmount)
+                        }
+                    },
+                    enabled = !isSaving,
+                    modifier = Modifier.testTag("fixed-cost-save-and-continue")
+                ) {
+                    Text(if (isSaving) "保存中…" else "保存して続行")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { pendingFixedCostEvidenceType = null },
+                    enabled = !isSaving,
+                    modifier = Modifier.testTag("fixed-cost-save-cancel")
+                ) {
+                    Text("キャンセル")
+                }
+            }
         )
     }
     saveFeedback?.let { feedback ->
@@ -2356,11 +2426,7 @@ private fun ReportEntryScreen(
                 reportInput = nextInput
             },
             onOpenFixedCostEvidence = { type ->
-                if (reportInput.id.isBlank()) {
-                    saveFeedback = SaveFeedback("日報を先に保存してください", "固定費Evidenceは保存済みの日報へ登録します。", true)
-                } else {
-                    onOpenFixedCostEvidence(reportInput.id, type)
-                }
+                requestOpenFixedCostEvidence(type)
             },
             onCalendarDateSelected = { requestOpenReportDate(it) },
             onSaveExpense = ::saveExpenseWithPendingEvidence,
@@ -5212,7 +5278,14 @@ private fun FixedCostEntryRow(
 ) {
     val count = fixedCostEvidenceCount(statuses, reportId, fixedCostType)
     Row(modifier = fieldModifier, verticalAlignment = Alignment.CenterVertically) {
-        AppTextField(label, value, KeyboardType.Number, Modifier.weight(1f), clearZeroOnFocus = true, onValueChange = onValueChange)
+        AppTextField(
+            label,
+            value,
+            KeyboardType.Number,
+            Modifier.weight(1f).testTag("fixed-cost-field-$fixedCostType"),
+            clearZeroOnFocus = true,
+            onValueChange = onValueChange
+        )
         TextButton(
             onClick = { onOpen(fixedCostType) },
             modifier = Modifier.testTag("fixed-cost-direct-$fixedCostType")
@@ -5228,6 +5301,14 @@ private fun DailyReport.fixedCostAmountForUi(type: String): Long = when (type) {
     "water" -> waterExpense
     "communication" -> communicationExpense
     "gas" -> gasExpense
+    else -> 0L
+}
+
+private fun DailyReportInput.fixedCostAmountForUi(type: String): Long = when (type) {
+    "electricity" -> electricityExpense.toInputLong()
+    "water" -> waterExpense.toInputLong()
+    "communication" -> communicationExpense.toInputLong()
+    "gas" -> gasExpense.toInputLong()
     else -> 0L
 }
 

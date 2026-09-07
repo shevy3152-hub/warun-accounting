@@ -185,21 +185,21 @@ class DashboardViewModel @Inject constructor(
         )
     }
 
-    fun saveDailyReport(input: DailyReportInput, onResult: (Result<Unit>) -> Unit = {}) {
+    fun saveDailyReport(input: DailyReportInput, onResult: (Result<String>) -> Unit = {}) {
         saveDailyReportWithExpense(input, null, onResult)
     }
 
     fun saveDailyReportWithExpense(
         input: DailyReportInput,
         expenseInput: ExpenseInput?,
-        onResult: (Result<Unit>) -> Unit = {}
+        onResult: (Result<String>) -> Unit = {}
     ) = saveDailyReportWithExpenseAndEvidence(input, expenseInput, null, onResult)
 
     fun saveDailyReportWithExpenseAndEvidence(
         input: DailyReportInput,
         expenseInput: ExpenseInput?,
         pendingCapture: ReceiptCaptureResult?,
-        onResult: (Result<Unit>) -> Unit = {}
+        onResult: (Result<String>) -> Unit = {}
     ) {
         viewModelScope.launch {
             val result = runCatching {
@@ -235,6 +235,7 @@ class DashboardViewModel @Inject constructor(
                     },
                     onPromoted = ::persistPromotedEvidence
                 )
+                report.id
             }
             result.onFailure { Log.e(LogTag, "Failed to save daily report transaction", it) }
             onResult(result)
